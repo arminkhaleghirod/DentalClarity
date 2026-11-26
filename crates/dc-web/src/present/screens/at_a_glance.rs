@@ -27,6 +27,9 @@ pub fn AtAGlance() -> impl IntoView {
         .cloned()
         .collect();
     let provider = view.provider_display_name.clone();
+    // The chart lists each tooth's procedures in a panel; choosing one opens
+    // it on the Procedures tab.
+    let chart_procedures = view.procedures.clone();
 
     let prepared = if view.guardian_audience {
         format!("Prepared for {}'s family", view.patient_first_name)
@@ -84,7 +87,9 @@ pub fn AtAGlance() -> impl IntoView {
         <div class="p-glance">
             <div class="p-chart-panel">
                 <ToothChart planned selected=Signal::derive(|| None::<String>)
-                    on_select=Callback::new(move |label| nav.open_tooth(label)) />
+                    procedures=chart_procedures
+                    on_select=Callback::new(|_: String| {})
+                    on_open=Callback::new(move |r| nav.open_procedure(r)) />
                 <NonToothList procedures=non_tooth />
             </div>
             <div class="p-glance-main">
