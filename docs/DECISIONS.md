@@ -12,6 +12,7 @@ Last updated: 2026-11-26
 | P2 | Three deliverables: the DentalClarity app (self-hosted distribution plus a public synthetic demo), the ClarityEval benchmark (same repo), and a research-style paper. | Confirmed |
 | P3 | When goals conflict, the hackathon submission wins: demo polish, the patient experience and ClarityEval come first. The clinical provider path, Windows installer and auto-sync get built and smoke-tested but may stay thinner. | Confirmed |
 | P4 | Hackathon: Teens in AI Global Challenge 2027, track AI for Health, Safety & Inclusion. Deadline 2027-02-15. Required: project description, tech list, public GitHub repo, working demo link, 2 to 5 minute video. | Confirmed (rules read 2026-11-25) |
+| P4a | Second hackathon: AI for Medicine (ai-for-medicine.devpost.com), deadline 2026-12-04, 11:45 PM ET. Adds a written description with an evaluation section (held-out data, a clinical or cost metric, a baseline, reproducible), a section on who benefits and who could be harmed, limitations, at least a 60 second video, and one README line disclosing AI coding tools. The milestone order is unchanged. | Confirmed 2026-11-26 |
 | P5 | Staff UI is English-only and DentalClarity-branded. The patient UI is fully practice-branded, with no DentalClarity branding. | Confirmed |
 | P6 | Patients get a PDF booklet to take home. No patient portal, public links or tunnels. | Confirmed |
 | P7 | One shared staff account for the prototype. Individual accounts and RBAC are out of scope. This is documented as a clinical-readiness gap. | Confirmed |
@@ -35,7 +36,7 @@ Last updated: 2026-11-26
 | D9 | The knowledge base is drafted as original text citing reputable sources. Each entry carries `review_status` and stays `unreviewed` until a dentist signs off. | Confirmed |
 | D10 | Prompts carry an allowlist of typed fields. Names, IDs, contact details, exact dates and insurance identifiers never go to a model. Personalization placeholders (e.g. `{{patient_first_name}}`) are substituted locally. Masking alone is not called de-identification. | Confirmed |
 | D11 | Demo text calls route to PrimeIntellect first on OpenRouter, falling back to other fast providers on errors. Only providers that support every parameter we send, do not store or train on prompts, and run 8-bit or better weights are used. Chosen by benchmark on 2026-11-26. | Confirmed |
-| D12 | A text call with hidden reasoning times out after 120 s, other calls after 45 s. A call that times out or returns an unreadable reply counts against the budget at its worst-case reservation, because the provider may have billed it, and is retried once. Connection errors, 429 and 5xx keep three attempts. | Confirmed |
+| D12 | A text call with hidden reasoning times out after 120 s, other text calls after 45 s; speech calls time out after 30 s (E19). A call that times out or returns an unreadable reply counts against the budget at its worst-case reservation, because the provider may have billed it, and is retried once. Connection errors, 429 and 5xx keep three attempts. | Confirmed |
 
 ## Engineering
 

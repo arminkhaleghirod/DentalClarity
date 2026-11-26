@@ -11,6 +11,7 @@ use std::path::PathBuf;
 /// | `DC_BIND`           | `127.0.0.1:8080`                      |
 /// | `DC_PUBLIC_ORIGIN`  | `http://` + `DC_BIND`                 |
 /// | `DC_TRUSTED_PROXY`  | unset                                 |
+/// | `DC_CLIENT_IP_HEADER` | unset (needs `DC_TRUSTED_PROXY`)   |
 /// | `DC_HSTS`           | `false`                               |
 /// | `DC_DATA_DIR`       | `./data`                              |
 /// | `DC_FIXTURE`        | `fixtures/synthetic/practice.toml`    |

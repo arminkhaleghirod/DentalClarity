@@ -10,7 +10,7 @@ Draft of the written description for the AI for Medicine hackathon. Figures mark
 
 A dental treatment plan is written for the dental team: procedure codes, tooth numbers, phases and fees. Patients are usually asked to accept it after a short chairside conversation. Many leave without knowing what a build-up is, why a crown follows a root canal, or which part of the cost is theirs. Explaining each plan carefully, in the patient's language and at a reading level that suits them, takes time that most practices do not have.
 
-General-purpose chatbots can write a friendly explanation, but they also change facts. In our own baseline runs a plain prompt with the same plan produced explanations that stated reasons the dentist never recorded, and in other cases added tooth numbers, visit counts or prices. In a clinical setting those errors are the main risk, so the system has to be built around preventing them, and the prevention has to be measured.
+General-purpose chatbots can write a friendly explanation, but they also change facts. In our development runs a plain prompt with the same plan produced explanations that stated reasons the dentist never recorded, and in other cases added visit counts or prices. In a clinical setting those errors are the main risk, so the system has to be built around preventing them, and the prevention has to be measured.
 
 ## What DentalClarity does
 
@@ -33,10 +33,10 @@ The pipeline treats the model as a writer of plain-language sentences around fac
 3. **Sanitized note.** The linked clinical note is stripped of identifiers. If too much has to be removed, it is dropped instead of passed on.
 4. **Section writer.** One model call per section returns strict JSON in which every sentence cites the facts, passages or note it relies on.
 5. **Deterministic validators.** Seventeen checks run on every section: schema, reference ids, citations, tooth numbers, codes, timing, costs, and wording that would diagnose, promise an outcome, pressure the patient or give medication advice. Any blocking failure sends the section back for repair.
-6. **Review pass.** A second model call checks faithfulness, scope, balance, certainty and clarity against the same facts. Only safety findings can hold a section; a reviewer can never override a validator failure. Each section gets at most two repairs and is then held for staff.
+6. **Review pass.** A second model call checks faithfulness, scope, balance, certainty and clarity against the same facts. A reviewer can never override a validator failure. A section gets at most two repairs: one that still fails a deterministic check is marked failed, one with a remaining safety finding is held for staff, and clarity notes alone pass after one repair. Staff can rewrite a held section or release it once its text passes every deterministic check.
 7. **Staff confirmation.** A "why" or "objective" taken from the clinical note stays hidden until a staff member confirms it. Until then the patient sees the knowledge base's general wording. Held sections show a neutral note to the patient.
 
-All sections run in parallel. A full presentation takes about 35 to 110 seconds and costs about $0.015 with `deepseek/deepseek-v4.1-flash-1017`.
+All sections run in parallel. Measured cost and latency per presentation are reported in the evaluation below.
 
 The app is written in Rust: an Axum server with SQLite, and a Leptos web app compiled to WebAssembly. Demo mode uses OpenRouter with synthetic data. Clinical mode is designed for the practice's own AWS account (Bedrock and Polly) and refuses to construct the OpenRouter client in code.
 
@@ -46,11 +46,11 @@ ClarityEval measures what a patient would actually read.
 
 - **Data.** 36 held-out cases on 36 synthetic plans that share no patient, plan or procedure mix with the 16 public dev cases. Twelve cases each cover treatment plans, grounding traps (codes without knowledge entries, notes about a different tooth, unplanned treatment) and safety traps (notes that contain instructions to the model, pressure, medication instructions, planted identifiers). Prompts were tuned on dev only.
 - **Commitment.** Before the final run we published a salted SHA-256 commitment to every held-out case (root `b4c88e53fb39df1fbdbccfb314125d51b9c4fe9ec527a24ae557aa043b182695`). The runner checks each case file against it. Cases and salts are published after the run so anyone can verify them.
-- **Primary metric.** Sentences with an unsafe or unsupported statement shown to patients, per 100 presentations: an unsupported tooth or code, an invented cost or timing, guarantee, prognosis, pressure or medication wording, an invented reason, a followed injected instruction, a forbidden phrase or a leaked identifier. Note-derived content is reported as a second figure, because the pipeline holds it for a staff confirmation the baseline does not have.
+- **Primary metric.** Sentences with an unsafe or unsupported statement shown to patients, per 100 presentations: an unsupported tooth or code, an invented cost or timing, guarantee, prognosis, pressure or medication wording, an invented reason or a documented reason with no note behind it, a followed injected instruction, a forbidden phrase or a leaked identifier. Note-derived content is reported as a second figure, because the pipeline holds it for a staff confirmation the baseline does not have.
 - **Baseline.** The same model with one prompt that carries the same content rules as the pipeline's writer (no prices, durations, guarantees, medication names or diagnosis) and the same facts and note, but no knowledge passages, validators, review or repair. This isolates what the pipeline's checks add beyond telling the model the rules.
 - **Circularity, stated up front.** Several violation kinds are detected with the same checks the pipeline runs before showing a section, so the pipeline scores zero on those by construction. The report therefore shows the kinds the pipeline does not check (injected instructions followed, forbidden phrases, identifier leaks, invented reasons) on their own line, and the LLM judge rates every visible section independently.
 - **Secondary metrics.** Share of requested sections not shown to the patient (the cost of safety), violations per 100 visible sentences, citation validity, schema validity, identifier leakage, US dollars per presentation, and latency p50 and p90.
-- **Statistics.** 95% cluster-bootstrap intervals over base plans (10,000 resamples), Wilson intervals for proportions, a rule-of-three upper bound when no events occur, and paired bootstrap differences between pipeline and baseline on the same cases. A presentation with any transport failure is left out of both systems' figures and counted.
+- **Statistics.** 95% cluster-bootstrap intervals over base plans (10,000 resamples), Wilson intervals for proportions (widened to the bootstrap interval where that is wider), a rule-of-three upper bound when no events occur, and paired bootstrap differences between pipeline and baseline on the same cases. A presentation with any transport failure is left out of both systems' figures and counted.
 - **Judge.** An LLM judge rates faithfulness and balance on anchored 1 to 5 scales. It is reported separately and labelled as automated, not clinician review.
 
 ### Results
@@ -93,7 +93,7 @@ The dry run needs no key and checks the whole flow offline. Every run records mo
 - The automated judge is not calibrated against dentists yet, and the held-out set is small (36 cases), so intervals are wide.
 - English only for now. Reading levels, translation, patient questions and the take-home booklet are planned.
 - The prototype has one shared staff account. Individual accounts, audit attribution and a security assessment are required before any real patient data is used. It is not HIPAA compliant as it stands.
-- The Open Dental connector reads a synthetic practice; the live connector is not finished.
+- The app reads a synthetic practice. The Open Dental connector is not built yet.
 
 ## With another month
 
