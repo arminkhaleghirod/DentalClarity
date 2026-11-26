@@ -115,6 +115,11 @@ pub async fn lookup(db: &SqlitePool, token: &str) -> Result<Option<Session>> {
 }
 
 pub async fn delete(db: &SqlitePool, token_hash: &str) -> Result<()> {
+    // A present session never outlives the session that started it.
+    sqlx::query("DELETE FROM present_sessions WHERE staff_token_hash = ?")
+        .bind(token_hash)
+        .execute(db)
+        .await?;
     sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
         .bind(token_hash)
         .execute(db)
@@ -125,6 +130,9 @@ pub async fn delete(db: &SqlitePool, token_hash: &str) -> Result<()> {
 /// Ends every session. Used when the server starts in a different mode
 /// than last time, so sessions from one mode never carry into the other.
 pub async fn delete_all(db: &SqlitePool) -> Result<u64> {
+    sqlx::query("DELETE FROM present_sessions")
+        .execute(db)
+        .await?;
     Ok(sqlx::query("DELETE FROM sessions")
         .execute(db)
         .await?
@@ -133,11 +141,212 @@ pub async fn delete_all(db: &SqlitePool) -> Result<u64> {
 
 /// Removes expired rows. Called periodically; lookups also expire lazily.
 pub async fn purge_expired(db: &SqlitePool) -> Result<u64> {
+    sqlx::query(
+        "DELETE FROM present_sessions WHERE expires_at <= ?1 OR staff_token_hash IN
+             (SELECT token_hash FROM sessions WHERE expires_at <= ?1)",
+    )
+    .bind(now())
+    .execute(db)
+    .await?;
     let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
         .bind(now())
         .execute(db)
         .await?;
     Ok(result.rows_affected())
+}
+
+// Present sessions -------------------------------------------------------
+
+/// Present session idle timeout and absolute lifetime, in seconds.
+pub const PRESENT_IDLE_SECS: i64 = 60 * 60;
+pub const PRESENT_ABSOLUTE_SECS: i64 = 4 * 60 * 60;
+/// PIN tries allowed per lock. After these, only the staff password unlocks.
+pub const MAX_PIN_ATTEMPTS: i64 = 5;
+
+/// A live present session, bound to one presentation version and to the
+/// locked session that started it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentSession {
+    pub token_hash: String,
+    pub presentation_id: String,
+    pub version: i64,
+    pub staff_token_hash: String,
+    pub staff_kind: SessionKind,
+    pub pin_attempts: i64,
+}
+
+/// Starts a present session for `staff` and locks `staff` in one
+/// transaction. Any earlier present session of the same staff session ends.
+/// Returns the raw token for the cookie.
+pub async fn start_present(
+    db: &SqlitePool,
+    staff: &Session,
+    presentation_id: &str,
+    version: i64,
+) -> Result<String> {
+    let token = new_token();
+    let now = now();
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM present_sessions WHERE staff_token_hash = ?")
+        .bind(&staff.token_hash)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO present_sessions (token_hash, presentation_id, version, staff_token_hash,
+             created_at, last_seen_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(token_hash(&token))
+    .bind(presentation_id)
+    .bind(version)
+    .bind(&staff.token_hash)
+    .bind(now)
+    .bind(now)
+    .bind(now + PRESENT_ABSOLUTE_SECS)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE sessions SET locked = 1 WHERE token_hash = ?")
+        .bind(&staff.token_hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(token)
+}
+
+type PresentRow = (String, i64, String, i64, i64, i64, String, i64);
+
+/// Looks up a live present session and refreshes its idle timer. The locked
+/// session behind it is kept from idling out while the patient is viewing,
+/// so staff can still unlock afterwards. Expired present sessions are
+/// deleted and reported as missing; the locked session stays locked.
+pub async fn lookup_present(db: &SqlitePool, token: &str) -> Result<Option<PresentSession>> {
+    let hash = token_hash(token);
+    let row: Option<PresentRow> = sqlx::query_as(
+        "SELECT p.presentation_id, p.version, p.staff_token_hash, p.pin_attempts,
+             p.last_seen_at, p.expires_at, s.kind, s.expires_at
+         FROM present_sessions p JOIN sessions s ON s.token_hash = p.staff_token_hash
+         WHERE p.token_hash = ?",
+    )
+    .bind(&hash)
+    .fetch_optional(db)
+    .await?;
+    let Some((presentation_id, version, staff_hash, attempts, seen, expires, kind, staff_expires)) =
+        row
+    else {
+        sqlx::query("DELETE FROM present_sessions WHERE token_hash = ?")
+            .bind(&hash)
+            .execute(db)
+            .await?;
+        return Ok(None);
+    };
+    let now = now();
+    if now >= expires || now - seen >= PRESENT_IDLE_SECS || now >= staff_expires {
+        sqlx::query("DELETE FROM present_sessions WHERE token_hash = ?")
+            .bind(&hash)
+            .execute(db)
+            .await?;
+        return Ok(None);
+    }
+    sqlx::query("UPDATE present_sessions SET last_seen_at = ? WHERE token_hash = ?")
+        .bind(now)
+        .bind(&hash)
+        .execute(db)
+        .await?;
+    sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?")
+        .bind(now)
+        .bind(&staff_hash)
+        .execute(db)
+        .await?;
+    Ok(Some(PresentSession {
+        token_hash: hash,
+        presentation_id,
+        version,
+        staff_token_hash: staff_hash,
+        staff_kind: if kind == "staff" {
+            SessionKind::Staff
+        } else {
+            SessionKind::Visitor
+        },
+        pin_attempts: attempts,
+    }))
+}
+
+/// Counts one PIN try before it is checked, so parallel requests cannot
+/// exceed the limit. Returns the tries used including this one, or `None`
+/// when the PIN is already disabled for this lock.
+pub async fn reserve_pin_attempt(db: &SqlitePool, present_hash: &str) -> Result<Option<i64>> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "UPDATE present_sessions SET pin_attempts = pin_attempts + 1
+         WHERE token_hash = ? AND pin_attempts < ? RETURNING pin_attempts",
+    )
+    .bind(present_hash)
+    .bind(MAX_PIN_ATTEMPTS)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(n,)| n))
+}
+
+/// Ends a present session and unlocks the session behind it by replacing it
+/// with a new token and CSRF token. The old token stops working. The new
+/// session keeps the old absolute expiry, and demo presentations move to the
+/// new visitor scope. Returns `None` when the locked session no longer exists.
+pub async fn end_present(db: &SqlitePool, present: &PresentSession) -> Result<Option<Issued>> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM present_sessions WHERE token_hash = ?")
+        .bind(&present.token_hash)
+        .execute(&mut *tx)
+        .await?;
+    let old: Option<(String, i64)> =
+        sqlx::query_as("SELECT kind, expires_at FROM sessions WHERE token_hash = ?")
+            .bind(&present.staff_token_hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((kind, expires_at)) = old else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let kind = if kind == "staff" {
+        SessionKind::Staff
+    } else {
+        SessionKind::Visitor
+    };
+    let token = new_token();
+    let session = Session {
+        token_hash: token_hash(&token),
+        kind,
+        csrf_token: new_token(),
+        locked: false,
+    };
+    let now = now();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, kind, csrf_token, created_at, last_seen_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&session.token_hash)
+    .bind(kind.as_str())
+    .bind(&session.csrf_token)
+    .bind(now)
+    .bind(now)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+    // Demo presentations are scoped to the visitor's token hash. Clinical
+    // rows use the literal scope 'staff', which never matches a hash.
+    sqlx::query("UPDATE presentations SET owner_scope = ? WHERE owner_scope = ?")
+        .bind(&session.token_hash)
+        .bind(&present.staff_token_hash)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM present_sessions WHERE staff_token_hash = ?")
+        .bind(&present.staff_token_hash)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+        .bind(&present.staff_token_hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(Issued { token, session }))
 }
 
 #[cfg(test)]

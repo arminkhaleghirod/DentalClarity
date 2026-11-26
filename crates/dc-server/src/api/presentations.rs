@@ -27,23 +27,24 @@ use dc_generation::schema::{
 use dc_pms::PmsError;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 /// Demo limits on new generations (docs/SECURITY.md, demo abuse controls).
 pub const DEMO_PER_VISITOR_PER_HOUR: i64 = 3;
 pub const DEMO_PER_ADDRESS_PER_DAY: i64 = 10;
 /// Suggested wait while the visitor's previous job is still running.
 const JOB_IN_PROGRESS_RETRY_SECS: u64 = 15;
-const MAX_ID_CHARS: usize = 64;
+pub(super) const MAX_ID_CHARS: usize = 64;
 const MAX_KEY_CHARS: usize = 64;
 
-fn owner_scope(state: &AppState, session: &Session) -> String {
+pub(super) fn owner_scope(state: &AppState, session: &Session) -> String {
     match state.mode {
         Mode::Demo => session.token_hash.clone(),
         Mode::Clinical => "staff".into(),
     }
 }
 
-fn not_found(what: &'static str) -> Failure {
+pub(super) fn not_found(what: &'static str) -> Failure {
     let (code, message) = match what {
         "job" => ("job_not_found", "No generation job with that id was found."),
         _ => (
@@ -78,7 +79,7 @@ fn level_str(level: ReadingLevel) -> String {
     level.to_string()
 }
 
-fn parse_level(s: &str) -> ReadingLevel {
+pub(super) fn parse_level(s: &str) -> ReadingLevel {
     match s {
         "simple" => ReadingLevel::Simple,
         "detailed" => ReadingLevel::Detailed,
@@ -427,7 +428,117 @@ pub async fn list(
     Ok(Json(summaries))
 }
 
-type SectionRow = (String, String, Option<String>, String, bool, String, String);
+pub(super) type SectionRow = (String, String, Option<String>, String, bool, String, String);
+
+/// Generated sections of a presentation in order, as stored.
+pub(super) async fn section_rows(state: &AppState, id: &str) -> Result<Vec<SectionRow>, Failure> {
+    Ok(sqlx::query_as(
+        "SELECT key, state, output_json, reasons_json, needs_note_confirmation,
+             writer_model, prompt_version
+         FROM presentation_sections WHERE presentation_id = ? ORDER BY position",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
+/// Staff edits and note confirmations of one presentation version, keyed by
+/// (section key, block field).
+#[derive(Debug, Default)]
+pub(super) struct StaffChanges {
+    edits: HashMap<(String, String), Vec<String>>,
+    confirmed: HashSet<(String, String)>,
+}
+
+impl StaffChanges {
+    pub(super) async fn load(state: &AppState, id: &str, version: i64) -> Result<Self, Failure> {
+        let edits: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT section_key, field, sentences_json FROM staff_edits
+             WHERE presentation_id = ? AND version = ?",
+        )
+        .bind(id)
+        .bind(version)
+        .fetch_all(&state.db)
+        .await?;
+        let confirmed: Vec<(String, String)> = sqlx::query_as(
+            "SELECT section_key, field FROM note_confirmations
+             WHERE presentation_id = ? AND version = ?",
+        )
+        .bind(id)
+        .bind(version)
+        .fetch_all(&state.db)
+        .await?;
+        Ok(Self {
+            edits: edits
+                .into_iter()
+                .filter_map(|(key, field, json)| {
+                    serde_json::from_str(&json).ok().map(|s| ((key, field), s))
+                })
+                .collect(),
+            confirmed: confirmed.into_iter().collect(),
+        })
+    }
+
+    /// Puts staff text in place of edited blocks. A note-derived block that
+    /// was not edited needs confirmation until staff confirm it (P11).
+    pub(super) fn apply(&self, section: &mut SectionView) {
+        for block in &mut section.blocks {
+            let key = (section.key.clone(), block.field.clone());
+            if let Some(sentences) = self.edits.get(&key) {
+                block.sentences = sentences.clone();
+                block.source = BlockSource::StaffEdit;
+                block.needs_confirmation = false;
+            } else if block.source == BlockSource::ClinicalNote {
+                block.needs_confirmation = !self.confirmed.contains(&key);
+            }
+        }
+    }
+}
+
+/// Sections of a presentation version with staff edits and confirmations applied.
+pub(super) async fn load_sections(
+    state: &AppState,
+    id: &str,
+    version: i64,
+    sheet: &FactSheet,
+) -> Result<Vec<SectionView>, Failure> {
+    let rows = section_rows(state, id).await?;
+    let changes = StaffChanges::load(state, id, version).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let mut section = section_view(row, sheet);
+            changes.apply(&mut section);
+            section
+        })
+        .collect())
+}
+
+/// Locked fact rows from the snapshot, in plan order.
+pub(super) fn procedure_facts(
+    snapshot: &PlanSnapshot,
+    sheet: &FactSheet,
+) -> Vec<ProcedureFactView> {
+    snapshot
+        .procedures
+        .iter()
+        .zip(&sheet.procedures)
+        .map(|(p, fact)| ProcedureFactView {
+            procedure_ref: fact.reference.clone(),
+            name: fact.name.clone(),
+            code: p.code.to_string(),
+            tooth: match p.tooth {
+                ToothRef::None => String::new(),
+                other => other.to_string(),
+            },
+            surfaces: p.surfaces.clone(),
+            phase: fact.phase_ref.trim_start_matches("ph").parse().unwrap_or(1),
+            fee: p.fee.known(),
+            insurance_estimate: p.insurance_estimate.known(),
+            patient_estimate: p.patient_estimate.known(),
+        })
+        .collect()
+}
 
 /// `GET /api/staff/presentations/{id}`
 pub async fn view(
@@ -465,41 +576,23 @@ pub async fn view(
         .unwrap_or((String::new(), JobState::Failed, 0));
 
     let sheet = FactSheet::build(&snapshot, &state.kb);
-    let rows: Vec<SectionRow> = if job_state.is_finished() {
-        sqlx::query_as(
-            "SELECT key, state, output_json, reasons_json, needs_note_confirmation,
-                 writer_model, prompt_version
-             FROM presentation_sections WHERE presentation_id = ? ORDER BY position",
-        )
-        .bind(&id)
-        .fetch_all(&state.db)
-        .await?
+    let rows = if job_state.is_finished() {
+        section_rows(&state, &id).await?
     } else {
         Vec::new()
     };
     let writer_model = rows.first().map(|r| r.5.clone()).unwrap_or_default();
     let prompt_version = rows.first().map(|r| r.6.clone()).unwrap_or_default();
-    let sections = rows.into_iter().map(|r| section_view(r, &sheet)).collect();
-
-    let procedures = snapshot
-        .procedures
-        .iter()
-        .zip(&sheet.procedures)
-        .map(|(p, fact)| ProcedureFactView {
-            procedure_ref: fact.reference.clone(),
-            name: fact.name.clone(),
-            code: p.code.to_string(),
-            tooth: match p.tooth {
-                ToothRef::None => String::new(),
-                other => other.to_string(),
-            },
-            surfaces: p.surfaces.clone(),
-            phase: fact.phase_ref.trim_start_matches("ph").parse().unwrap_or(1),
-            fee: p.fee.known(),
-            insurance_estimate: p.insurance_estimate.known(),
-            patient_estimate: p.patient_estimate.known(),
+    let changes = StaffChanges::load(&state, &id, version).await?;
+    let sections = rows
+        .into_iter()
+        .map(|r| {
+            let mut section = section_view(r, &sheet);
+            changes.apply(&mut section);
+            section
         })
         .collect();
+    let procedures = procedure_facts(&snapshot, &sheet);
 
     Ok(Json(PresentationView {
         id,
@@ -524,7 +617,8 @@ pub async fn view(
     }))
 }
 
-fn section_view(row: SectionRow, sheet: &FactSheet) -> SectionView {
+/// One stored section as generated, before staff edits are applied.
+pub(super) fn section_view(row: SectionRow, sheet: &FactSheet) -> SectionView {
     let (key, state, output, reasons, needs_confirmation, _, _) = row;
     let kind = match key.as_str() {
         "at_a_glance" => dc_generation::prompt::SectionKind::AtAGlance,

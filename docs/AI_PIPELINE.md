@@ -23,7 +23,7 @@ Tags: [C] is confirmed by the owner (DECISIONS id given). [P] is proposed by eng
 | `qa` | "Ask a question" in the UI (the role id stays `qa`) | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | TBD, chosen in M9 |
 | `tts` | narration | OpenRouter | Polly | `heygen/heygen-voice-1-turbo` [C, D4] | TBD, chosen in M9 with a listening test |
 
-Both demo defaults are listed on OpenRouter (checked 2026-11-25). The text model supports `structured_outputs`, `response_format`, `reasoning` and `reasoning_effort`, and `heygen/heygen-voice-1-turbo` is a speech model. ClarityEval verifies these defaults and may replace them. The exact OpenRouter speech endpoint and audio format are verified in M5.
+Both demo defaults are listed on OpenRouter (checked 2026-11-25). The text model supports `structured_outputs`, `response_format`, `reasoning` and `reasoning_effort`, and `heygen/heygen-voice-1-turbo` is a speech model. ClarityEval verifies these defaults and may replace them. The speech endpoint and audio format were verified in M5 (see Narration).
 
 ## Pipeline overview
 
@@ -371,12 +371,16 @@ Deterministic handling around Q&A [P]:
 
 ### Narration [C, P10]
 
-- One TTS call per sentence, using the final placeholder-substituted text of a `Passed` or `StaffEdit` block. The active sentence is highlighted while its clip plays. No word-level timing is claimed. Whether any provider returns timing marks is TBD (verify in M5) and is not required.
-- `AudioClip` key: `sha256(provider_id, voice_id, model_or_engine_id, lang, speech_settings_version, normalized_sentence_text)`. Files are content-addressed in `artifacts/`.
-- Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references, and a daily GC deletes unreferenced files.
+- One TTS call per sentence, using the final placeholder-substituted text of a `Passed` or `StaffEdit` block. The active sentence is highlighted while its clip plays. No word-level timing is claimed. The demo provider returns no timing marks (resolved in M5), and none are needed.
+- Endpoint (verified 2026-11-26): `POST https://openrouter.ai/api/v1/audio/speech` with JSON `{model, input, voice, response_format, provider}`. We send only the model, the sentence text, the voice, `response_format: "pcm"` and `provider.data_collection: "deny"`. The language is not a parameter; the model reads it from the text. The answer is raw audio bytes; errors are JSON with the usual status codes (402 credits, 429 rate limit, 502 upstream).
+- Format: `heygen/heygen-voice-1-turbo` offers only `pcm`, returned as `Content-Type: audio/pcm;rate=44100;channels=1` (16-bit little-endian). The adapter adds a WAV header, so clips are served as `audio/wav`, about 88 KB per second of speech. A 55-character test sentence took 1.3 s and gave 4.1 s of audio (361 KB).
+- Voice: the model has ten preset voices (`nadine`, `tabitha`, `bram`, `gareth`, `noelle`, `meredith`, `sabrina`, `lucian`, `weston`, `vincent`), listed at `GET /api/v1/audio/speech/models/heygen/heygen-voice-1-turbo`. The default is `meredith`, provisional until a listening test. `DC_SPEECH_VOICE` and `DC_SPEECH_MODEL` override the voice and model.
+- Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at that price in the same monthly `ai_usage` budget as text calls, and a clip is refused with `budget_reached` once the cap is reached. Cached clips keep playing.
+- `AudioClip` key: `dc_core::present::audio_key(model#voice, lang, sentence_text)`, a SHA-256 over the three parts. Files live at `<data_dir>/artifacts/audio/<key>.wav`, with a row in `audio_clips` (key, language, model, bytes, mime, created_at, last_used_at).
+- Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and upstream calls are capped at 120 a minute for the server. Clinical mode has no speech provider until M9 and answers 503 `narration_unavailable`.
+- Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references; a GC for unreferenced files, using `last_used_at`, is not built yet.
 - Timing [P]: after S8, a low-priority `narrate` stage synthesizes the default variant, at-a-glance first. Other variants are synthesized on the first play of a section, and the play button shows progress. Narration is outside the 90 s target.
-- No model rewrites text for speech. Normalization is deterministic: expand our tooth-ref labels into words, drop placeholder braces, and apply a per-language pronunciation lexicon for dental terms if the provider supports one (TBD, verify in M5).
-- The exact OpenRouter speech endpoint and audio format are verified in M5.
+- No model rewrites text for speech. Normalization is deterministic: expand our tooth-ref labels into words and drop placeholder braces. The demo provider has no pronunciation lexicon (resolved in M5), so dental terms are read as written.
 - TTS gets no patient name (the greeting is not narrated with the name) and no costs outside the `costs` section, whose sentences are rendered locally. [P]
 
 ## Sync

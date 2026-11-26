@@ -9,6 +9,7 @@ pub mod generation;
 pub mod http;
 pub mod jobs;
 pub mod limits;
+pub mod narration;
 pub mod security;
 pub mod sessions;
 pub mod settings;
@@ -48,6 +49,8 @@ pub struct AppState {
     /// One-time code required to create the staff account on a fresh
     /// clinical install. Printed to the server console at startup.
     pub setup_code: Arc<std::sync::Mutex<Option<String>>>,
+    /// Sentence narration and its audio cache (`narration::clip`).
+    pub narration: Arc<narration::Narration>,
 }
 
 pub fn router(state: AppState) -> Router {

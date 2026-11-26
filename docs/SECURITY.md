@@ -71,13 +71,13 @@ Mode is fixed at startup and cannot change at runtime [C, ARCH 1].
 |---|---|---|
 | Token | 32 random bytes from the OS CSPRNG, base64url | same |
 | Stored as | SHA-256 of the token in `sessions` | SHA-256 in `present_sessions` |
-| Cookie | one session cookie shared with demo visitors (see below) | planned for M5 (`__Host-dc_present`, same flags) |
+| Cookie | one session cookie shared with demo visitors (see below) | `__Host-dc_present` over HTTPS, `dc_present` over plain HTTP, same flags |
 | Idle timeout | 30 min | 60 min |
 | Absolute lifetime | 12 h | 4 h |
-| Rotation | new token at login and at unlock | new token per present session |
-| Bound to | the shared account | `(presentation_id, version_id)` and the staff session that created it |
+| Rotation | new token at login and at unlock; the unlocked session keeps the absolute expiry of the locked one | new token per present session |
+| Bound to | the shared account | `(presentation_id, version)` and the staff or visitor session that created it |
 
-Implemented in M1: staff and demo visitor sessions use one cookie, named `__Host-dc_session` over HTTPS and `dc_session` over plain HTTP (local development only). Flags are `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` over HTTPS. There is no `Max-Age`, because the server enforces lifetimes. A demo visitor session has a 24 h idle timeout and a 24 h absolute lifetime. The present session row and its cookie are still planned for M5, so the Present column above is the design, not the current behavior.
+Implemented in M1: staff and demo visitor sessions use one cookie, named `__Host-dc_session` over HTTPS and `dc_session` over plain HTTP (local development only). Flags are `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` over HTTPS. There is no `Max-Age`, because the server enforces lifetimes. A demo visitor session has a 24 h idle timeout and a 24 h absolute lifetime. Implemented in M5: present sessions live in `present_sessions` and use their own cookie. `/api/staff/*` reads only the session cookie and `/api/present/*` reads only the present cookie, so neither opens the other. Ending or signing out of the locked session also ends its present session. While a patient is viewing, each present request keeps the locked session from idling out, so staff can still unlock afterwards.
 
 - The cookie name and the `Secure` flag follow the scheme of `DC_PUBLIC_ORIGIN`. The app does not read `X-Forwarded-Proto`.
 - The session kind must match the mode: demo accepts only visitor sessions, clinical accepts only staff sessions.
@@ -92,6 +92,7 @@ API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. I
 - `SameSite=Strict` on the session cookie.
 - `Origin` (or `Referer` as a fallback) must match the configured origin on every non-GET `/api` request, including login, setup and visit.
 - No state change on GET.
+- The present session has no CSRF token, because the patient screens never see staff state. `POST /api/present/exit` relies on the `SameSite=Strict` present cookie, the Origin check, and a JSON body (`Content-Type: application/json`), which a cross-site form cannot send.
 
 ### Rate limits and lockout
 
@@ -100,32 +101,36 @@ API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. I
 | `POST /api/auth/login` | 5 per minute per client address | `429` with `Retry-After` |
 | Login failures | after 5 failures from an address, delay doubles from 1 s up to 5 min; failures are forgotten after 15 min | per-address backoff, not an account lockout (one shared account means a hard lockout would let any LAN device lock out the whole practice). Wrong setup codes count toward the same backoff |
 | `POST /api/visit` (demo) | 30 new visitor sessions per minute per client address | `429` |
-| `POST /api/present/exit` (PIN) | 5 wrong PINs per present session | the PIN is disabled for that lock; unlocking then needs the full staff password |
+| `POST /api/present/exit` (PIN) | 5 PIN tries per present session, counted before each check so parallel requests cannot exceed it; 10 exit requests per minute per present session and 30 per client address | after 5 wrong PINs the PIN is refused (`403 pin_disabled`) for that lock and only the staff password unlocks; the password is accepted at any time and its failures count toward the login backoff |
 | Global failed login count | over 50 failures in 15 min | one `login_failure_surge` audit event per 15 min; the banner on next staff login is Later (not implemented in M1) |
 | Other staff API | 300 per minute per session | `429` |
+| `PUT /api/staff/presentations/{id}/blocks` (demo) | 60 saved edits per hour per visitor scope | `429` with `Retry-After` |
+| Narration synthesis (demo) | 20,000 synthesized characters per hour per visitor scope and 60,000 per day per client address; cached clips are free | `429 narration_quota` with `Retry-After` |
 
 A global login limit was dropped because a few devices could use it to block everyone. All limits are in memory, keyed by client address and session, and reset on restart. A restart-persisted counter is not needed for the prototype.
 
 - IPv6 clients are keyed by their /64 prefix.
-- Limiter maps are capped at 10,000 keys. When a map is full, expired entries are pruned and new keys are refused until entries expire.
+- Each purpose has its own limiter (sign-in, visitor creation, staff API, present API, present exit per session and per address, edits, narration per scope and per address), so filling one cannot block another.
+- Limiter maps are capped at 10,000 keys. When a map is full, expired entries are pruned first. Maps keyed by client address then refuse new keys until entries expire. Maps keyed by a session or visitor scope, whose creation is already limited per address, drop their oldest entry instead, so new sessions keep working.
+- A demo visitor's edit and narration counts move to the new token when leaving Present mode rotates the session.
 - Client address: `X-Forwarded-For` is read only when the direct peer equals `DC_TRUSTED_PROXY`, and then only the rightmost entry, which is the one the proxy appended. An unknown peer is treated as `0.0.0.0`, never as local.
 - Request bodies over 64 KiB are rejected. Malformed JSON gets an `ApiError` JSON body with code `bad_request`, without parser details.
 
 ### Audit events written
 
-`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. The actor is the client address, `staff` or `server`. Events hold no patient data.
+`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
 
 ## Present-mode isolation
 
 Confirmed flow from ARCHITECTURE section 5 [C, P8], with details [P]:
 
-1. Staff click Present. `POST /api/staff/presentations/:id/present` creates a `present_session` bound to `(presentation_id, version_id)`, sets `staff_session.locked = true` in SQLite, and sets the `__Host-dc_present` cookie.
+1. Staff click Present. `POST /api/staff/presentations/:id/present` creates a `present_session` bound to `(presentation_id, version)`, sets `staff_session.locked = true` in SQLite, and sets the `__Host-dc_present` cookie. It is refused with `409` until the job has finished and at least one section is ready. Demo visitor sessions lock the same way.
 2. The frontend does a full page load of `/present`, which drops all staff state held in WASM memory. The Present bundle never fetches staff data.
 3. While locked, every `/api/staff/*` call with that staff session returns `423 Locked` and no body beyond an error code. This covers other tabs, the back button and direct API calls. The staff SPA shows a lock screen on `423`.
 4. `/api/present/*` handlers take the presentation and version only from the present session. Any id in the path or body is ignored or must match, otherwise `403`.
-5. Exit, clinical: `POST /api/present/exit` with the PIN (or the password after 5 wrong PINs). On success the present session ends, the staff session unlocks with a new token, and an audit event is written.
+5. Exit, clinical: `POST /api/present/exit` with the PIN (or the password after 5 wrong PINs). On success the present session ends, the locked session is replaced by a new session token and a new CSRF token (the old token stops working at once), the present cookie is cleared, and an audit event is written.
 6. Exit, demo: `POST /api/present/exit` without a PIN [C, P8]. Accepted because demo data is synthetic.
-7. If the present session expires, the staff session stays locked. Unlocking needs the PIN or the password.
+7. If the present session expires (60 min idle or 4 h), the staff session stays locked. Without a present session there is nothing to exit, so `GET /api/session` reports `locked` and the lock screen offers sign-out; staff then sign in again.
 8. Other workstations log in with their own staff session, which is not locked. Locking applies per session.
 
 Fullscreen is cosmetic and is never treated as an access control [C, brainstorm 3]. For a stronger lock on a shared tablet, practices can use the OS kiosk or guided-access feature. That is optional and documented in the install guide.
@@ -227,7 +232,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Q&A conversations | questions and answers | 30 days | 24 h | scheduled hard delete |
 | Analytics events | sections visited, plays, language, active time; no free text | raw 90 days, then aggregated without presentation linkage | 24 h | scheduled delete |
 | `ai_calls` | metadata only, no prompt or response text | 12 months | 30 days | scheduled delete |
-| Audio clips | per-sentence audio | while referenced by a variant | while referenced | daily GC of unreferenced files |
+| Audio clips | per-sentence audio | 30 days after last play | 24 h after last play | the 10-minute maintenance task deletes the row and file of stale clips, then the least recently played clips while the cache is over 2 GB, then clip files with no row older than the retention; only names of 64 hex characters with a known extension inside the audio directory are deleted |
 | PDF booklets | rendered booklet | 7 days (re-exportable) | 24 h | scheduled delete |
 | Audit events | logins, unlocks, exports, deletions, review actions | 12 months | 7 days | scheduled delete |
 | Logs | redacted operational logs | 30 days, daily rotation | platform default, max 7 days | rotation |
@@ -267,9 +272,10 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | New generations | 3 per hour per visitor, 10 per day per IP |
 | On-demand variants | 10 per hour per visitor |
 | Q&A | 20 questions per hour per visitor, 500 characters each |
-| Staff edits | 2,000 characters per block |
+| Staff edits | 2,000 characters per block, 400 per sentence; 60 saved edits per hour per visitor; text containing `{{` or `}}` is refused (`422 invalid_edit`), because placeholders are filled in after the length checks |
+| Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted on cache misses only; `429 narration_quota`. Pre-warming on entering Present mode covers generated sentences only; staff-edited text is narrated only when played |
 | Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue with a visible position |
-| Budget | $25 per month, reservation-based guard, 80% soft stop on new generations (see [AI_PIPELINE.md](AI_PIPELINE.md)) |
+| Budget | $25 per month, reservation-based guard, 80% soft stop on new generations (see [AI_PIPELINE.md](AI_PIPELINE.md)). Narration may spend at most 20% of the cap, tracked in `ai_usage.speech_cost_usd`; past it narration answers `503 budget_reached` while generation keeps working |
 | Uploads | none; no endpoint accepts files |
 | PMS | synthetic connector only; no DB credentials exist in the container |
 | PII warning | shown next to every free-text input (Q&A, edits): "This is a public demo with made-up patients. Don't enter real personal or health information." |

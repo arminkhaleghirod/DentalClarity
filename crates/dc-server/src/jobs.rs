@@ -390,6 +390,19 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
 pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
     let cutoff = crate::sessions::now() - DEMO_RETENTION_SECS;
     let mut tx = db.begin().await?;
+    for statement in [
+        "DELETE FROM present_sessions WHERE presentation_id IN
+             (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+        "DELETE FROM staff_edits WHERE presentation_id IN
+             (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+        "DELETE FROM note_confirmations WHERE presentation_id IN
+             (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+    ] {
+        sqlx::query(statement)
+            .bind(cutoff)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query(
         "DELETE FROM presentation_sections WHERE presentation_id IN
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",

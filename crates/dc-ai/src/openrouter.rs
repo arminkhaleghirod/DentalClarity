@@ -2,8 +2,8 @@
 //!
 //! OpenRouter exposes an OpenAI-compatible chat completions endpoint. Only
 //! synthetic data may be sent through it; [`OpenRouter::new`] refuses to build
-//! the adapter outside demo mode. Speech synthesis through
-//! `heygen/heygen-voice-1-turbo` is added in milestone M5.
+//! the adapter outside demo mode. Speech synthesis lives in
+//! [`crate::openrouter_speech`].
 
 use crate::{AiError, ProviderPolicy, Result, TextModel, TextRequest, TextResponse, Usage};
 use async_trait::async_trait;

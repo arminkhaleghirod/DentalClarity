@@ -7,6 +7,7 @@
 
 pub mod fake;
 pub mod openrouter;
+pub mod openrouter_speech;
 
 use async_trait::async_trait;
 use dc_core::Mode;
@@ -76,6 +77,11 @@ pub mod defaults {
     pub const DEMO_PROVIDER_ORDER: &[&str] = &["primeintellect"];
     /// Demo mode speech model on OpenRouter.
     pub const DEMO_SPEECH_MODEL: &str = "heygen/heygen-voice-1-turbo";
+    /// Voice for demo narration. The model offers ten preset voices
+    /// (nadine, tabitha, bram, gareth, noelle, meredith, sabrina, lucian,
+    /// weston, vincent) and no voice descriptions. This default is provisional
+    /// until the M9 listening test; `DC_SPEECH_VOICE` overrides it.
+    pub const DEMO_SPEECH_VOICE: &str = "meredith";
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -104,6 +110,7 @@ pub trait TextModel: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeechRequest {
+    pub model: String,
     pub text: String,
     /// BCP 47 language tag.
     pub language: String,

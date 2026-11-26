@@ -54,11 +54,25 @@ async fn app_with(
     mode: Mode,
     generation: impl FnOnce(&SqlitePool) -> Option<Generation>,
 ) -> (Router, SqlitePool, AppState) {
+    app_with_narration(mode, generation, |db, _| {
+        crate::narration::Narration::unavailable(mode, db.clone())
+    })
+    .await
+}
+
+/// [`app_with`] with narration built by `narration` from the database and
+/// the generation setup.
+async fn app_with_narration(
+    mode: Mode,
+    generation: impl FnOnce(&SqlitePool) -> Option<Generation>,
+    narration: impl FnOnce(&SqlitePool, Option<&Generation>) -> crate::narration::Narration,
+) -> (Router, SqlitePool, AppState) {
     let root = repo_root();
     let pms =
         SyntheticConnector::from_path(&root.join("fixtures/synthetic/practice.toml")).unwrap();
     let db = storage::open_in_memory().await.unwrap();
     let kb = KnowledgeBase::load(&root.join("knowledge")).unwrap();
+    let generation = generation(&db);
     let state = AppState {
         mode,
         http: Arc::new(HttpConfig {
@@ -71,7 +85,8 @@ async fn app_with(
         pms: Arc::new(pms),
         codes: Arc::new(kb.codes.clone()),
         kb: Arc::new(kb),
-        generation: generation(&db).map(Arc::new),
+        narration: Arc::new(narration(&db, generation.as_ref())),
+        generation: generation.map(Arc::new),
         jobs: Arc::new(Jobs::default()),
         limits: Arc::new(Limits::default()),
         setup_code: Arc::new(std::sync::Mutex::new(Some(SETUP_CODE.into()))),
@@ -79,10 +94,12 @@ async fn app_with(
     (router(state.clone()), db, state)
 }
 
-/// A browser-like client that keeps the session cookie and CSRF token.
+/// A browser-like client that keeps the session cookie, the present
+/// session cookie and the CSRF token.
 struct Client {
     app: Router,
     cookie: Option<String>,
+    present: Option<String>,
     csrf: Option<String>,
 }
 
@@ -91,6 +108,7 @@ impl Client {
         Self {
             app,
             cookie: None,
+            present: None,
             csrf: None,
         }
     }
@@ -102,8 +120,12 @@ impl Client {
         body: Option<serde_json::Value>,
     ) -> Response {
         let mut req = Request::builder().method(method.clone()).uri(uri);
-        if let Some(cookie) = &self.cookie {
-            req = req.header(header::COOKIE, cookie);
+        let cookies: Vec<&str> = [&self.cookie, &self.present]
+            .into_iter()
+            .filter_map(|c| c.as_deref())
+            .collect();
+        if !cookies.is_empty() {
+            req = req.header(header::COOKIE, cookies.join("; "));
         }
         if method != Method::GET {
             req = req.header(header::ORIGIN, ORIGIN);
@@ -119,9 +141,14 @@ impl Client {
         }
         .unwrap();
         let response = self.app.clone().oneshot(req).await.unwrap();
-        if let Some(set) = response.headers().get(header::SET_COOKIE) {
+        for set in response.headers().get_all(header::SET_COOKIE) {
             let pair = set.to_str().unwrap().split(';').next().unwrap().to_owned();
-            self.cookie = (!pair.ends_with('=')).then_some(pair);
+            let value = (!pair.ends_with('=')).then_some(pair.clone());
+            if pair.starts_with("dc_present=") {
+                self.present = value;
+            } else {
+                self.cookie = value;
+            }
         }
         response
     }
@@ -390,6 +417,24 @@ async fn demo_visitor() -> Client {
     client.send(Method::POST, "/api/visit", None).await;
     client.session().await;
     client
+}
+
+#[tokio::test]
+async fn full_session_limiters_do_not_lock_out_new_visitors() {
+    let (app, _, state) = app_with(Mode::Demo, |_| None).await;
+    let minute = std::time::Duration::from_secs(60);
+    for i in 0..10_000 {
+        let key = format!("filler-{i}");
+        state.limits.staff_api.check(&key, 300, minute).unwrap();
+        state.limits.present_api.check(&key, 300, minute).unwrap();
+        state.limits.edits.check(&key, 60, minute).unwrap();
+    }
+    let mut client = Client::new(app);
+    let response = client.send(Method::POST, "/api/visit", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    client.session().await;
+    let response = client.send(Method::GET, "/api/staff/dashboard", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1113,3 +1158,5 @@ async fn demo_data_is_purged_after_a_day() {
         .unwrap();
     assert_eq!(spend_rows, 1);
 }
+
+mod present;

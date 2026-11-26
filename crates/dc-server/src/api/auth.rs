@@ -73,6 +73,9 @@ pub async fn session(
     let existing = current(&state, &headers).await?;
     let practice = settings::practice_name(&state).await?;
     let body = match (state.mode, existing) {
+        // A visitor who started Present mode sees the lock screen too; it
+        // offers sign-out if the present session ended without an exit.
+        (Mode::Demo, Some(s)) if s.locked => info(&state, practice, SessionState::Locked, Some(&s)),
         (Mode::Demo, Some(s)) => info(&state, practice, SessionState::Visitor, Some(&s)),
         (Mode::Demo, None) => info(&state, practice, SessionState::NewVisitor, None),
         (Mode::Clinical, _) if !staff_account_exists(&state).await? => {
@@ -99,7 +102,12 @@ pub async fn visit(
     }
     let practice = settings::practice_name(&state).await?;
     if let Some(s) = current(&state, &headers).await? {
-        return Ok(Json(info(&state, practice, SessionState::Visitor, Some(&s))).into_response());
+        let session_state = if s.locked {
+            SessionState::Locked
+        } else {
+            SessionState::Visitor
+        };
+        return Ok(Json(info(&state, practice, session_state, Some(&s))).into_response());
     }
     check_new_visitor(&state, ip)?;
     let issued = sessions::create(&state.db, SessionKind::Visitor).await?;

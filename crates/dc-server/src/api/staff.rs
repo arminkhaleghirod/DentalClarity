@@ -220,7 +220,7 @@ fn reject_demo(state: &AppState) -> Result<(), Failure> {
     Ok(())
 }
 
-async fn load_settings(state: &AppState) -> Result<PracticeSettings, Failure> {
+pub(super) async fn load_settings(state: &AppState) -> Result<PracticeSettings, Failure> {
     Ok(PracticeSettings {
         practice_name: settings::practice_name(state).await?,
         brand_primary: settings::get(&state.db, settings::BRAND_PRIMARY)

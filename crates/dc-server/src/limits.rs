@@ -7,8 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Upper bound on tracked keys per limiter. Past it, expired entries are
-/// pruned; if the map is still full, new keys are refused until entries
-/// expire. Keys already being tracked keep working.
+/// pruned first; what happens next depends on [`WhenFull`].
 const MAX_KEYS: usize = 10_000;
 
 /// Rate-limit key for a client address. IPv6 clients usually control a whole
@@ -23,34 +22,90 @@ pub fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// What a full limiter does with a key it does not track yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WhenFull {
+    /// Refuse new keys until entries expire. Used for limits keyed by client
+    /// address, where evicting would let one client reset another's count.
+    #[default]
+    Refuse,
+    /// Drop the entry whose window started first. Used for limits keyed by a
+    /// session or visitor scope, whose creation is already limited per
+    /// address, so filling the map must not lock out new sessions.
+    EvictOldest,
+}
+
 /// Fixed-window counter keyed by an arbitrary string.
 #[derive(Debug, Default)]
 pub struct WindowLimiter {
     windows: Mutex<HashMap<String, (u32, Instant)>>,
+    when_full: WhenFull,
 }
 
 impl WindowLimiter {
+    /// A limiter that evicts its oldest entry when full.
+    pub fn evicting() -> Self {
+        Self {
+            windows: Mutex::default(),
+            when_full: WhenFull::EvictOldest,
+        }
+    }
+
     /// Counts one request for `key`. Returns the seconds to wait when the
     /// limit for the current window is used up or the limiter is full.
     pub fn check(&self, key: &str, limit: u32, window: Duration) -> Result<(), u64> {
+        self.take(key, 1, limit, window)
+    }
+
+    /// Counts `amount` units for `key`, such as characters. Refuses without
+    /// counting anything when the window would pass `limit`.
+    pub fn take(&self, key: &str, amount: u32, limit: u32, window: Duration) -> Result<(), u64> {
         let now = Instant::now();
         let mut windows = self.windows.lock().expect("limiter lock");
         if !windows.contains_key(key) && windows.len() >= MAX_KEYS {
             windows.retain(|_, (_, start)| now.duration_since(*start) < window);
             if windows.len() >= MAX_KEYS {
-                return Err(window.as_secs().max(1));
+                match self.when_full {
+                    WhenFull::Refuse => return Err(window.as_secs().max(1)),
+                    WhenFull::EvictOldest => {
+                        let oldest = windows
+                            .iter()
+                            .min_by_key(|(_, (_, start))| *start)
+                            .map(|(k, _)| k.clone());
+                        if let Some(oldest) = oldest {
+                            windows.remove(&oldest);
+                        }
+                    }
+                }
             }
         }
         let entry = windows.entry(key.to_owned()).or_insert((0, now));
         if now.duration_since(entry.1) >= window {
             *entry = (0, now);
         }
-        if entry.0 >= limit {
+        if entry.0.saturating_add(amount) > limit {
             let wait = window.saturating_sub(now.duration_since(entry.1));
             return Err(wait.as_secs().max(1));
         }
-        entry.0 += 1;
+        entry.0 += amount;
         Ok(())
+    }
+
+    /// Gives back `amount` units taken for `key`, for work that did not
+    /// happen after all.
+    pub fn refund(&self, key: &str, amount: u32) {
+        if let Some(entry) = self.windows.lock().expect("limiter lock").get_mut(key) {
+            entry.0 = entry.0.saturating_sub(amount);
+        }
+    }
+
+    /// Moves the count of `from` to `to`, so a rotated session token keeps
+    /// the usage of the token it replaced.
+    pub fn transfer(&self, from: &str, to: &str) {
+        let mut windows = self.windows.lock().expect("limiter lock");
+        if let Some(entry) = windows.remove(from) {
+            windows.insert(to.to_owned(), entry);
+        }
     }
 }
 
@@ -118,14 +173,59 @@ impl LoginBackoff {
     }
 }
 
-/// All limiters used by the server.
-#[derive(Debug, Default)]
+/// All limiters used by the server, one per purpose so that filling one
+/// cannot block another (docs/SECURITY.md, Rate limits).
+#[derive(Debug)]
 pub struct Limits {
+    /// Sign-in attempts per client address.
     pub login: WindowLimiter,
     pub login_backoff: LoginBackoff,
     /// Failed sign-ins across all clients, for the audit alert.
     pub login_failures: WindowLimiter,
-    pub api: WindowLimiter,
+    /// New demo visitor sessions per client address.
+    pub visitor: WindowLimiter,
+    /// Staff API requests per session.
+    pub staff_api: WindowLimiter,
+    /// Present API requests per present session.
+    pub present_api: WindowLimiter,
+    /// Exit requests per present session.
+    pub present_exit: WindowLimiter,
+    /// Exit requests per client address.
+    pub present_exit_ip: WindowLimiter,
+    /// Staff edits per demo visitor scope.
+    pub edits: WindowLimiter,
+    /// Synthesized narration characters per demo visitor scope.
+    pub narration_scope: WindowLimiter,
+    /// Synthesized narration characters per client address.
+    pub narration_address: WindowLimiter,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            login: WindowLimiter::default(),
+            login_backoff: LoginBackoff::default(),
+            login_failures: WindowLimiter::default(),
+            visitor: WindowLimiter::default(),
+            staff_api: WindowLimiter::evicting(),
+            present_api: WindowLimiter::evicting(),
+            present_exit: WindowLimiter::evicting(),
+            present_exit_ip: WindowLimiter::default(),
+            edits: WindowLimiter::evicting(),
+            narration_scope: WindowLimiter::evicting(),
+            narration_address: WindowLimiter::default(),
+        }
+    }
+}
+
+impl Limits {
+    /// Carries per-scope usage over when a demo visitor's token rotates on
+    /// leaving Present mode, so leaving does not reset the edit and
+    /// narration quotas.
+    pub fn transfer_scope(&self, from: &str, to: &str) {
+        self.edits.transfer(from, to);
+        self.narration_scope.transfer(from, to);
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +252,36 @@ mod tests {
         }
         assert!(limiter.check("new", 5, window).is_err());
         assert!(limiter.check("0", 5, window).is_ok());
+    }
+
+    #[test]
+    fn evicting_limiter_keeps_accepting_new_keys_when_full() {
+        let limiter = WindowLimiter::evicting();
+        let window = Duration::from_secs(60);
+        for i in 0..MAX_KEYS {
+            limiter.check(&i.to_string(), 1, window).unwrap();
+        }
+        assert!(limiter.check("1", 1, window).is_err());
+        // A new session key still works, by dropping the oldest entry.
+        assert!(limiter.check("new", 1, window).is_ok());
+        assert!(limiter.check("new", 1, window).is_err());
+        assert_eq!(limiter.windows.lock().unwrap().len(), MAX_KEYS);
+    }
+
+    #[test]
+    fn take_counts_amounts_refunds_and_transfers() {
+        let limiter = WindowLimiter::default();
+        let hour = Duration::from_secs(3600);
+        limiter.take("a", 300, 1000, hour).unwrap();
+        limiter.take("a", 700, 1000, hour).unwrap();
+        // Refused without counting.
+        assert!(limiter.take("a", 1, 1000, hour).is_err());
+        limiter.refund("a", 100);
+        assert!(limiter.take("a", 101, 1000, hour).is_err());
+        limiter.take("a", 100, 1000, hour).unwrap();
+        limiter.transfer("a", "b");
+        assert!(limiter.take("b", 1, 1000, hour).is_err());
+        assert!(limiter.take("a", 1000, 1000, hour).is_ok());
     }
 
     #[test]

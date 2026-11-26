@@ -102,20 +102,41 @@ pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 /// `Set-Cookie` value for a session token. No `Max-Age`, so the cookie ends
 /// with the browser session; the server enforces the real lifetimes.
 pub fn session_cookie(http: &HttpConfig, token: &str) -> HeaderValue {
-    let secure = if http.secure() { "; Secure" } else { "" };
-    let value = format!(
-        "{}={token}; Path=/; HttpOnly; SameSite=Strict{secure}",
-        session_cookie_name(http)
-    );
-    HeaderValue::from_str(&value).expect("cookie value is ASCII")
+    set_cookie(http, session_cookie_name(http), token)
 }
 
 pub fn clear_session_cookie(http: &HttpConfig) -> HeaderValue {
+    clear_cookie(http, session_cookie_name(http))
+}
+
+/// Cookie of the present session that the patient screens use. It is never
+/// accepted by `/api/staff/*`, and the session cookie is never accepted by
+/// `/api/present/*`.
+pub fn present_cookie_name(http: &HttpConfig) -> &'static str {
+    if http.secure() {
+        "__Host-dc_present"
+    } else {
+        "dc_present"
+    }
+}
+
+pub fn present_cookie(http: &HttpConfig, token: &str) -> HeaderValue {
+    set_cookie(http, present_cookie_name(http), token)
+}
+
+pub fn clear_present_cookie(http: &HttpConfig) -> HeaderValue {
+    clear_cookie(http, present_cookie_name(http))
+}
+
+fn set_cookie(http: &HttpConfig, name: &str, token: &str) -> HeaderValue {
     let secure = if http.secure() { "; Secure" } else { "" };
-    let value = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}",
-        session_cookie_name(http)
-    );
+    let value = format!("{name}={token}; Path=/; HttpOnly; SameSite=Strict{secure}");
+    HeaderValue::from_str(&value).expect("cookie value is ASCII")
+}
+
+fn clear_cookie(http: &HttpConfig, name: &str) -> HeaderValue {
+    let secure = if http.secure() { "; Secure" } else { "" };
+    let value = format!("{name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}");
     HeaderValue::from_str(&value).expect("cookie value is ASCII")
 }
 
@@ -246,5 +267,24 @@ mod tests {
         let secure = session_cookie(&tls, "t");
         assert!(secure.to_str().unwrap().starts_with("__Host-dc_session=t;"));
         assert!(secure.to_str().unwrap().contains("Secure"));
+        let present = present_cookie(&tls, "p");
+        assert!(
+            present
+                .to_str()
+                .unwrap()
+                .starts_with("__Host-dc_present=p;")
+        );
+        assert!(
+            present
+                .to_str()
+                .unwrap()
+                .contains("HttpOnly; SameSite=Strict")
+        );
+        assert!(
+            present_cookie(&http(None), "p")
+                .to_str()
+                .unwrap()
+                .starts_with("dc_present=p;")
+        );
     }
 }

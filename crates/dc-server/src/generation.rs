@@ -20,6 +20,9 @@ use std::sync::{Arc, Mutex};
 /// Share of the monthly cap at which new generations stop. Calls already
 /// running may continue up to the full cap.
 pub const SOFT_STOP_SHARE: f64 = 0.8;
+/// Share of the monthly cap that narration may spend. Together with the soft
+/// stop this keeps room for generation after narration's share is used up.
+pub const SPEECH_SHARE: f64 = 0.2;
 
 /// Placeholder prices for estimating a call's cost when the provider does
 /// not report one, in US dollars per million tokens. Deliberately above the
@@ -51,6 +54,8 @@ pub struct Budget {
     /// Reservations for calls in flight. Kept in memory: a restart drops them,
     /// which also releases reservations of calls that never finished.
     reserved: Mutex<f64>,
+    /// The part of `reserved` held by speech calls.
+    speech_reserved: Mutex<f64>,
 }
 
 impl Budget {
@@ -59,6 +64,7 @@ impl Budget {
             db,
             cap_usd,
             reserved: Mutex::new(0.0),
+            speech_reserved: Mutex::new(0.0),
         }
     }
 
@@ -72,6 +78,16 @@ impl Budget {
             sqlx::query_as("SELECT cost_usd FROM ai_usage WHERE month = strftime('%Y-%m', 'now')")
                 .fetch_optional(&self.db)
                 .await?;
+        Ok(row.map_or(0.0, |(c,)| c))
+    }
+
+    /// Speech spend recorded for the current UTC month.
+    pub async fn speech_spent(&self) -> Result<f64> {
+        let row: Option<(f64,)> = sqlx::query_as(
+            "SELECT speech_cost_usd FROM ai_usage WHERE month = strftime('%Y-%m', 'now')",
+        )
+        .fetch_optional(&self.db)
+        .await?;
         Ok(row.map_or(0.0, |(c,)| c))
     }
 
@@ -89,7 +105,7 @@ impl Budget {
     }
 
     /// Reserves `amount` for one call, or refuses when it would pass the cap.
-    async fn reserve(&self, amount: f64) -> Result<bool> {
+    pub(crate) async fn reserve(&self, amount: f64) -> Result<bool> {
         let Some(cap) = self.cap_usd else {
             return Ok(true);
         };
@@ -102,11 +118,56 @@ impl Budget {
         Ok(true)
     }
 
-    fn release(&self, amount: f64) {
+    pub(crate) fn release(&self, amount: f64) {
         if self.cap_usd.is_some() {
             let mut reserved = self.reserved.lock().expect("budget lock");
             *reserved = (*reserved - amount).max(0.0);
         }
+    }
+
+    /// Reserves `amount` for one speech call. Refuses when it would pass the
+    /// cap or narration's share of it ([`SPEECH_SHARE`]).
+    pub(crate) async fn reserve_speech(&self, amount: f64) -> Result<bool> {
+        let Some(cap) = self.cap_usd else {
+            return Ok(true);
+        };
+        let speech_spent = self.speech_spent().await?;
+        let spent = self.spent().await?;
+        let mut reserved = self.reserved.lock().expect("budget lock");
+        let mut speech_reserved = self.speech_reserved.lock().expect("budget lock");
+        if speech_spent + *speech_reserved + amount > cap * SPEECH_SHARE
+            || spent + *reserved + amount > cap
+        {
+            return Ok(false);
+        }
+        *reserved += amount;
+        *speech_reserved += amount;
+        Ok(true)
+    }
+
+    pub(crate) fn release_speech(&self, amount: f64) {
+        if self.cap_usd.is_some() {
+            self.release(amount);
+            let mut speech_reserved = self.speech_reserved.lock().expect("budget lock");
+            *speech_reserved = (*speech_reserved - amount).max(0.0);
+        }
+    }
+
+    /// Adds one finished speech call to the current month, in the total and
+    /// in the speech counter.
+    pub async fn record_speech(&self, cost_usd: f64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO ai_usage (month, cost_usd, calls, speech_cost_usd, speech_calls)
+             VALUES (strftime('%Y-%m', 'now'), ?, 1, ?, 1)
+             ON CONFLICT (month) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd,
+                 calls = calls + 1, speech_cost_usd = speech_cost_usd + excluded.speech_cost_usd,
+                 speech_calls = speech_calls + 1",
+        )
+        .bind(cost_usd)
+        .bind(cost_usd)
+        .execute(&self.db)
+        .await?;
+        Ok(())
     }
 
     /// Adds one finished call to the current month.

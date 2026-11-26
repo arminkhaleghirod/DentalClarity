@@ -1,7 +1,8 @@
-//! Middleware: response headers, Origin checks, and the staff session gate.
+//! Middleware: response headers, Origin checks, and the staff and present
+//! session gates.
 
-use crate::http::{ClientIp, Failure, cookie, session_cookie_name};
-use crate::sessions::{self, Session};
+use crate::http::{ClientIp, Failure, cookie, present_cookie_name, session_cookie_name};
+use crate::sessions::{self, PresentSession, Session};
 use crate::{AppState, assets};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -118,7 +119,7 @@ async fn check_session(
     }
     state
         .limits
-        .api
+        .staff_api
         .check(&session.token_hash, 300, Duration::from_secs(60))
         .map_err(Failure::too_many)?;
     if !is_safe(method) {
@@ -173,15 +174,77 @@ impl FromRequestParts<AppState> for CurrentSession {
     }
 }
 
+/// Requires a live present session for `/api/present/*`. Only the present
+/// cookie is read; a staff session cookie never opens these routes. The
+/// present session has no CSRF token: its cookie is `SameSite=Strict`, every
+/// write passes the Origin check in [`same_origin`], and bodies must be JSON,
+/// which a cross-site form cannot send.
+pub async fn require_present(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match check_present(&state, request.headers()).await {
+        Ok(present) => {
+            let mut request = request;
+            request.extensions_mut().insert(present);
+            next.run(request).await
+        }
+        Err(failure) => failure.into_response(),
+    }
+}
+
+async fn check_present(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<PresentSession, Failure> {
+    let token = cookie(headers, present_cookie_name(&state.http)).ok_or_else(present_ended)?;
+    let present = sessions::lookup_present(&state.db, &token)
+        .await?
+        .ok_or_else(present_ended)?;
+    if present.staff_kind != expected_kind(state.mode) {
+        return Err(present_ended());
+    }
+    state
+        .limits
+        .present_api
+        .check(&present.token_hash, 300, Duration::from_secs(60))
+        .map_err(Failure::too_many)?;
+    Ok(present)
+}
+
+fn present_ended() -> Failure {
+    Failure::new(
+        StatusCode::UNAUTHORIZED,
+        "present_ended",
+        "This presentation has ended. Ask your dental team to open it again.",
+    )
+}
+
+/// Extractor for the present session stored by [`require_present`].
+pub struct CurrentPresent(pub PresentSession);
+
+impl FromRequestParts<AppState> for CurrentPresent {
+    type Rejection = Failure;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<PresentSession>()
+            .cloned()
+            .map(CurrentPresent)
+            .ok_or_else(present_ended)
+    }
+}
+
 /// Global limit on new demo visitor sessions per client address.
 pub fn check_new_visitor(state: &AppState, ip: ClientIp) -> Result<(), Failure> {
     state
         .limits
-        .api
-        .check(
-            &format!("visitor:{}", crate::limits::ip_key(ip.0)),
-            30,
-            Duration::from_secs(60),
-        )
+        .visitor
+        .check(&crate::limits::ip_key(ip.0), 30, Duration::from_secs(60))
         .map_err(Failure::too_many)
 }

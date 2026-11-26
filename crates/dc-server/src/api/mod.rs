@@ -2,6 +2,8 @@
 //! authorization matrix in docs/SECURITY.md.
 
 mod auth;
+mod edits;
+mod present;
 mod presentations;
 mod staff;
 #[cfg(test)]
@@ -10,7 +12,7 @@ mod tests;
 use crate::{AppState, security};
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use dc_core::api::HealthResponse;
 
@@ -28,8 +30,22 @@ pub fn routes(state: &AppState) -> Router<AppState> {
             get(presentations::list).post(presentations::create),
         )
         .route("/presentations/{id}", get(presentations::view))
+        .route("/presentations/{id}/present", post(present::start))
+        .route("/presentations/{id}/blocks", put(edits::update))
+        .route("/presentations/{id}/blocks/revert", post(edits::revert))
+        .route(
+            "/presentations/{id}/confirm-note",
+            post(edits::confirm_note),
+        )
         .route("/jobs/{id}", get(presentations::job))
         .route_layer(from_fn_with_state(state.clone(), security::require_session));
+
+    // Patient screens: only the present session cookie opens these.
+    let present = Router::new()
+        .route("/content", get(present::content))
+        .route("/audio/{key}", get(present::audio))
+        .route("/exit", post(present::exit))
+        .route_layer(from_fn_with_state(state.clone(), security::require_present));
 
     Router::new()
         .route("/health", get(health))
@@ -39,6 +55,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .nest("/staff", staff)
+        .nest("/present", present)
         .layer(from_fn_with_state(state.clone(), security::same_origin))
         .layer(DefaultBodyLimit::max(64 * 1024))
 }

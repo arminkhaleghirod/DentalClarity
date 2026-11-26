@@ -1,0 +1,1307 @@
+//! Sentence narration for Present mode, with a content-addressed cache.
+//!
+//! Each sentence is synthesized once per speech model, voice, language and
+//! exact text. The clip is stored at `<data_dir>/artifacts/audio/<key>.<ext>`
+//! with a row in `audio_clips`; `key` is `dc_core::present::audio_key` over
+//! [`speech_model_id`], the language and the text, so an edit gives a new key
+//! and stale audio is never played.
+//!
+//! Only the sentence text goes to the provider. The present endpoint passes
+//! approved, placeholder-substituted text; nothing else about the patient or
+//! the presentation is sent.
+//!
+//! Demo mode uses OpenRouter (`DC_SPEECH_MODEL`, default
+//! `heygen/heygen-voice-1-turbo`; `DC_SPEECH_VOICE`, default `meredith`).
+//! Speech cost counts against the same monthly `ai_usage` budget as text,
+//! and narration may spend at most [`crate::generation::SPEECH_SHARE`] of
+//! the cap. In demo mode every synthesized character also counts against a
+//! per-visitor and a per-address quota ([`Quota`]); cached clips are free.
+//!
+//! [`Narration::collect_garbage`] removes clips that have not been played
+//! for a while and keeps the cache under [`MAX_CACHE_BYTES`].
+//! Clinical mode has no speech provider until M9 and answers 503
+//! `narration_unavailable`.
+
+use crate::AppState;
+use crate::generation::{Budget, Generation};
+use crate::http::Failure;
+use crate::limits::{Limits, WindowLimiter};
+use anyhow::{Context, Result};
+use axum::http::StatusCode;
+use dc_ai::openrouter_speech::OpenRouterSpeech;
+use dc_ai::{AiError, ProviderPolicy, SpeechModel, SpeechRequest, defaults};
+use dc_core::Mode;
+use dc_core::present::audio_key;
+use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Longest sentence that may be narrated, in characters.
+pub const MAX_TEXT_CHARS: usize = 400;
+/// OpenRouter list price for `heygen/heygen-voice-1-turbo` (checked
+/// 2026-11-26): $4 per million input characters. The response reports no
+/// cost, so calls are recorded at this price.
+pub const SPEECH_USD_PER_MILLION_CHARS: f64 = 4.0;
+/// Extra attempts after a transport or server failure.
+const RETRIES: u32 = 2;
+/// Upstream speech calls per minute across the whole server.
+const UPSTREAM_PER_MINUTE: u32 = 120;
+/// Concurrent upstream calls while pre-warming.
+const PREWARM_CONCURRENCY: usize = 2;
+/// Synthesized characters per demo visitor scope per hour.
+pub const DEMO_SCOPE_CHARS_PER_HOUR: u32 = 20_000;
+/// Synthesized characters per client address per day.
+pub const DEMO_ADDRESS_CHARS_PER_DAY: u32 = 60_000;
+/// Demo clips not played for this long are deleted.
+pub const DEMO_CLIP_RETENTION_SECS: i64 = 24 * 60 * 60;
+/// Clinical clips not played for this long are deleted.
+pub const CLINICAL_CLIP_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+/// Largest total size of the audio cache. Past it, the clips played least
+/// recently are deleted first.
+pub const MAX_CACHE_BYTES: i64 = 2 * 1024 * 1024 * 1024;
+/// File extensions the cache writes. `part` is a clip being written.
+const CLIP_EXTENSIONS: [&str; 4] = ["mp3", "wav", "bin", "part"];
+
+/// Who a narration request is for, so synthesized characters can be counted
+/// per demo visitor scope and per client address.
+#[derive(Clone)]
+pub struct Quota {
+    pub limits: Arc<Limits>,
+    /// The presentation's owner scope (the visitor's session token hash).
+    pub scope: String,
+    /// `limits::ip_key` of the client address.
+    pub address: String,
+}
+
+impl Quota {
+    fn take(&self, chars: u32) -> Result<(), Failure> {
+        let hour = Duration::from_secs(60 * 60);
+        let day = Duration::from_secs(24 * 60 * 60);
+        self.limits
+            .narration_scope
+            .take(&self.scope, chars, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+            .map_err(quota_reached)?;
+        if let Err(wait) = self.limits.narration_address.take(
+            &self.address,
+            chars,
+            DEMO_ADDRESS_CHARS_PER_DAY,
+            day,
+        ) {
+            self.limits.narration_scope.refund(&self.scope, chars);
+            return Err(quota_reached(wait));
+        }
+        Ok(())
+    }
+
+    fn refund(&self, chars: u32) {
+        self.limits.narration_scope.refund(&self.scope, chars);
+        self.limits.narration_address.refund(&self.address, chars);
+    }
+}
+
+fn quota_reached(wait: u64) -> Failure {
+    Failure {
+        retry_after: Some(wait),
+        ..Failure::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "narration_quota",
+            "The demo narration limit is used up for now. The text is still shown; try the audio again later.",
+        )
+    }
+}
+
+/// What one cache cleanup removed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CleanupReport {
+    /// Clips not played within the retention period.
+    pub stale: u64,
+    /// Clips removed to keep the cache under the size cap.
+    pub over_cap: u64,
+    /// Files in the audio directory with no row.
+    pub orphans: u64,
+}
+
+/// Cost of narrating `text`.
+pub fn speech_cost(text: &str) -> f64 {
+    text.chars().count() as f64 * SPEECH_USD_PER_MILLION_CHARS / 1_000_000.0
+}
+
+pub struct Narration {
+    mode: Mode,
+    db: SqlitePool,
+    speech: Option<Arc<dyn SpeechModel>>,
+    model: String,
+    voice: String,
+    /// `model#voice`, the identity hashed into every audio key.
+    voice_id: String,
+    budget: Arc<Budget>,
+    audio_dir: PathBuf,
+    /// One lock per key being synthesized, so concurrent requests for the
+    /// same sentence make one upstream call.
+    inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    upstream: WindowLimiter,
+    retry_delay: Duration,
+}
+
+impl Narration {
+    pub fn new(
+        mode: Mode,
+        db: SqlitePool,
+        audio_dir: PathBuf,
+        speech: Option<Arc<dyn SpeechModel>>,
+        model: String,
+        voice: String,
+        budget: Arc<Budget>,
+    ) -> Self {
+        Self {
+            mode,
+            db,
+            speech,
+            voice_id: format!("{model}#{voice}"),
+            model,
+            voice,
+            budget,
+            audio_dir,
+            inflight: Mutex::default(),
+            upstream: WindowLimiter::default(),
+            retry_delay: Duration::from_millis(500),
+        }
+    }
+
+    /// Narration with no provider, for clinical mode and tests.
+    pub fn unavailable(mode: Mode, db: SqlitePool) -> Self {
+        Self::new(
+            mode,
+            db.clone(),
+            std::env::temp_dir().join("dentalclarity-no-audio"),
+            None,
+            defaults::DEMO_SPEECH_MODEL.into(),
+            defaults::DEMO_SPEECH_VOICE.into(),
+            Arc::new(Budget::new(db, None)),
+        )
+    }
+
+    /// Builds narration for `mode` from the environment.
+    ///
+    /// Demo: OpenRouter speech with `OPENROUTER_API_KEY`, sharing the text
+    /// generation budget when generation is enabled. Clinical: no provider.
+    /// The key is never logged.
+    pub fn from_env(
+        mode: Mode,
+        db: &SqlitePool,
+        data_dir: &Path,
+        generation: Option<&Generation>,
+        monthly_budget_usd: f64,
+    ) -> Result<Self> {
+        let var = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
+        let model = var("DC_SPEECH_MODEL").unwrap_or_else(|| defaults::DEMO_SPEECH_MODEL.into());
+        let voice = var("DC_SPEECH_VOICE").unwrap_or_else(|| defaults::DEMO_SPEECH_VOICE.into());
+        let audio_dir = data_dir.join("artifacts").join("audio");
+        let budget = generation.map_or_else(
+            || Arc::new(Budget::new(db.clone(), Some(monthly_budget_usd))),
+            |g| g.budget.clone(),
+        );
+        let speech: Option<Arc<dyn SpeechModel>> = match (mode, var("OPENROUTER_API_KEY")) {
+            (Mode::Demo, Some(key)) => {
+                std::fs::create_dir_all(&audio_dir)
+                    .with_context(|| format!("creating {}", audio_dir.display()))?;
+                tracing::info!(model = %model, voice = %voice, "narration enabled");
+                Some(Arc::new(OpenRouterSpeech::new(
+                    ProviderPolicy::for_mode(mode),
+                    key,
+                )?))
+            }
+            (Mode::Demo, None) => {
+                tracing::warn!("OPENROUTER_API_KEY is not set; narration is disabled");
+                None
+            }
+            (Mode::Clinical, _) => None,
+        };
+        Ok(Self::new(
+            mode,
+            db.clone(),
+            audio_dir,
+            speech,
+            model,
+            voice,
+            budget,
+        ))
+    }
+
+    /// The identity hashed into audio keys: speech model and voice.
+    pub fn voice_id(&self) -> &str {
+        &self.voice_id
+    }
+
+    /// The audio for one sentence: `(mime type, bytes)`. Served from the
+    /// cache when present, otherwise synthesized and stored. In demo mode a
+    /// synthesis counts its characters against `quota`; a cache hit does not.
+    pub async fn clip(
+        &self,
+        language: &str,
+        text: &str,
+        quota: Option<&Quota>,
+    ) -> Result<(String, Vec<u8>), Failure> {
+        if self.mode != Mode::Demo {
+            return Err(unavailable());
+        }
+        validate(language, text)?;
+        let key = audio_key(&self.voice_id, language, text);
+        if let Some(hit) = self.cached(&key).await? {
+            return Ok(hit);
+        }
+        let Some(speech) = self.speech.clone() else {
+            return Err(unavailable());
+        };
+
+        let lock = {
+            let mut inflight = self.inflight.lock().expect("narration lock");
+            inflight.entry(key.clone()).or_default().clone()
+        };
+        let result = {
+            let _guard = lock.lock().await;
+            // Another request may have stored it while this one waited.
+            match self.cached(&key).await {
+                Ok(Some(hit)) => Ok(hit),
+                Ok(None) => {
+                    self.synthesize(speech.as_ref(), &key, language, text, quota)
+                        .await
+                }
+                Err(err) => Err(err),
+            }
+        };
+        let mut inflight = self.inflight.lock().expect("narration lock");
+        if inflight.get(&key).is_some_and(|l| Arc::ptr_eq(l, &lock)) {
+            inflight.remove(&key);
+        }
+        result
+    }
+
+    fn path_for(&self, key: &str, mime: &str) -> PathBuf {
+        self.audio_dir.join(format!("{key}.{}", extension(mime)))
+    }
+
+    async fn cached(&self, key: &str) -> Result<Option<(String, Vec<u8>)>, Failure> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT mime FROM audio_clips WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.db)
+            .await?;
+        let Some((mime,)) = row else {
+            return Ok(None);
+        };
+        match std::fs::read(self.path_for(key, &mime)) {
+            Ok(bytes) => {
+                sqlx::query(
+                    "UPDATE audio_clips SET last_used_at = CAST(strftime('%s', 'now') AS INTEGER) WHERE key = ?",
+                )
+                .bind(key)
+                .execute(&self.db)
+                .await?;
+                Ok(Some((mime, bytes)))
+            }
+            Err(err) => {
+                // The file was removed by hand; synthesize it again.
+                tracing::warn!(%err, "cached narration clip is missing");
+                sqlx::query("DELETE FROM audio_clips WHERE key = ?")
+                    .bind(key)
+                    .execute(&self.db)
+                    .await?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Synthesizes after taking the characters from `quota`, and gives them
+    /// back when nothing was synthesized.
+    async fn synthesize(
+        &self,
+        speech: &dyn SpeechModel,
+        key: &str,
+        language: &str,
+        text: &str,
+        quota: Option<&Quota>,
+    ) -> Result<(String, Vec<u8>), Failure> {
+        let chars = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+        if let Some(quota) = quota {
+            quota.take(chars)?;
+        }
+        let result = self.synthesize_now(speech, key, language, text).await;
+        if result.is_err()
+            && let Some(quota) = quota
+        {
+            quota.refund(chars);
+        }
+        result
+    }
+
+    async fn synthesize_now(
+        &self,
+        speech: &dyn SpeechModel,
+        key: &str,
+        language: &str,
+        text: &str,
+    ) -> Result<(String, Vec<u8>), Failure> {
+        if let Err(wait) =
+            self.upstream
+                .check("speech", UPSTREAM_PER_MINUTE, Duration::from_secs(60))
+        {
+            return Err(Failure {
+                retry_after: Some(wait),
+                ..Failure::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "narration_busy",
+                    "Narration is busy. Try again in a moment.",
+                )
+            });
+        }
+        let cost = speech_cost(text);
+        if !self.budget.reserve_speech(cost).await? {
+            return Err(Failure::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "budget_reached",
+                "Demo narration budget reached for this month. Narration is paused until next month.",
+            ));
+        }
+        let request = SpeechRequest {
+            model: self.model.clone(),
+            text: text.to_owned(),
+            language: language.to_owned(),
+            voice: self.voice.clone(),
+        };
+        let mut attempt = 0;
+        let result = loop {
+            match speech.synthesize(request.clone()).await {
+                Err(AiError::Request(err)) if attempt < RETRIES => {
+                    attempt += 1;
+                    tracing::debug!(%err, attempt, "narration call failed; retrying");
+                    tokio::time::sleep(self.retry_delay * attempt).await;
+                }
+                other => break other,
+            }
+        };
+        self.budget.release_speech(cost);
+
+        let clip = match result {
+            Ok(clip) => clip,
+            Err(AiError::Limited(err)) => {
+                tracing::warn!(%err, "narration provider refused the call");
+                return Err(Failure::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "narration_unavailable",
+                    "Narration is not available right now.",
+                ));
+            }
+            Err(AiError::NotAllowed { .. }) => return Err(unavailable()),
+            Err(err) => {
+                tracing::warn!(%err, "narration failed");
+                return Err(Failure::new(
+                    StatusCode::BAD_GATEWAY,
+                    "narration_failed",
+                    "The narration for this sentence could not be made. Try again.",
+                ));
+            }
+        };
+        if let Err(err) = self.budget.record_speech(cost).await {
+            tracing::warn!(%err, "could not record narration spend");
+        }
+        tracing::debug!(
+            bytes = clip.bytes.len(),
+            duration_ms = clip.duration_ms,
+            "narration clip synthesized"
+        );
+        self.store(key, language, &clip.mime_type, &clip.bytes)
+            .await?;
+        Ok((clip.mime_type, clip.bytes))
+    }
+
+    async fn store(&self, key: &str, language: &str, mime: &str, bytes: &[u8]) -> Result<()> {
+        std::fs::create_dir_all(&self.audio_dir)
+            .with_context(|| format!("creating {}", self.audio_dir.display()))?;
+        let path = self.path_for(key, mime);
+        let partial = path.with_extension("part");
+        std::fs::write(&partial, bytes).context("writing narration clip")?;
+        std::fs::rename(&partial, &path).context("storing narration clip")?;
+        sqlx::query(
+            "INSERT INTO audio_clips (key, language, model, bytes, mime, created_at, last_used_at)
+             VALUES (?, ?, ?, ?, ?, CAST(strftime('%s', 'now') AS INTEGER), CAST(strftime('%s', 'now') AS INTEGER))
+             ON CONFLICT (key) DO UPDATE SET bytes = excluded.bytes, mime = excluded.mime,
+                 last_used_at = excluded.last_used_at",
+        )
+        .bind(key)
+        .bind(language)
+        .bind(&self.voice_id)
+        .bind(bytes.len() as i64)
+        .bind(mime)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// Fills the cache for `texts` in the background, two calls at a time.
+    /// Failures are logged and skipped; nothing happens without a provider.
+    pub fn prewarm(
+        self: Arc<Self>,
+        language: String,
+        texts: Vec<String>,
+        quota: Option<Quota>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            if self.mode != Mode::Demo || self.speech.is_none() {
+                return;
+            }
+            let mut seen = HashSet::new();
+            let texts: Vec<String> = texts
+                .into_iter()
+                .filter(|t| seen.insert(t.clone()))
+                .collect();
+            let permits = Arc::new(tokio::sync::Semaphore::new(PREWARM_CONCURRENCY));
+            let mut tasks = tokio::task::JoinSet::new();
+            for text in texts {
+                let Ok(permit) = permits.clone().acquire_owned().await else {
+                    break;
+                };
+                let this = self.clone();
+                let language = language.clone();
+                let quota = quota.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    if let Err(failure) = this.clip(&language, &text, quota.as_ref()).await {
+                        tracing::debug!(
+                            code = failure.code,
+                            "narration pre-warm skipped a sentence"
+                        );
+                        // Out of budget, quota or capacity: the rest would
+                        // fail the same way.
+                        matches!(
+                            failure.code,
+                            "budget_reached" | "narration_busy" | "narration_quota"
+                        )
+                    } else {
+                        false
+                    }
+                });
+                while let Some(done) = tasks.try_join_next() {
+                    if done.unwrap_or(false) {
+                        tasks.abort_all();
+                        return;
+                    }
+                }
+            }
+            while tasks.join_next().await.is_some() {}
+        })
+    }
+}
+
+impl Narration {
+    /// Deletes clips not played within the retention period of this mode
+    /// (24 hours in demo, 30 days in clinical), then the least recently
+    /// played clips until the cache is under [`MAX_CACHE_BYTES`], then files
+    /// with no row that are older than the retention period.
+    pub async fn collect_garbage(&self) -> Result<CleanupReport> {
+        self.collect_garbage_at(crate::sessions::now(), MAX_CACHE_BYTES)
+            .await
+    }
+
+    pub(crate) async fn collect_garbage_at(
+        &self,
+        now: i64,
+        max_bytes: i64,
+    ) -> Result<CleanupReport> {
+        let retention = match self.mode {
+            Mode::Demo => DEMO_CLIP_RETENTION_SECS,
+            Mode::Clinical => CLINICAL_CLIP_RETENTION_SECS,
+        };
+        let cutoff = now - retention;
+        let mut report = CleanupReport::default();
+
+        let stale: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, mime FROM audio_clips WHERE last_used_at <= ?")
+                .bind(cutoff)
+                .fetch_all(&self.db)
+                .await?;
+        for (key, mime) in stale {
+            // Skips a clip that was played since the select.
+            let removed =
+                sqlx::query("DELETE FROM audio_clips WHERE key = ? AND last_used_at <= ?")
+                    .bind(&key)
+                    .bind(cutoff)
+                    .execute(&self.db)
+                    .await?
+                    .rows_affected();
+            if removed > 0 {
+                self.remove_clip_file(&key, &mime);
+                report.stale += 1;
+            }
+        }
+
+        let (total,): (i64,) = sqlx::query_as("SELECT COALESCE(SUM(bytes), 0) FROM audio_clips")
+            .fetch_one(&self.db)
+            .await?;
+        if total > max_bytes {
+            let mut total = total;
+            let by_age: Vec<(String, String, i64)> = sqlx::query_as(
+                "SELECT key, mime, bytes FROM audio_clips ORDER BY last_used_at, created_at",
+            )
+            .fetch_all(&self.db)
+            .await?;
+            for (key, mime, bytes) in by_age {
+                if total <= max_bytes {
+                    break;
+                }
+                sqlx::query("DELETE FROM audio_clips WHERE key = ?")
+                    .bind(&key)
+                    .execute(&self.db)
+                    .await?;
+                self.remove_clip_file(&key, &mime);
+                total -= bytes;
+                report.over_cap += 1;
+            }
+        }
+
+        report.orphans = self.remove_orphan_files(now, retention).await?;
+        Ok(report)
+    }
+
+    /// Removes the file of one clip. Only a 64-character hex key with a known
+    /// extension inside the audio directory is ever deleted.
+    fn remove_clip_file(&self, key: &str, mime: &str) {
+        if !is_clip_key(key) {
+            tracing::warn!("audio clip row with an unexpected key; file left in place");
+            return;
+        }
+        match std::fs::remove_file(self.path_for(key, mime)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!(%err, "could not delete a narration clip"),
+        }
+    }
+
+    /// Deletes clip files that have no row and were last written before the
+    /// retention period, such as leftovers of an interrupted write.
+    async fn remove_orphan_files(&self, now: i64, retention: i64) -> Result<u64> {
+        let entries = match std::fs::read_dir(&self.audio_dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(err).context("reading the audio directory"),
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(key) = name.to_str().and_then(clip_file_key) else {
+                continue;
+            };
+            // `DirEntry::metadata` does not follow symbolic links.
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(now, |d| i64::try_from(d.as_secs()).unwrap_or(now));
+            if modified > now - retention {
+                continue;
+            }
+            let known: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM audio_clips WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.db)
+                .await?;
+            if known.is_some() {
+                continue;
+            }
+            match std::fs::remove_file(self.audio_dir.join(&name)) {
+                Ok(()) => removed += 1,
+                Err(err) => tracing::warn!(%err, "could not delete an orphan narration file"),
+            }
+        }
+        Ok(removed)
+    }
+}
+
+fn is_clip_key(key: &str) -> bool {
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The key of a cache file name `<64 hex>.<known extension>`, if it is one.
+fn clip_file_key(name: &str) -> Option<&str> {
+    let (key, ext) = name.split_once('.')?;
+    (is_clip_key(key) && CLIP_EXTENSIONS.contains(&ext)).then_some(key)
+}
+
+fn unavailable() -> Failure {
+    Failure::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "narration_unavailable",
+        "Narration is not available on this server.",
+    )
+}
+
+fn validate(language: &str, text: &str) -> Result<(), Failure> {
+    let language_ok = !language.is_empty()
+        && language.len() <= 35
+        && language
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !language_ok {
+        return Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "Unknown narration language.",
+        ));
+    }
+    if text.trim().is_empty() {
+        return Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "There is no text to narrate.",
+        ));
+    }
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "narration_text_too_long",
+            "This sentence is too long to narrate.",
+        ));
+    }
+    Ok(())
+}
+
+fn extension(mime: &str) -> &'static str {
+    match mime {
+        "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        _ => "bin",
+    }
+}
+
+/// The quota for a request from `address` about presentations of `scope`.
+/// `None` outside demo mode.
+pub fn quota(state: &AppState, scope: &str, address: std::net::IpAddr) -> Option<Quota> {
+    (state.mode == Mode::Demo).then(|| Quota {
+        limits: state.limits.clone(),
+        scope: scope.to_owned(),
+        address: crate::limits::ip_key(address),
+    })
+}
+
+/// The audio for one sentence: `(mime type, bytes)`. Called by
+/// `GET /api/present/audio/{key}` with the sentence text that key belongs to.
+pub async fn clip(
+    state: &AppState,
+    language: &str,
+    text: &str,
+    quota: Option<&Quota>,
+) -> Result<(String, Vec<u8>), Failure> {
+    state.narration.clip(language, text, quota).await
+}
+
+/// The speech identity to pass to `dc_core::present::audio_key`, so keys
+/// handed to the browser match the cache: `<model>#<voice>`, by default
+/// `heygen/heygen-voice-1-turbo#meredith`.
+pub fn speech_model_id(state: &AppState) -> &str {
+    state.narration.voice_id()
+}
+
+/// Fills the cache for `texts` in the background, two calls at a time, so
+/// the first play is fast. Returns at once; awaiting the handle is optional.
+pub fn prewarm(
+    state: &AppState,
+    language: &str,
+    texts: Vec<String>,
+    quota: Option<Quota>,
+) -> tokio::task::JoinHandle<()> {
+    state
+        .narration
+        .clone()
+        .prewarm(language.to_owned(), texts, quota)
+}
+
+/// A fake speech provider and a scratch audio directory, shared with the
+/// API tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use async_trait::async_trait;
+    use dc_ai::SpeechClip;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Counts calls, waits a little so concurrent requests overlap, and can
+    /// fail the first few calls with a transport error.
+    #[derive(Default)]
+    pub(crate) struct FakeSpeech {
+        pub calls: AtomicU32,
+        pub fail_first: u32,
+        pub texts: Mutex<Vec<String>>,
+    }
+
+    impl FakeSpeech {
+        pub fn calls(&self) -> u32 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl SpeechModel for FakeSpeech {
+        fn provider(&self) -> &'static str {
+            "fake"
+        }
+
+        async fn synthesize(&self, request: SpeechRequest) -> dc_ai::Result<SpeechClip> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.texts.lock().unwrap().push(request.text.clone());
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            if n < self.fail_first {
+                return Err(AiError::Request("connection reset".into()));
+            }
+            Ok(SpeechClip {
+                mime_type: "audio/wav".into(),
+                bytes: format!("RIFF:{}", request.text).into_bytes(),
+                duration_ms: Some(1000),
+            })
+        }
+    }
+
+    /// A per-test directory under the system temp dir, removed on drop.
+    pub(crate) struct TempDir(pub PathBuf);
+
+    impl TempDir {
+        pub fn new() -> Self {
+            let mut id = [0u8; 8];
+            getrandom::fill(&mut id).unwrap();
+            Self(std::env::temp_dir().join(format!("dc-narration-{}", hex::encode(id))))
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Narration for `mode` with `speech`, storing clips under `dir`.
+    pub(crate) fn narration(
+        mode: Mode,
+        db: SqlitePool,
+        dir: &TempDir,
+        speech: Arc<FakeSpeech>,
+        budget: Arc<Budget>,
+    ) -> Narration {
+        let mut narration = Narration::new(
+            mode,
+            db,
+            dir.0.clone(),
+            Some(speech),
+            "test/voice-model".into(),
+            "calm".into(),
+            budget,
+        );
+        narration.retry_delay = Duration::from_millis(1);
+        narration
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{self, FakeSpeech, TempDir};
+    use super::*;
+    use crate::storage::open_in_memory;
+    use std::sync::atomic::Ordering;
+
+    struct Setup {
+        narration: Arc<Narration>,
+        speech: Arc<FakeSpeech>,
+        db: SqlitePool,
+        _dir: TempDir,
+    }
+
+    async fn setup(mode: Mode, fake: FakeSpeech, cap: Option<f64>) -> Setup {
+        let db = open_in_memory().await.unwrap();
+        let dir = TempDir::new();
+        let speech = Arc::new(fake);
+        let narration = test_support::narration(
+            mode,
+            db.clone(),
+            &dir,
+            speech.clone(),
+            Arc::new(Budget::new(db.clone(), cap)),
+        );
+        Setup {
+            narration: Arc::new(narration),
+            speech,
+            db,
+            _dir: dir,
+        }
+    }
+
+    fn quota(limits: &Arc<Limits>, scope: &str, address: &str) -> Quota {
+        Quota {
+            limits: limits.clone(),
+            scope: scope.into(),
+            address: address.into(),
+        }
+    }
+
+    const SENTENCE: &str = "A crown covers and protects a weak tooth.";
+
+    #[tokio::test]
+    async fn cache_hit_returns_the_same_bytes_without_a_call() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let first = s.narration.clip("en", SENTENCE, None).await.unwrap();
+        let second = s.narration.clip("en", SENTENCE, None).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.0, "audio/wav");
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+
+        let key = audio_key(s.narration.voice_id(), "en", SENTENCE);
+        let (bytes, model): (i64, String) =
+            sqlx::query_as("SELECT bytes, model FROM audio_clips WHERE key = ?")
+                .bind(&key)
+                .fetch_one(&s.db)
+                .await
+                .unwrap();
+        assert_eq!(bytes as usize, first.1.len());
+        assert_eq!(model, "test/voice-model#calm");
+        assert!(s._dir.0.join(format!("{key}.wav")).exists());
+
+        // Another language or text is a different clip.
+        s.narration.clip("es", SENTENCE, None).await.unwrap();
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 2);
+        // Only the sentence text reaches the provider.
+        assert_eq!(s.speech.texts.lock().unwrap()[0], SENTENCE);
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_make_one_upstream_call() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let calls = (0..8).map(|_| {
+            let n = s.narration.clone();
+            tokio::spawn(async move { n.clip("en", SENTENCE, None).await.unwrap() })
+        });
+        let results: Vec<_> = futures_join(calls).await;
+        assert!(results.windows(2).all(|w| w[0] == w[1]));
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+        assert!(s.narration.inflight.lock().unwrap().is_empty());
+    }
+
+    async fn futures_join<T: Send + 'static>(
+        handles: impl Iterator<Item = tokio::task::JoinHandle<T>>,
+    ) -> Vec<T> {
+        let mut out = Vec::new();
+        for h in handles.collect::<Vec<_>>() {
+            out.push(h.await.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn long_or_empty_text_is_refused() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let long = "a".repeat(MAX_TEXT_CHARS + 1);
+        let err = s.narration.clip("en", &long, None).await.unwrap_err();
+        assert_eq!(err.code, "narration_text_too_long");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(
+            s.narration
+                .clip("en", &"a".repeat(MAX_TEXT_CHARS), None)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            s.narration.clip("en", "  ", None).await.unwrap_err().code,
+            "bad_request"
+        );
+        assert_eq!(
+            s.narration
+                .clip("e n", SENTENCE, None)
+                .await
+                .unwrap_err()
+                .code,
+            "bad_request"
+        );
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn clinical_mode_is_unavailable() {
+        let s = setup(Mode::Clinical, FakeSpeech::default(), None).await;
+        let err = s.narration.clip("en", SENTENCE, None).await.unwrap_err();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code, "narration_unavailable");
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 0);
+
+        let db = open_in_memory().await.unwrap();
+        let none = Narration::unavailable(Mode::Demo, db);
+        assert_eq!(
+            none.clip("en", SENTENCE, None).await.unwrap_err().code,
+            "narration_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn spend_is_recorded_and_refused_past_the_cap() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(1.0)).await;
+        s.narration.clip("en", SENTENCE, None).await.unwrap();
+        let (cost, calls): (f64, i64) = sqlx::query_as("SELECT cost_usd, calls FROM ai_usage")
+            .fetch_one(&s.db)
+            .await
+            .unwrap();
+        assert_eq!(calls, 1);
+        assert!((cost - speech_cost(SENTENCE)).abs() < 1e-12);
+
+        sqlx::query("UPDATE ai_usage SET cost_usd = 1.0")
+            .execute(&s.db)
+            .await
+            .unwrap();
+        let err = s
+            .narration
+            .clip("en", "Another sentence.", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "budget_reached");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        // Cached clips still play.
+        assert!(s.narration.clip("en", SENTENCE, None).await.is_ok());
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn transport_failures_are_retried_twice() {
+        let fake = FakeSpeech {
+            fail_first: 2,
+            ..FakeSpeech::default()
+        };
+        let s = setup(Mode::Demo, fake, Some(25.0)).await;
+        assert!(s.narration.clip("en", SENTENCE, None).await.is_ok());
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 3);
+
+        let fake = FakeSpeech {
+            fail_first: 3,
+            ..FakeSpeech::default()
+        };
+        let s = setup(Mode::Demo, fake, Some(25.0)).await;
+        let err = s.narration.clip("en", SENTENCE, None).await.unwrap_err();
+        assert_eq!(err.code, "narration_failed");
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 3);
+        // Nothing is charged or cached for a failed sentence.
+        let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audio_clips")
+            .fetch_one(&s.db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[tokio::test]
+    async fn prewarm_fills_the_cache_once_per_sentence() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let texts = vec![
+            "One.".to_owned(),
+            "Two.".to_owned(),
+            "One.".to_owned(),
+            "Three.".to_owned(),
+        ];
+        s.narration
+            .clone()
+            .prewarm("en".into(), texts, None)
+            .await
+            .unwrap();
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 3);
+        s.narration.clip("en", "Two.", None).await.unwrap();
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn quota_counts_only_synthesized_characters() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        let visitor = quota(&limits, "scope-a", "10.0.0.1");
+        s.narration
+            .clip("en", SENTENCE, Some(&visitor))
+            .await
+            .unwrap();
+        // Cache hits are free, so replaying never uses the quota up.
+        for _ in 0..5 {
+            s.narration
+                .clip("en", SENTENCE, Some(&visitor))
+                .await
+                .unwrap();
+        }
+        let used = u32::try_from(SENTENCE.chars().count()).unwrap();
+        let hour = Duration::from_secs(3600);
+        // Exactly the one synthesized sentence was counted.
+        let left = DEMO_SCOPE_CHARS_PER_HOUR - used;
+        assert!(
+            limits
+                .narration_scope
+                .take("scope-a", left, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+                .is_ok()
+        );
+
+        let err = s
+            .narration
+            .clip("en", "A new sentence to narrate.", Some(&visitor))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.code, "narration_quota");
+        assert!(err.retry_after.is_some_and(|w| (1..=3600).contains(&w)));
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+        // The cached clip still plays with the quota used up.
+        assert!(
+            s.narration
+                .clip("en", SENTENCE, Some(&visitor))
+                .await
+                .is_ok()
+        );
+
+        // Another visitor scope on the same network is held by the address
+        // quota, and a refused scope charge is given back.
+        let neighbour = quota(&limits, "scope-b", "10.0.0.1");
+        limits
+            .narration_address
+            .take(
+                "10.0.0.1",
+                DEMO_ADDRESS_CHARS_PER_DAY - used,
+                DEMO_ADDRESS_CHARS_PER_DAY,
+                hour,
+            )
+            .unwrap();
+        let err = s
+            .narration
+            .clip("en", "Yet another sentence for the demo.", Some(&neighbour))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "narration_quota");
+        assert!(
+            limits
+                .narration_scope
+                .take(
+                    "scope-b",
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    hour
+                )
+                .is_ok()
+        );
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_synthesis_gives_the_quota_back() {
+        let fake = FakeSpeech {
+            fail_first: 3,
+            ..FakeSpeech::default()
+        };
+        let s = setup(Mode::Demo, fake, Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        let visitor = quota(&limits, "scope", "10.0.0.2");
+        assert!(
+            s.narration
+                .clip("en", SENTENCE, Some(&visitor))
+                .await
+                .is_err()
+        );
+        let hour = Duration::from_secs(3600);
+        assert!(
+            limits
+                .narration_scope
+                .take(
+                    "scope",
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    hour
+                )
+                .is_ok()
+        );
+        assert!(
+            limits
+                .narration_address
+                .take(
+                    "10.0.0.2",
+                    DEMO_ADDRESS_CHARS_PER_DAY,
+                    DEMO_ADDRESS_CHARS_PER_DAY,
+                    hour
+                )
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn narration_stops_at_its_budget_share_and_generation_goes_on() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        s.narration.clip("en", SENTENCE, None).await.unwrap();
+        let (cost, speech, speech_calls): (f64, f64, i64) =
+            sqlx::query_as("SELECT cost_usd, speech_cost_usd, speech_calls FROM ai_usage")
+                .fetch_one(&s.db)
+                .await
+                .unwrap();
+        assert_eq!(speech_calls, 1);
+        assert!((cost - speech_cost(SENTENCE)).abs() < 1e-12);
+        assert!((speech - cost).abs() < 1e-12);
+
+        // Narration has spent its 20% share of the $25 cap ($5); text has spent $1.
+        sqlx::query("UPDATE ai_usage SET speech_cost_usd = 5.0, cost_usd = 6.0")
+            .execute(&s.db)
+            .await
+            .unwrap();
+        let err = s
+            .narration
+            .clip("en", "Another sentence.", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code, "budget_reached");
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 1);
+        // Cached clips still play, and generation is still allowed.
+        assert!(s.narration.clip("en", SENTENCE, None).await.is_ok());
+        assert!(s.narration.budget.allows_new_generation().await.unwrap());
+        assert!(s.narration.budget.reserve(1.0).await.unwrap());
+    }
+
+    fn set_last_used(db: &SqlitePool, key: &str, at: i64) -> impl Future<Output = ()> {
+        let db = db.clone();
+        let key = key.to_owned();
+        async move {
+            sqlx::query("UPDATE audio_clips SET last_used_at = ? WHERE key = ?")
+                .bind(at)
+                .bind(&key)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn clip_rows(db: &SqlitePool) -> Vec<String> {
+        sqlx::query_as::<_, (String,)>("SELECT key FROM audio_clips ORDER BY key")
+            .fetch_all(db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(k,)| k)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_stale_clips_orphans_and_keeps_the_size_cap() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let texts = ["Old one.", "Recent one.", "Newest one."];
+        let keys: Vec<String> = texts
+            .iter()
+            .map(|t| audio_key(s.narration.voice_id(), "en", t))
+            .collect();
+        for text in texts {
+            s.narration.clip("en", text, None).await.unwrap();
+        }
+        let now = crate::sessions::now();
+        set_last_used(&s.db, &keys[0], now - DEMO_CLIP_RETENTION_SECS - 1).await;
+        set_last_used(&s.db, &keys[1], now - 60).await;
+        set_last_used(&s.db, &keys[2], now).await;
+        let file = |key: &str| s._dir.0.join(format!("{key}.wav"));
+
+        // Files that are not cache clips are never touched; an old clip file
+        // with no row is removed.
+        let orphan = s._dir.0.join(format!("{}.mp3", "ab".repeat(32)));
+        let other = s._dir.0.join("notes.txt");
+        let odd = s._dir.0.join(format!("{}.wav", "zz".repeat(32)));
+        for path in [&orphan, &other, &odd] {
+            std::fs::write(path, b"x").unwrap();
+            let old = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+
+        let report = s
+            .narration
+            .collect_garbage_at(now, MAX_CACHE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            CleanupReport {
+                stale: 1,
+                over_cap: 0,
+                orphans: 1,
+            }
+        );
+        assert_eq!(clip_rows(&s.db).await, {
+            let mut k = vec![keys[1].clone(), keys[2].clone()];
+            k.sort();
+            k
+        });
+        assert!(!file(&keys[0]).exists());
+        assert!(file(&keys[1]).exists());
+        assert!(!orphan.exists());
+        assert!(other.exists() && odd.exists());
+
+        // Over the size cap, the least recently played clip goes first.
+        let newest_bytes = std::fs::metadata(file(&keys[2])).unwrap().len();
+        let report = s
+            .narration
+            .collect_garbage_at(now, i64::try_from(newest_bytes).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(report.over_cap, 1);
+        assert_eq!(clip_rows(&s.db).await, vec![keys[2].clone()]);
+        assert!(!file(&keys[1]).exists());
+        assert!(file(&keys[2]).exists());
+
+        // A removed clip is synthesized again on the next play.
+        s.narration.clip("en", texts[0], None).await.unwrap();
+        assert_eq!(s.speech.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn clinical_clips_are_kept_for_30_days() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        s.narration.clip("en", SENTENCE, None).await.unwrap();
+        let clinical = Narration::new(
+            Mode::Clinical,
+            s.db.clone(),
+            s._dir.0.clone(),
+            None,
+            "test/voice-model".into(),
+            "calm".into(),
+            Arc::new(Budget::new(s.db.clone(), None)),
+        );
+        let now = crate::sessions::now();
+        let two_days = now + 2 * 24 * 60 * 60;
+        assert_eq!(
+            clinical
+                .collect_garbage_at(two_days, MAX_CACHE_BYTES)
+                .await
+                .unwrap(),
+            CleanupReport::default()
+        );
+        let later = now + CLINICAL_CLIP_RETENTION_SECS + 1;
+        let report = clinical
+            .collect_garbage_at(later, MAX_CACHE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(report.stale, 1);
+        assert!(clip_rows(&s.db).await.is_empty());
+    }
+
+    #[test]
+    fn only_cache_file_names_are_recognized() {
+        let key = "0f".repeat(32);
+        assert_eq!(clip_file_key(&format!("{key}.wav")), Some(key.as_str()));
+        assert_eq!(clip_file_key(&format!("{key}.part")), Some(key.as_str()));
+        assert_eq!(clip_file_key(&format!("{key}.txt")), None);
+        assert_eq!(clip_file_key(&format!("{key}.wav.bak")), None);
+        assert_eq!(clip_file_key(&format!("../{key}.wav")), None);
+        assert_eq!(clip_file_key("dentalclarity.db"), None);
+    }
+}

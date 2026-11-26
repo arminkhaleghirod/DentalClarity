@@ -6,6 +6,7 @@ use dc_server::config::Config;
 use dc_server::generation::Generation;
 use dc_server::jobs::{self, Jobs};
 use dc_server::limits::Limits;
+use dc_server::narration::Narration;
 use dc_server::{AppState, router, sessions, settings, storage};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -35,6 +36,13 @@ async fn main() -> Result<()> {
         config.mode,
         &db,
         config.text_model.as_deref(),
+        config.demo_monthly_budget_usd,
+    )?;
+    let narration = Narration::from_env(
+        config.mode,
+        &db,
+        &config.data_dir,
+        generation.as_ref(),
         config.demo_monthly_budget_usd,
     )?;
 
@@ -79,6 +87,7 @@ async fn main() -> Result<()> {
         jobs: Arc::new(Jobs::default()),
         limits: Arc::new(Limits::default()),
         setup_code: Arc::new(std::sync::Mutex::new(setup_code)),
+        narration: Arc::new(narration),
     };
 
     // Jobs interrupted by a stop are re-run from the start.
@@ -88,6 +97,7 @@ async fn main() -> Result<()> {
     }
 
     let demo = config.mode == Mode::Demo;
+    let narration = state.narration.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(600));
         loop {
@@ -101,6 +111,16 @@ async fn main() -> Result<()> {
                     Ok(removed) => tracing::info!(removed, "purged demo presentations"),
                     Err(err) => tracing::warn!(%err, "demo data purge failed"),
                 }
+            }
+            match narration.collect_garbage().await {
+                Ok(report) if report == Default::default() => {}
+                Ok(report) => tracing::info!(
+                    stale = report.stale,
+                    over_cap = report.over_cap,
+                    orphans = report.orphans,
+                    "cleaned the narration cache"
+                ),
+                Err(err) => tracing::warn!(%err, "narration cache cleanup failed"),
             }
         }
     });

@@ -90,6 +90,12 @@ Acceptance:
 - Patient screens: at a glance, procedures, costs, next steps.
 - Sentence-level narration with `heygen/heygen-voice-1-turbo` in demo mode, cached per sentence and invalidated by edits.
 
+Progress:
+- Done (server): Present mode. `POST /api/staff/presentations/{id}/present` locks the staff or visitor session and sets the present cookie; `GET /api/present/content` returns the patient view of the bound version; `GET /api/present/audio/{key}` serves narration for sentences of that version only; `POST /api/present/exit` unlocks with a rotated session token (PIN in clinical mode, password after 5 wrong PINs, nothing in demo mode). Migration 0004.
+- Done (server): the patient view shows ready sections only, staff text where it exists, and a note-derived block only after staff confirm it; until then the reason shows the knowledge base's common reasons and the objective is left out. Placeholders are filled locally and every sentence carries its audio key.
+- Done (server): staff edits (`PUT .../blocks`), revert (`POST .../blocks/revert`) and note confirmation (`POST .../confirm-note`), with the original text kept, the deterministic validators run as warnings, the demo edit limits, and audit events.
+- Narration: OpenRouter `/audio/speech` adapter (PCM wrapped as WAV), `audio_clips` cache under `artifacts/audio`, one upstream call per key, 400-character limit, spend counted in the monthly budget, optional pre-warm; clinical mode answers 503 until M9.
+
 ## M6 Chart, illustrations, journey and costs
 
 Acceptance:
