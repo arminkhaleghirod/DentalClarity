@@ -4,7 +4,10 @@
 //! When the server answers 401 or 423, the app re-checks the session so the
 //! user lands on the sign-in or lock screen.
 
-use dc_core::api::{ApiError, HealthResponse, LoginRequest, PatientRow, SessionInfo, SetupRequest};
+use dc_core::api::{
+    ApiError, HealthResponse, LoginRequest, PatientDetail, PatientListItem, PatientRow,
+    PracticeSettings, SessionInfo, SetupRequest,
+};
 use gloo_net::http::{Request, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -83,6 +86,23 @@ async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result
     finish(response, path.starts_with("/api/staff/")).await
 }
 
+async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, Failure> {
+    let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
+    let response = Request::put(path)
+        .header("X-DC-CSRF", &csrf)
+        .json(body)
+        .map_err(network)?
+        .send()
+        .await
+        .map_err(network)?;
+    finish(response, path.starts_with("/api/staff/")).await
+}
+
+/// Percent-encodes a value for a path segment or query string.
+pub fn encode(value: &str) -> String {
+    String::from(js_sys::encode_uri_component(value))
+}
+
 pub async fn session() -> Result<SessionInfo, Failure> {
     let info: SessionInfo = get("/api/session").await?;
     set_csrf(info.csrf_token.clone());
@@ -133,4 +153,20 @@ pub async fn health() -> Result<HealthResponse, Failure> {
 
 pub async fn dashboard() -> Result<Vec<PatientRow>, Failure> {
     get("/api/staff/dashboard").await
+}
+
+pub async fn patients(query: String) -> Result<Vec<PatientListItem>, Failure> {
+    get(&format!("/api/staff/patients?q={}", encode(&query))).await
+}
+
+pub async fn patient(key: String) -> Result<PatientDetail, Failure> {
+    get(&format!("/api/staff/patients/{}", encode(&key))).await
+}
+
+pub async fn settings() -> Result<PracticeSettings, Failure> {
+    get("/api/staff/settings").await
+}
+
+pub async fn save_settings(settings: &PracticeSettings) -> Result<PracticeSettings, Failure> {
+    put("/api/staff/settings", settings).await
 }

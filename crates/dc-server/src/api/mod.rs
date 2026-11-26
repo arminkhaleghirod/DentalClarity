@@ -16,6 +16,12 @@ use dc_core::api::HealthResponse;
 pub fn routes(state: &AppState) -> Router<AppState> {
     let staff = Router::new()
         .route("/dashboard", get(staff::dashboard))
+        .route("/patients", get(staff::patients))
+        .route("/patients/{key}", get(staff::patient))
+        .route(
+            "/settings",
+            get(staff::get_settings).put(staff::put_settings),
+        )
         .route_layer(from_fn_with_state(state.clone(), security::require_session));
 
     Router::new()

@@ -5,6 +5,10 @@ use anyhow::Result;
 use sqlx::{Executor, Sqlite};
 
 pub const PRACTICE_NAME: &str = "practice_name";
+/// Patient-screen brand color behind white text, `#RRGGBB`.
+pub const BRAND_PRIMARY: &str = "brand_primary";
+/// Patient-screen highlight for the patient's own teeth, `#RRGGBB`.
+pub const BRAND_HIGHLIGHT: &str = "brand_highlight";
 /// Mode the server last started in.
 pub const MODE: &str = "mode";
 

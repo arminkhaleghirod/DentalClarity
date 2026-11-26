@@ -9,7 +9,10 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
 use dc_core::Mode;
-use dc_core::api::{ApiError, HealthResponse, PatientRow, SessionInfo, SessionState};
+use dc_core::api::{
+    ApiError, HealthResponse, PatientDetail, PatientListItem, PatientRow, PracticeSettings,
+    SessionInfo, SessionState,
+};
 use dc_knowledge::CodeMap;
 use dc_pms::synthetic::SyntheticConnector;
 use serde::de::DeserializeOwned;
@@ -354,4 +357,188 @@ async fn locked_sessions_get_423_on_staff_routes() {
     let dashboard = client.send(Method::GET, "/api/staff/dashboard", None).await;
     assert_eq!(dashboard.status(), StatusCode::LOCKED);
     assert_eq!(client.session().await.state, SessionState::Locked);
+}
+
+async fn demo_visitor() -> Client {
+    let mut client = Client::new(app(Mode::Demo).await);
+    client.send(Method::POST, "/api/visit", None).await;
+    client.session().await;
+    client
+}
+
+#[tokio::test]
+async fn patient_search_sorts_by_last_name_and_filters() {
+    let mut client = demo_visitor().await;
+    let all: Vec<PatientListItem> = json_body(
+        client
+            .send(Method::GET, "/api/staff/patients?q=", None)
+            .await,
+    )
+    .await;
+    let names: Vec<_> = all.iter().map(|p| p.display_name.as_str()).collect();
+    assert!(names.contains(&"Grace Holloway"));
+    let last = |n: &&str| n.rsplit(' ').next().unwrap().to_owned();
+    let mut sorted = names.clone();
+    sorted.sort_by_key(last);
+    assert_eq!(names, sorted);
+
+    let found: Vec<PatientListItem> = json_body(
+        client
+            .send(Method::GET, "/api/staff/patients?q=okafor", None)
+            .await,
+    )
+    .await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].patient_key, "10482");
+    assert_eq!(found[0].open_plans, 1);
+    assert_eq!(found[0].appointment_time.as_deref(), Some("08:30"));
+
+    // Overlong queries are cut to 100 characters instead of failing.
+    let long = "a".repeat(500);
+    let response = client
+        .send(Method::GET, &format!("/api/staff/patients?q={long}"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let none: Vec<PatientListItem> = json_body(response).await;
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn patient_detail_has_plan_rows_and_totals() {
+    let mut client = demo_visitor().await;
+    let daniel: PatientDetail = json_body(
+        client
+            .send(Method::GET, "/api/staff/patients/10482", None)
+            .await,
+    )
+    .await;
+    assert_eq!(daniel.last_name, "Okafor");
+    let plan = &daniel.plans[0];
+    assert_eq!(plan.procedures.len(), 6);
+    assert_eq!(
+        plan.total_patient_estimate.map(|m| m.cents()),
+        Some(136_900)
+    );
+    assert_eq!(plan.total_fee.map(|m| m.cents()), Some(345_000));
+    let first = &plan.procedures[0];
+    assert_eq!(first.tooth, "30");
+    assert_eq!(first.name.as_deref(), Some("Root canal"));
+    assert!(!first.pms_description.is_empty());
+    assert!(plan.procedures.iter().any(|p| p.tooth.is_empty()));
+
+    let priya: PatientDetail = json_body(
+        client
+            .send(Method::GET, "/api/staff/patients/10655", None)
+            .await,
+    )
+    .await;
+    let plan = &priya.plans[0];
+    assert_eq!(plan.total_patient_estimate, None);
+    assert_eq!(plan.procedures[2].patient_estimate, None);
+    assert_eq!(plan.procedures[2].fee.map(|m| m.cents()), Some(16_500));
+}
+
+#[tokio::test]
+async fn unknown_patient_is_404_json() {
+    let mut client = demo_visitor().await;
+    let response = client
+        .send(Method::GET, "/api/staff/patients/99999", None)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(response).await, "patient_not_found");
+}
+
+#[tokio::test]
+async fn demo_visitors_cannot_read_or_change_settings() {
+    let mut client = demo_visitor().await;
+    let read = client.send(Method::GET, "/api/staff/settings", None).await;
+    assert_eq!(read.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error_code(read).await, "demo_read_only");
+    let write = client
+        .send(
+            Method::PUT,
+            "/api/staff/settings",
+            Some(json!({ "practice_name": "X", "brand_primary": "#000000", "brand_highlight": "#E8693F" })),
+        )
+        .await;
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error_code(write).await, "demo_read_only");
+}
+
+#[tokio::test]
+async fn clinical_staff_update_settings() {
+    let (app, db) = app_with_db(Mode::Clinical).await;
+    let mut client = Client::new(app);
+    set_up(&mut client).await;
+
+    let defaults: PracticeSettings =
+        json_body(client.send(Method::GET, "/api/staff/settings", None).await).await;
+    assert_eq!(defaults.practice_name, "Maple Grove Family Dental");
+    assert_eq!(defaults.brand_primary, "#1B3A5C");
+    assert_eq!(defaults.brand_highlight, "#E8693F");
+
+    let response = client
+        .send(
+            Method::PUT,
+            "/api/staff/settings",
+            Some(json!({ "practice_name": "  Cedar Park Dental ", "brand_primary": "#2a4d14", "brand_highlight": "#e8693f" })),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved: PracticeSettings = json_body(response).await;
+    assert_eq!(saved.practice_name, "Cedar Park Dental");
+    assert_eq!(saved.brand_primary, "#2A4D14");
+    let reread: PracticeSettings =
+        json_body(client.send(Method::GET, "/api/staff/settings", None).await).await;
+    assert_eq!(reread, saved);
+    assert_eq!(client.session().await.practice_name, "Cedar Park Dental");
+    let (audited,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE action = 'settings_changed'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(audited, 1);
+
+    // A light brand color fails the contrast check with white text.
+    let pale = client
+        .send(
+            Method::PUT,
+            "/api/staff/settings",
+            Some(json!({ "practice_name": "Cedar Park Dental", "brand_primary": "#FFD966", "brand_highlight": "#E8693F" })),
+        )
+        .await;
+    assert_eq!(pale.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error: ApiError = json_body(pale).await;
+    assert!(error.message.contains("4.5:1"), "{}", error.message);
+
+    for bad in [
+        json!({ "practice_name": "", "brand_primary": "#1B3A5C", "brand_highlight": "#E8693F" }),
+        json!({ "practice_name": "x".repeat(101), "brand_primary": "#1B3A5C", "brand_highlight": "#E8693F" }),
+        json!({ "practice_name": "X", "brand_primary": "navy", "brand_highlight": "#E8693F" }),
+        json!({ "practice_name": "X", "brand_primary": "#1B3A5C", "brand_highlight": "#E869" }),
+    ] {
+        let response = client
+            .send(Method::PUT, "/api/staff/settings", Some(bad))
+            .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let unchanged: PracticeSettings =
+        json_body(client.send(Method::GET, "/api/staff/settings", None).await).await;
+    assert_eq!(unchanged, saved);
+}
+
+#[tokio::test]
+async fn settings_update_needs_csrf() {
+    let mut client = Client::new(app(Mode::Clinical).await);
+    set_up(&mut client).await;
+    client.csrf = None;
+    let response = client
+        .send(
+            Method::PUT,
+            "/api/staff/settings",
+            Some(json!({ "practice_name": "X", "brand_primary": "#000000", "brand_highlight": "#E8693F" })),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error_code(response).await, "bad_csrf");
 }

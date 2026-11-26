@@ -3,6 +3,7 @@ use crate::format::language_name;
 use crate::session::use_session;
 use dc_core::api::{PatientRow, PresentationStatus};
 use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
@@ -105,6 +106,8 @@ fn PatientRowView(row: PatientRow) -> impl IntoView {
         PresentationStatus::PlanChanged => ("changed", "Plan changed", "Review"),
         PresentationStatus::NeedsReview => ("review", "Needs review", "Review"),
     };
+    let href = crate::patients::patient_href(&row.patient_key);
+    let label = format!("{action}: {}", row.display_name);
     view! {
         <tr>
             <td class="num">{row.appointment_time.clone().unwrap_or_default()}</td>
@@ -114,7 +117,7 @@ fn PatientRowView(row: PatientRow) -> impl IntoView {
             <td class="num">{row.procedure_count}</td>
             <td>{language_name(&row.language)}</td>
             <td><span class=format!("pill {pill_class}")>{pill_label}</span></td>
-            <td class="action">{action}</td>
+            <td class="action"><A href=href attr:aria-label=label>{action}</A></td>
         </tr>
     }
 }

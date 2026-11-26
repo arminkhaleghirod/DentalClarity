@@ -89,3 +89,72 @@ pub struct PatientRow {
     pub status: PresentationStatus,
     pub patient_estimate: Option<Money>,
 }
+
+/// One row of the patient directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatientListItem {
+    pub patient_key: String,
+    pub display_name: String,
+    pub age_years: Option<u8>,
+    /// BCP 47 tag recorded in the PMS, if any.
+    pub language: Option<String>,
+    /// Today's appointment time as `HH:MM`, if any.
+    pub appointment_time: Option<String>,
+    pub open_plans: u32,
+}
+
+/// A patient with every open treatment plan, for the patient page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatientDetail {
+    pub patient_key: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub age_years: Option<u8>,
+    pub language: Option<String>,
+    pub appointment_time: Option<String>,
+    pub plans: Vec<PlanDetail>,
+}
+
+/// A treatment plan as read from the PMS, with totals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDetail {
+    pub plan_key: String,
+    pub name: String,
+    pub provider_display_name: Option<String>,
+    pub procedures: Vec<ProcedureLine>,
+    /// `None` when any fee is unknown.
+    pub total_fee: Option<Money>,
+    /// `None` when any patient estimate is unknown.
+    pub total_patient_estimate: Option<Money>,
+}
+
+/// One planned procedure in the staff plan table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureLine {
+    pub phase: Option<u8>,
+    /// Universal tooth number or letter, an area such as "upper right", or
+    /// empty when the procedure has no tooth.
+    pub tooth: String,
+    pub surfaces: String,
+    pub code: String,
+    /// Our plain-language name from the knowledge base. `None` for codes the
+    /// knowledge base does not cover.
+    pub name: Option<String>,
+    /// The practice's own description from its PMS.
+    pub pms_description: String,
+    pub fee: Option<Money>,
+    pub patient_estimate: Option<Money>,
+}
+
+/// Practice name and brand colors used on patient screens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PracticeSettings {
+    pub practice_name: String,
+    /// `#RRGGBB`. White text on it must reach 4.5:1 contrast.
+    pub brand_primary: String,
+    /// `#RRGGBB`. Marks the patient's own teeth.
+    pub brand_highlight: String,
+}
+
+pub const DEFAULT_BRAND_PRIMARY: &str = "#1B3A5C";
+pub const DEFAULT_BRAND_HIGHLIGHT: &str = "#E8693F";

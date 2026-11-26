@@ -7,7 +7,9 @@ mod api;
 mod format;
 mod icons;
 mod pages;
+mod patients;
 mod session;
+mod settings;
 mod shell;
 
 use dc_core::api::SessionState;
@@ -30,24 +32,45 @@ fn App() -> impl IntoView {
     api::on_session_lost(move || session.reload());
     session.reload();
 
+    // Only a change of screen re-renders the tree. A practice name edited in
+    // Settings updates the session without remounting the workspace.
+    let gate = Memo::new(move |_| match session.info.get() {
+        None => Gate::Loading,
+        Some(Err(failure)) => Gate::Unreachable(failure.message),
+        Some(Ok(info)) => match info.state {
+            SessionState::SetupRequired => Gate::Setup,
+            SessionState::SignedOut => Gate::SignIn(info.practice_name),
+            SessionState::Locked => Gate::Locked(info.practice_name),
+            SessionState::Staff | SessionState::Visitor => Gate::Workspace,
+            // Handled by `SessionContext::reload`, which starts the visit.
+            SessionState::NewVisitor => Gate::Loading,
+        },
+    });
+
     view! {
-        {move || match session.info.get() {
-            None => view! { <div class="auth-page"><p class="auth-text">"Loading…"</p></div> }.into_any(),
-            Some(Err(failure)) => view! {
+        {move || match gate.get() {
+            Gate::Loading => view! { <div class="auth-page"><p class="auth-text">"Loading…"</p></div> }.into_any(),
+            Gate::Unreachable(message) => view! {
                 <div class="auth-page">
-                    <div class="notice error" role="alert">"DentalClarity is not reachable. " {failure.message}</div>
+                    <div class="notice error" role="alert">"DentalClarity is not reachable. " {message}</div>
                 </div>
             }.into_any(),
-            Some(Ok(info)) => match info.state {
-                SessionState::SetupRequired => view! { <session::Setup /> }.into_any(),
-                SessionState::SignedOut => view! { <session::SignIn practice_name=info.practice_name /> }.into_any(),
-                SessionState::Locked => view! { <session::Locked practice_name=info.practice_name /> }.into_any(),
-                SessionState::Staff | SessionState::Visitor => view! { <Workspace /> }.into_any(),
-                // Handled by `SessionContext::reload`, which starts the visit.
-                SessionState::NewVisitor => view! { <div class="auth-page"><p class="auth-text">"Loading…"</p></div> }.into_any(),
-            },
+            Gate::Setup => view! { <session::Setup /> }.into_any(),
+            Gate::SignIn(practice_name) => view! { <session::SignIn practice_name /> }.into_any(),
+            Gate::Locked(practice_name) => view! { <session::Locked practice_name /> }.into_any(),
+            Gate::Workspace => view! { <Workspace /> }.into_any(),
         }}
     }
+}
+
+#[derive(Clone, PartialEq)]
+enum Gate {
+    Loading,
+    Unreachable(String),
+    Setup,
+    SignIn(String),
+    Locked(String),
+    Workspace,
 }
 
 #[component]
@@ -57,10 +80,11 @@ fn Workspace() -> impl IntoView {
             <shell::StaffShell>
                 <Routes fallback=|| view! { <pages::NotFound /> }>
                     <Route path=path!("/") view=pages::Dashboard />
-                    <Route path=path!("/patients") view=|| view! { <pages::Upcoming title="Patients" milestone="M3" /> } />
+                    <Route path=path!("/patients") view=patients::PatientsPage />
+                    <Route path=path!("/patients/:key") view=patients::PatientPage />
                     <Route path=path!("/presentations") view=|| view! { <pages::Upcoming title="Presentations" milestone="M5" /> } />
                     <Route path=path!("/analytics") view=|| view! { <pages::Upcoming title="Analytics" milestone="M8" /> } />
-                    <Route path=path!("/settings") view=|| view! { <pages::Upcoming title="Settings" milestone="M3" /> } />
+                    <Route path=path!("/settings") view=settings::SettingsPage />
                 </Routes>
             </shell::StaffShell>
         </Router>

@@ -62,6 +62,10 @@ Acceptance:
 - Patient directory with search, and plan selection.
 - Settings: practice name, logo and brand colors. Setup wizard for first launch.
 
+Progress:
+- Done: patient directory (`GET /api/staff/patients`), patient page with the read-only plan table and totals (`GET /api/staff/patients/{key}`), and practice name and brand colors in Settings (`GET` and `PUT /api/staff/settings`, with a 4.5:1 contrast check on the brand color; read-only in the demo).
+- Open: knowledge entries, logo upload, and the multi-step setup wizard.
+
 ## M4 Generation pipeline
 
 Acceptance:
