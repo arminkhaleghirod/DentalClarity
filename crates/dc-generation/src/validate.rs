@@ -242,6 +242,16 @@ fn cites(cites: &[String], path: &str, cx: &Context, issues: &mut Vec<Issue>) {
         if !known {
             issues.push(Issue::block("V3", path, format!("unknown citation {c}")));
         }
+        // P11: text drawn from a clinical note must wait for staff confirmation,
+        // and only the `why` and `objective` blocks carry that hold. Anything
+        // else citing a note could reach patients unconfirmed.
+        if c.starts_with("note:") && !path.starts_with("/why") && !path.starts_with("/objective") {
+            issues.push(Issue::block(
+                "V4",
+                path,
+                "only the reason (why) or the objective may draw on the clinical note",
+            ));
+        }
     }
 }
 
@@ -799,6 +809,48 @@ mod tests {
             vec!["V16"]
         );
         assert!(one("Ask {{provider_display_name}} any question.", &["fact:p1"]).is_empty());
+    }
+
+    #[test]
+    fn note_citations_are_limited_to_why_and_objective() {
+        let sheet = FactSheet::build(&daniel(), &kb());
+        let mut issues = Vec::new();
+        para(
+            &[s("Your dentist found deep decay.", &["note:p1"])],
+            "/summary",
+            1,
+            4,
+            &cx(&sheet),
+            &mut issues,
+        );
+        assert_eq!(codes(&issues), vec!["V4"]);
+        let mut issues = Vec::new();
+        questions(
+            &[
+                Question {
+                    text: "Why was decay found here?".into(),
+                    cites: vec!["note:p1".into()],
+                },
+                Question {
+                    text: "What happens next?".into(),
+                    cites: vec![],
+                },
+            ],
+            "/questions",
+            &cx(&sheet),
+            &mut issues,
+        );
+        assert_eq!(codes(&issues), vec!["V4"]);
+        let mut issues = Vec::new();
+        para(
+            &[s("Your dentist found deep decay.", &["note:p1"])],
+            "/objective",
+            0,
+            3,
+            &cx(&sheet),
+            &mut issues,
+        );
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
