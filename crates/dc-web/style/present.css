@@ -558,6 +558,18 @@
   justify-content: center;
 }
 
+/* The whole control, label included, is the click target. */
+.p-play-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+}
+
+.p-play-label {
+  cursor: pointer;
+}
+
 .p-play-button[aria-disabled="true"] {
   opacity: 0.45;
 }
