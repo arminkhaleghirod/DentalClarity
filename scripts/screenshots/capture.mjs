@@ -37,6 +37,8 @@ const PORT = 9333;
 
 const STAFF = { width: 1280, height: 800 };
 const PATIENT = { width: 1180, height: 820 };
+// At a glance is taller so the tooth chart and the estimated share both fit.
+const GLANCE = { width: 1180, height: 920 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -146,8 +148,20 @@ async function waitFor(label, expression, timeoutMs = 20000) {
 const hasText = (text) =>
   `document.body && document.body.innerText.includes(${JSON.stringify(text)})`;
 
+// True once no loading skeleton is on screen, no view transition is running
+// and every finite CSS animation or transition has finished. Endless ones,
+// such as a progress spinner, are ignored.
+const STILL = `(() => {
+  if (document.querySelector('.skeleton')) return false;
+  if (document.documentElement.matches('[class*="vt-"]')) return false;
+  return document.getAnimations().every((a) => {
+    const end = a.effect?.getComputedTiming().endTime;
+    return a.playState !== 'running' || end === Infinity;
+  });
+})()`;
+
 // Waits until no request has been in flight for `quietMs`, images have
-// loaded and fonts are ready.
+// loaded, fonts are ready and the page has stopped moving.
 async function settle(quietMs = 700) {
   let quietSince = Date.now();
   const end = Date.now() + 20000;
@@ -161,6 +175,15 @@ async function settle(quietMs = 700) {
        img.complete ? null : new Promise((r) => { img.onload = img.onerror = r; }))))
      .then(() => true)`,
   );
+  await waitFor("page to stop moving", STILL).catch(async (err) => {
+    const moving = await evaluate(`[
+      document.documentElement.className,
+      ...[...document.querySelectorAll('.skeleton')].map((e) => 'skeleton ' + e.className),
+      ...document.getAnimations().filter((a) => a.playState === 'running')
+        .map((a) => (a.animationName ?? a.transitionProperty) + ' on ' + a.effect?.target?.className),
+    ].join('; ')`);
+    throw new Error(`${err.message}: ${moving}`);
+  });
   await sleep(300);
 }
 
@@ -236,6 +259,14 @@ async function generate() {
   await click("Open presentation");
 }
 
+// Clicks Done on the patient screen and waits for the staff workspace.
+async function leavePresent() {
+  const loaded = cdp.once("Page.loadEventFired");
+  await click("Done");
+  await loaded;
+  await waitFor("staff workspace", `location.pathname !== "/present" && !location.pathname.startsWith("/present/")`);
+}
+
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
   const { proc, wsUrl } = await launchBrowser();
@@ -254,9 +285,21 @@ async function main() {
       features: [{ name: "prefers-color-scheme", value: "light" }],
     });
 
-    // Staff screens.
+    // Staff screens. Present mode locks the staff workspace until the
+    // patient screen is left, so an interrupted earlier run is ended first.
     await setViewport(STAFF);
     await navigate("/");
+    await waitFor("dashboard or lock screen",
+      `${hasText("Ready to present")} || ${hasText("Return to presentation")}`);
+    if (await evaluate(hasText("Return to presentation"))) {
+      await navigate("/present");
+      await waitFor(
+        "present view (a crashed run can leave the visit locked; start over with a new PROFILE)",
+        "document.querySelector('.p-tabs') !== null",
+      );
+      await leavePresent();
+      await navigate("/");
+    }
     await waitFor("dashboard", hasText("Ready to present"));
     await settle();
     await shot("dashboard");
@@ -291,13 +334,14 @@ async function main() {
     await shot("editor");
 
     // Present mode is a full page load to /present.
-    await setViewport(PATIENT);
+    await setViewport(GLANCE);
     const loaded = cdp.once("Page.loadEventFired");
     await click("Present");
     await loaded;
     await waitFor("present view", "document.querySelector('.p-tabs') !== null");
     await settle();
     await shot("present-at-a-glance");
+    await setViewport(PATIENT);
 
     await click("Procedures", ".p-tabs button");
     await settle();
@@ -313,6 +357,9 @@ async function main() {
     await click("Costs", ".p-tabs button");
     await settle();
     await shot("present-costs");
+
+    // Leave present mode so the staff workspace is unlocked for the next run.
+    await leavePresent();
   } finally {
     proc.kill();
   }
