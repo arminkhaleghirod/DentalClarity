@@ -81,6 +81,10 @@ The full list is in [docs/SECURITY.md](docs/SECURITY.md).
 - [ClarityEval benchmark](docs/CLARITYEVAL.md)
 - [Implementation plan](docs/IMPLEMENTATION.md)
 
+## How this was built
+
+Built with Claude Code as a coding assistant for code generation, refactoring, tests and documentation drafts. Product scope, clinical boundaries, design direction and evaluation design are the author's.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
