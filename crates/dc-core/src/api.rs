@@ -88,6 +88,9 @@ pub struct PatientRow {
     pub language: String,
     pub status: PresentationStatus,
     pub patient_estimate: Option<Money>,
+    /// The patient's most recent presentation in the caller's scope, if any.
+    #[serde(default)]
+    pub presentation_id: Option<String>,
 }
 
 /// One row of the patient directory.

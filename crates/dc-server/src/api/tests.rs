@@ -15,7 +15,7 @@ use dc_ai::{Role, TextModel, TextRequest, TextResponse};
 use dc_core::Mode;
 use dc_core::api::{
     ApiError, HealthResponse, PatientDetail, PatientListItem, PatientRow, PracticeSettings,
-    SessionInfo, SessionState,
+    PresentationStatus, SessionInfo, SessionState,
 };
 use dc_core::presentation::{
     BlockSource, CreatePresentationResponse, JobState, JobStatus, PresentationSummary,
@@ -923,6 +923,42 @@ async fn all_sections_passing_means_succeeded() {
     let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
     let status = wait_for_job(&mut client, &created.job_id).await;
     assert_eq!(status.state, JobState::Succeeded);
+}
+
+#[tokio::test]
+async fn dashboard_reflects_presentation_state_in_scope() {
+    let (app, _db, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+
+    let rows: Vec<PatientRow> =
+        json_body(client.send(Method::GET, "/api/staff/dashboard", None).await).await;
+    let daniel = rows
+        .iter()
+        .find(|r| r.display_name == "Daniel Okafor")
+        .unwrap();
+    assert_eq!(daniel.status, PresentationStatus::Ready);
+    assert_eq!(
+        daniel.presentation_id.as_deref(),
+        Some(created.presentation_id.as_str())
+    );
+    let maria = rows
+        .iter()
+        .find(|r| r.display_name == "Maria Elena Ruiz")
+        .unwrap();
+    assert_eq!(maria.status, PresentationStatus::NotStarted);
+    assert!(maria.presentation_id.is_none());
+
+    // Another visitor does not see this visitor's presentation on their dashboard.
+    let mut other = visitor_of(&app).await;
+    let rows: Vec<PatientRow> =
+        json_body(other.send(Method::GET, "/api/staff/dashboard", None).await).await;
+    let daniel = rows
+        .iter()
+        .find(|r| r.display_name == "Daniel Okafor")
+        .unwrap();
+    assert_eq!(daniel.status, PresentationStatus::NotStarted);
 }
 
 #[tokio::test]

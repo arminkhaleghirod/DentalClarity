@@ -23,7 +23,29 @@ const MAX_KEY_CHARS: usize = 64;
 
 /// `GET /api/staff/dashboard`: today's recommended patients with a one-line
 /// summary of each active plan.
-pub async fn dashboard(State(state): State<AppState>) -> Result<Json<Vec<PatientRow>>, Failure> {
+pub async fn dashboard(
+    State(state): State<AppState>,
+    crate::security::CurrentSession(session): crate::security::CurrentSession,
+) -> Result<Json<Vec<PatientRow>>, Failure> {
+    // Latest presentation per patient in this caller's scope, newest first.
+    let owner = super::presentations::owner_scope(&state, &session);
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.patient_key, p.id, j.state
+         FROM presentations p JOIN jobs j ON j.presentation_id = p.id
+         WHERE p.owner_scope = ?
+         ORDER BY p.created_at DESC, p.rowid DESC",
+    )
+    .bind(&owner)
+    .fetch_all(&state.db)
+    .await?;
+    let mut latest: std::collections::HashMap<String, (String, PresentationStatus)> =
+        std::collections::HashMap::new();
+    for (patient_key, id, job_state) in rows {
+        latest
+            .entry(patient_key)
+            .or_insert_with(|| (id, status_for_job(&job_state)));
+    }
+
     let patients = state
         .pms
         .recommended_patients()
@@ -53,11 +75,24 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Json<Vec<Patient
                 .preferred_language
                 .clone()
                 .unwrap_or_else(|| "en".into()),
-            status: PresentationStatus::NotStarted,
+            status: latest
+                .get(&patient.key.0)
+                .map_or(PresentationStatus::NotStarted, |(_, status)| *status),
             patient_estimate: snapshot.total_patient_estimate(),
+            presentation_id: latest.get(&patient.key.0).map(|(id, _)| id.clone()),
         });
     }
     Ok(Json(rows))
+}
+
+/// Dashboard status for a job state. A failed job needs staff attention, so
+/// it counts as needs review rather than disappearing.
+fn status_for_job(job_state: &str) -> PresentationStatus {
+    match job_state {
+        "queued" | "running" => PresentationStatus::Generating,
+        "succeeded" => PresentationStatus::Ready,
+        _ => PresentationStatus::NeedsReview,
+    }
 }
 
 /// "Root canal, Crown, 2× Tooth-colored filling", in plan order.
