@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Concept B: narrated tooth</title>
+  <!-- A molar with a play triangle cut from the crown and two sound waves for narration. -->
+  <g transform="translate(-2 2) scale(0.82)">
+    <path fill="#2A7DD1" fill-rule="evenodd" d="M20 8C14 8 9 13 9 21C9 29 12 34 14 40L17 54C17.6 57 21.5 57 22.3 54L25.5 42C26.3 39.5 28.5 38 32 38C35.5 38 37.7 39.5 38.5 42L41.7 54C42.5 57 46.4 57 47 54L50 40C52 34 55 29 55 21C55 13 50 8 44 8C39 8 36 10.5 32 10.5C28 10.5 25 8 20 8ZM27 15.5V30.5C27 32 28.5 32.8 29.8 32L41.3 24.6C42.4 23.9 42.4 22.1 41.3 21.4L29.8 14C28.5 13.2 27 14 27 15.5Z"/>
+  </g>
+  <path fill="none" stroke="#E8693F" stroke-width="4" stroke-linecap="round" d="M48 13.5C51.5 16.5 51.5 24.5 48 27.5M54 8C60.5 13.5 60.5 27.5 54 33"/>
+</svg>

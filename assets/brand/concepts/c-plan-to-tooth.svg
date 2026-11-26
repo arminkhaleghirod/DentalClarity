@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Concept C: plan becomes tooth</title>
+  <!-- A treatment plan page with a folded corner whose lower edge grows into two roots. -->
+  <path fill="#2A7DD1" d="M16 6H40L52 18V39C52 43 51 46 49.5 49.5L46.8 56C45.8 58.6 42.2 58.4 41.6 55.8L38.8 46.2C38 43.4 35.4 42 32 42C28.6 42 26 43.4 25.2 46.2L22.4 55.8C21.8 58.4 18.2 58.6 17.2 56L14.5 49.5C13 46 12 43 12 39V10C12 7.8 13.8 6 16 6Z"/>
+  <path fill="#1C5FA8" d="M40 6V14C40 16.2 41.8 18 44 18H52Z"/>
+  <rect x="19" y="22" width="26" height="4.5" rx="2.25" fill="#FFFFFF"/>
+  <rect x="19" y="30.5" width="17" height="4.5" rx="2.25" fill="#FFFFFF"/>
+</svg>

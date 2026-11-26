@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-on-dark.svg">
+    <img src="assets/brand/logo.svg" alt="DentalClarity" width="300">
+  </picture>
+</p>
+
 # DentalClarity
 
 Understand your dental care.
