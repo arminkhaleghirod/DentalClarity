@@ -87,7 +87,7 @@ pub fn content_security_policy() -> &'static str {
             .collect();
         format!(
             "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{hashes}; \
-             style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; \
+             style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; \
              font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; \
              form-action 'self'"
         )

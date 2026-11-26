@@ -2,8 +2,9 @@
 //! used here; the present-session cookie is the only credential.
 
 use dc_core::api::ApiError;
-use dc_core::present::{ExitPresentResponse, PatientView};
+use dc_core::present::{ExitPresentResponse, PatientView, SENTENCE_OFFSETS_HEADER};
 use gloo_net::http::{Request, Response};
+use leptos::wasm_bindgen::JsCast;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -84,24 +85,79 @@ pub async fn exit(body: &ExitBody) -> Result<ExitPresentResponse, Failure> {
     finish(response).await
 }
 
-/// URL of one narrated sentence, used as an audio element's `src`.
-pub fn audio_url(audio_key: &str) -> String {
-    format!(
-        "/api/present/audio/{}",
-        String::from(js_sys::encode_uri_component(audio_key))
-    )
+/// One part of a block's narration, ready to play.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockAudio {
+    /// Object URL of the clip, for an audio element's `src`. Give it back
+    /// with [`revoke`] when it is no longer needed.
+    pub url: String,
+    /// Start of each sentence in milliseconds, from the server's sample
+    /// counts.
+    pub offsets_ms: Vec<f64>,
 }
 
-/// Asks the server why a clip failed to play. The audio element only
-/// reports that loading failed, not the status or `ApiError` code.
-pub async fn audio_failure(audio_key: &str) -> Failure {
-    match Request::get(&audio_url(audio_key)).send().await {
-        Ok(response) if response.ok() => Failure {
-            status: response.status(),
-            code: String::new(),
-            message: "The browser could not play this clip.".into(),
-        },
-        Ok(response) => error_of(response).await,
-        Err(e) => network(e),
+/// Fetches one clip for consecutive sentences of a block
+/// (`GET /api/present/narration`). A cold cache can take a few seconds.
+pub async fn narration(keys: &[String]) -> Result<BlockAudio, Failure> {
+    let response = Request::get(&format!("/api/present/narration?keys={}", keys.join(",")))
+        .send()
+        .await
+        .map_err(network)?;
+    if !response.ok() {
+        return Err(error_of(response).await);
+    }
+    let unplayable = |message: &str| Failure {
+        status: response.status(),
+        code: String::new(),
+        message: message.to_owned(),
+    };
+    let offsets_ms: Vec<f64> = response
+        .headers()
+        .get(SENTENCE_OFFSETS_HEADER)
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|o| o.trim().parse().ok())
+        .collect();
+    if offsets_ms.len() != keys.len() {
+        return Err(unplayable("The narration timing was missing."));
+    }
+    let bytes = response.binary().await.map_err(network)?;
+    let url = object_url(&bytes, "audio/wav")
+        .ok_or_else(|| unplayable("The browser could not prepare this clip."))?;
+    Ok(BlockAudio { url, offsets_ms })
+}
+
+/// `URL.createObjectURL(new Blob([bytes], { type }))`.
+fn object_url(bytes: &[u8], mime: &str) -> Option<String> {
+    let global = js_sys::global();
+    let blob_class = js_sys::Reflect::get(&global, &"Blob".into())
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let options = js_sys::Object::new();
+    js_sys::Reflect::set(&options, &"type".into(), &mime.into()).ok()?;
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let blob =
+        js_sys::Reflect::construct(&blob_class, &js_sys::Array::of2(&parts, &options)).ok()?;
+    let url_class = js_sys::Reflect::get(&global, &"URL".into()).ok()?;
+    js_sys::Reflect::get(&url_class, &"createObjectURL".into())
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?
+        .call1(&url_class, &blob)
+        .ok()?
+        .as_string()
+}
+
+/// Releases an object URL made by [`narration`].
+pub fn revoke(url: &str) {
+    let global = js_sys::global();
+    let Ok(url_class) = js_sys::Reflect::get(&global, &"URL".into()) else {
+        return;
+    };
+    if let Ok(f) = js_sys::Reflect::get(&url_class, &"revokeObjectURL".into())
+        && let Ok(f) = f.dyn_into::<js_sys::Function>()
+    {
+        let _ = f.call1(&url_class, &url.into());
     }
 }

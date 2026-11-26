@@ -151,6 +151,20 @@ pub fn audio_key(speech_model: &str, language: &str, text: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Most sentences in one `GET /api/present/narration` clip. A longer block is
+/// played as consecutive parts of this many sentences, and pre-warmed the
+/// same way, so the merged clips match.
+pub const MAX_NARRATION_SENTENCES: usize = 12;
+
+/// Response header of `GET /api/present/narration`: the start of each
+/// sentence in the merged clip, in whole milliseconds from the start,
+/// comma-separated, e.g. `0,4120,8590`. Computed from sample counts.
+pub const SENTENCE_OFFSETS_HEADER: &str = "x-dc-sentence-offsets";
+
+/// Response header of `GET /api/present/narration`: the clip's length in
+/// whole milliseconds.
+pub const NARRATION_DURATION_HEADER: &str = "x-dc-duration-ms";
+
 #[cfg(test)]
 mod tests {
     use super::*;

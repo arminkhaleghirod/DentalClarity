@@ -1,12 +1,14 @@
-//! Sentence-level narration (DECISIONS P10).
+//! Block narration (DECISIONS P10).
 //!
-//! Each sentence has its own clip. Playing a block plays its clips one after
-//! another on a single audio element, preloads the next clip on a second
-//! element, and highlights the sentence whose clip is playing. Highlighting
-//! changes only at sentence boundaries; nothing claims word timing.
+//! A block plays as one clip that the server joins from its sentence clips
+//! (`GET /api/present/narration`), with the start of each sentence computed
+//! from sample counts. The highlight follows the audio element's position
+//! against those offsets, so it changes only at sentence boundaries and
+//! never claims word timing. A block longer than `MAX_NARRATION_SENTENCES`
+//! plays as consecutive parts; the next part is fetched while one plays.
 
 use super::api;
-use dc_core::present::{PatientBlock, PatientSentence};
+use dc_core::present::{MAX_NARRATION_SENTENCES, PatientBlock, PatientSentence};
 use dc_core::presentation::BlockSource;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -17,7 +19,7 @@ use leptos::wasm_bindgen::closure::Closure;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Idle,
-    /// Waiting for the current clip; the first play can take a few seconds.
+    /// Waiting for the clip; a cold cache can take a few seconds.
     Loading,
     Playing,
     Paused,
@@ -28,6 +30,7 @@ pub enum Status {
 pub struct Narrator {
     /// Id of the block being narrated.
     active: RwSignal<Option<String>>,
+    /// Index of the highlighted sentence in the whole block.
     sentence: RwSignal<Option<usize>>,
     status: RwSignal<Status>,
     /// Inline message for one block: (block id, text).
@@ -36,16 +39,44 @@ pub struct Narrator {
     unavailable: RwSignal<bool>,
     /// The present session expired while playing.
     pub session_ended: RwSignal<bool>,
+    /// Audio keys of every sentence of the active block.
     keys: StoredValue<Vec<String>>,
+    /// The part loaded on the audio element.
+    part: StoredValue<usize>,
+    /// Sentence starts of the loaded part, in milliseconds.
+    offsets: StoredValue<Vec<f64>>,
+    /// Object URL of the loaded part.
+    current_url: StoredValue<Option<String>>,
+    /// A part fetched ahead of time: (part, clip).
+    ready: StoredValue<Option<(usize, api::BlockAudio)>>,
+    /// The part being fetched.
+    fetching: StoredValue<Option<usize>>,
+    /// The part that should play as soon as it arrives.
+    awaiting: StoredValue<Option<usize>>,
+    /// A sentence to start from once its part is loaded.
+    pending_seek: StoredValue<Option<usize>>,
+    /// Generation of the running animation-frame loop, if any.
+    ticking: StoredValue<Option<u32>>,
     /// Bumped on every start and stop, so events from an old clip are ignored.
     generation: StoredValue<u32>,
     audio: StoredValue<Option<JsValue>, LocalStorage>,
-    preload: StoredValue<Option<JsValue>, LocalStorage>,
 }
 
 const UNAVAILABLE: &str =
     "Listening is not available for this presentation. You can read along on screen.";
 const PLAY_FAILED: &str = "This part could not be played right now. You can read it on screen.";
+const QUOTA: &str = "The listening limit for this demo is used up for now. You can read along on screen and try again later.";
+const BUSY: &str = "Listening is busy right now. Try again in a moment.";
+
+/// Events the player listens to on its audio element.
+const EVENTS: [&str; 6] = [
+    "onplaying",
+    "onwaiting",
+    "ontimeupdate",
+    "onseeked",
+    "onended",
+    "onerror",
+];
 
 fn audio_element() -> Option<JsValue> {
     let element = document().create_element("audio").ok()?;
@@ -72,7 +103,7 @@ fn handler(f: impl FnMut() + 'static) -> JsValue {
 /// Stops loading and playing without firing an error the app reacts to.
 fn clear(element: &JsValue) {
     call(element, "pause");
-    for name in ["onplaying", "onwaiting", "onended", "onerror"] {
+    for name in EVENTS {
         set(element, name, &JsValue::NULL);
     }
     if let Some(el) = element.dyn_ref::<leptos::web_sys::Element>() {
@@ -91,9 +122,16 @@ impl Narrator {
             unavailable: RwSignal::new(false),
             session_ended: RwSignal::new(false),
             keys: StoredValue::new(Vec::new()),
+            part: StoredValue::new(0),
+            offsets: StoredValue::new(Vec::new()),
+            current_url: StoredValue::new(None),
+            ready: StoredValue::new(None),
+            fetching: StoredValue::new(None),
+            awaiting: StoredValue::new(None),
+            pending_seek: StoredValue::new(None),
+            ticking: StoredValue::new(None),
             generation: StoredValue::new(0),
             audio: StoredValue::new_local(None),
-            preload: StoredValue::new_local(None),
         }
     }
 
@@ -159,6 +197,41 @@ impl Narrator {
         }
     }
 
+    /// Moves playback of the active block to the start of sentence `index`.
+    /// Does nothing for a block that is not playing or paused.
+    pub fn seek(&self, id: &str, index: usize) {
+        if !self.active.with_untracked(|a| a.as_deref() == Some(id))
+            || index >= self.keys.with_value(Vec::len)
+        {
+            return;
+        }
+        let part = index / MAX_NARRATION_SENTENCES;
+        let loaded = self.current_url.with_value(Option::is_some)
+            && self.awaiting.get_value().is_none()
+            && self.part.get_value() == part;
+        if loaded {
+            let Some(audio) = self.audio.get_value() else {
+                return;
+            };
+            let at = self
+                .offsets
+                .with_value(|o| o.get(index % MAX_NARRATION_SENTENCES).copied())
+                .unwrap_or(0.0);
+            set(&audio, "currentTime", &(at / 1000.0).into());
+            self.update_sentence();
+            if self.status.get_untracked() == Status::Paused {
+                self.resume();
+            }
+        } else {
+            if let Some(audio) = self.audio.get_value() {
+                call(&audio, "pause");
+            }
+            self.pending_seek.set_value(Some(index));
+            self.sentence.set(Some(index));
+            self.go_to(part);
+        }
+    }
+
     fn start(&self, id: &str, sentences: &[PatientSentence]) {
         self.stop();
         if sentences.is_empty() {
@@ -167,7 +240,82 @@ impl Narrator {
         self.keys
             .set_value(sentences.iter().map(|s| s.audio_key.clone()).collect());
         self.active.set(Some(id.to_owned()));
-        self.play_index(0);
+        self.sentence.set(Some(0));
+        self.go_to(0);
+    }
+
+    fn parts(&self) -> usize {
+        self.keys
+            .with_value(|k| k.len().div_ceil(MAX_NARRATION_SENTENCES))
+    }
+
+    fn part_keys(&self, part: usize) -> Vec<String> {
+        self.keys.with_value(|k| {
+            k.chunks(MAX_NARRATION_SENTENCES)
+                .nth(part)
+                .map(<[String]>::to_vec)
+                .unwrap_or_default()
+        })
+    }
+
+    /// Plays `part`, from the clip fetched ahead when it is that part, or
+    /// after fetching it.
+    fn go_to(&self, part: usize) {
+        if let Some((ready_part, audio)) = self.ready.try_update_value(Option::take).flatten() {
+            if ready_part == part {
+                self.play_part(part, audio);
+                return;
+            }
+            api::revoke(&audio.url);
+        }
+        self.awaiting.set_value(Some(part));
+        if self.status.get_untracked() != Status::Paused {
+            self.status.set(Status::Loading);
+        }
+        if self.fetching.get_value() != Some(part) {
+            self.fetch(part);
+        }
+    }
+
+    fn fetch(&self, part: usize) {
+        let generation = self.generation.get_value();
+        let keys = self.part_keys(part);
+        if keys.is_empty() {
+            return;
+        }
+        self.fetching.set_value(Some(part));
+        let this = *self;
+        spawn_local(async move {
+            let result = api::narration(&keys).await;
+            if this.generation.try_get_value() != Some(generation) {
+                if let Ok(audio) = &result {
+                    api::revoke(&audio.url);
+                }
+                return;
+            }
+            if this.fetching.get_value() == Some(part) {
+                this.fetching.set_value(None);
+            }
+            let awaited = this.awaiting.get_value() == Some(part);
+            match result {
+                Ok(audio) if awaited => {
+                    this.awaiting.set_value(None);
+                    this.play_part(part, audio);
+                }
+                Ok(audio) => {
+                    if let Some((_, old)) = this
+                        .ready
+                        .try_update_value(|r| r.replace((part, audio)))
+                        .flatten()
+                    {
+                        api::revoke(&old.url);
+                    }
+                }
+                Err(failure) if awaited => this.fail(&failure),
+                // A part fetched ahead is fetched again when it is needed.
+                Err(_) => {}
+            }
+        });
     }
 
     fn main_element(&self) -> Option<JsValue> {
@@ -179,27 +327,32 @@ impl Narrator {
         Some(el)
     }
 
-    fn play_index(&self, index: usize) {
-        let generation = self.generation.get_value();
-        let Some(key) = self.keys.with_value(|k| k.get(index).cloned()) else {
-            self.finish();
-            return;
-        };
+    fn play_part(&self, part: usize, clip: api::BlockAudio) {
         let Some(audio) = self.main_element() else {
-            self.fail(key);
+            api::revoke(&clip.url);
+            self.fail_playback();
             return;
         };
-        self.sentence.set(Some(index));
-        self.status.set(Status::Loading);
+        let generation = self.generation.get_value();
+        if let Some(old) = self
+            .current_url
+            .try_update_value(|u| u.replace(clip.url.clone()))
+            .flatten()
+        {
+            api::revoke(&old);
+        }
+        self.offsets.set_value(clip.offsets_ms);
+        self.part.set_value(part);
 
         let this = *self;
-        let current = move || this.generation.get_value() == generation;
+        let current = move || this.generation.try_get_value() == Some(generation);
         set(
             &audio,
             "onplaying",
             &handler(move || {
                 if current() {
                     this.status.set(Status::Playing);
+                    this.start_ticking();
                 }
             }),
         );
@@ -212,45 +365,115 @@ impl Narrator {
                 }
             }),
         );
+        for event in ["ontimeupdate", "onseeked"] {
+            set(
+                &audio,
+                event,
+                &handler(move || {
+                    if current() {
+                        this.update_sentence();
+                    }
+                }),
+            );
+        }
+        let parts = self.parts();
         set(
             &audio,
             "onended",
             &handler(move || {
                 if current() {
-                    this.play_index(index + 1);
+                    if part + 1 < parts {
+                        this.go_to(part + 1);
+                    } else {
+                        this.finish();
+                    }
                 }
             }),
         );
-        let failed_key = key.clone();
         set(
             &audio,
             "onerror",
             &handler(move || {
                 if current() {
-                    this.fail(failed_key.clone());
+                    this.fail_playback();
                 }
             }),
         );
-        set(&audio, "src", &api::audio_url(&key).into());
-        self.play_element(&audio, generation);
+        set(&audio, "src", &clip.url.into());
+        let start = self
+            .pending_seek
+            .try_update_value(Option::take)
+            .flatten()
+            .filter(|i| i / MAX_NARRATION_SENTENCES == part)
+            .and_then(|i| {
+                self.offsets
+                    .with_value(|o| o.get(i % MAX_NARRATION_SENTENCES).copied())
+            });
+        if let Some(at) = start {
+            set(&audio, "currentTime", &(at / 1000.0).into());
+        }
+        self.update_sentence();
+        // Paused while the clip was being prepared: stay paused.
+        if self.status.get_untracked() != Status::Paused {
+            self.status.set(Status::Loading);
+            self.play_element(&audio, generation);
+        }
 
-        // Warm the next clip so the gap between sentences stays short.
-        if let Some(next) = self.keys.with_value(|k| k.get(index + 1).cloned())
-            && let Some(preload) = self.preload_element()
+        // Fetch the next part while this one plays.
+        if part + 1 < parts
+            && self.fetching.get_value().is_none()
+            && self.ready.with_value(Option::is_none)
         {
-            set(&preload, "src", &api::audio_url(&next).into());
-            call(&preload, "load");
+            self.fetch(part + 1);
         }
     }
 
-    fn preload_element(&self) -> Option<JsValue> {
-        if let Some(el) = self.preload.get_value() {
-            return Some(el);
+    /// Highlights the sentence whose range holds the current position.
+    fn update_sentence(&self) {
+        let Some(audio) = self.audio.get_value() else {
+            return;
+        };
+        let Some(seconds) = js_sys::Reflect::get(&audio, &"currentTime".into())
+            .ok()
+            .and_then(|t| t.as_f64())
+        else {
+            return;
+        };
+        // Offsets are whole milliseconds; allow for rounding after a seek.
+        let now = seconds * 1000.0 + 1.0;
+        let index = self
+            .offsets
+            .with_value(|o| o.iter().rposition(|start| *start <= now).unwrap_or(0));
+        let sentence = self.part.get_value() * MAX_NARRATION_SENTENCES + index;
+        if self.sentence.get_untracked() != Some(sentence) {
+            self.sentence.set(Some(sentence));
         }
-        let el = audio_element()?;
-        set(&el, "muted", &JsValue::TRUE);
-        self.preload.set_value(Some(el.clone()));
-        Some(el)
+    }
+
+    /// Updates the highlight every frame while playing, so it moves on
+    /// promptly at a sentence boundary (`timeupdate` fires only a few times
+    /// a second).
+    fn start_ticking(&self) {
+        let generation = self.generation.get_value();
+        if self.ticking.get_value() == Some(generation) {
+            return;
+        }
+        self.ticking.set_value(Some(generation));
+        self.tick(generation);
+    }
+
+    fn tick(&self, generation: u32) {
+        let running = self.generation.try_get_value() == Some(generation)
+            && self.status.try_get_untracked() == Some(Status::Playing);
+        if !running {
+            if self.ticking.try_get_value().flatten() == Some(generation) {
+                self.ticking.set_value(None);
+            }
+            return;
+        }
+        self.update_sentence();
+        let this = *self;
+        request_animation_frame(move || this.tick(generation));
     }
 
     fn play_element(&self, audio: &JsValue, generation: u32) {
@@ -265,7 +488,7 @@ impl Narrator {
                 .ok()
                 .and_then(|n| n.as_string())
                 .unwrap_or_default();
-            if this.generation.get_value() == generation && name == "NotAllowedError" {
+            if this.generation.try_get_value() == Some(generation) && name == "NotAllowedError" {
                 this.status.set(Status::Paused);
             }
         });
@@ -282,8 +505,12 @@ impl Narrator {
 
     fn resume(&self) {
         let generation = self.generation.get_value();
+        self.status.set(Status::Loading);
+        // Still being prepared: it plays when it arrives.
+        if self.awaiting.get_value().is_some() {
+            return;
+        }
         if let Some(audio) = self.audio.get_value() {
-            self.status.set(Status::Loading);
             self.play_element(&audio, generation);
         }
     }
@@ -292,23 +519,30 @@ impl Narrator {
         self.stop();
     }
 
-    fn fail(&self, key: String) {
+    fn fail(&self, failure: &api::Failure) {
         let id = self.active.get_untracked().unwrap_or_default();
         self.stop();
-        let this = *self;
-        spawn_local(async move {
-            let failure = api::audio_failure(&key).await;
-            let text = if failure.status == 503 || failure.code == "narration_unavailable" {
-                this.unavailable.set(true);
-                UNAVAILABLE
-            } else if failure.session_ended() {
-                this.session_ended.set(true);
+        let text = match (failure.status, failure.code.as_str()) {
+            (401, _) => {
+                self.session_ended.set(true);
                 return;
-            } else {
-                PLAY_FAILED
-            };
-            this.message.set(Some((id, text.to_owned())));
-        });
+            }
+            (429, "narration_quota") => QUOTA,
+            (429, _) => BUSY,
+            (503, _) | (_, "narration_unavailable") => {
+                self.unavailable.set(true);
+                UNAVAILABLE
+            }
+            _ => PLAY_FAILED,
+        };
+        self.message.set(Some((id, text.to_owned())));
+    }
+
+    /// The browser could not play a clip it was given.
+    fn fail_playback(&self) {
+        let id = self.active.get_untracked().unwrap_or_default();
+        self.stop();
+        self.message.set(Some((id, PLAY_FAILED.to_owned())));
     }
 
     /// Stops playback and resets the player, e.g. when the patient moves to
@@ -318,9 +552,17 @@ impl Narrator {
         if let Some(audio) = self.audio.get_value() {
             clear(&audio);
         }
-        if let Some(preload) = self.preload.get_value() {
-            clear(&preload);
+        if let Some(url) = self.current_url.try_update_value(Option::take).flatten() {
+            api::revoke(&url);
         }
+        if let Some((_, audio)) = self.ready.try_update_value(Option::take).flatten() {
+            api::revoke(&audio.url);
+        }
+        self.fetching.set_value(None);
+        self.awaiting.set_value(None);
+        self.pending_seek.set_value(None);
+        self.offsets.set_value(Vec::new());
+        self.part.set_value(0);
         if self.active.get_untracked().is_some() {
             self.active.set(None);
         }
@@ -436,6 +678,7 @@ pub fn NarratedBlock(
         let anchor = anchor.clone();
         move |index: usize, text: String| {
             let id = id.clone();
+            let seek_id = id.clone();
             let class = move || {
                 if narrator.is_current(&id, index) {
                     "p-sentence is-current"
@@ -443,7 +686,10 @@ pub fn NarratedBlock(
                     "p-sentence"
                 }
             };
-            view! { <span id=format!("{anchor}-{index}") class=class>{text}</span> }
+            // While this block plays or is paused, a tap on a sentence
+            // moves narration to it.
+            let on_click = move |_| narrator.seek(&seek_id, index);
+            view! { <span id=format!("{anchor}-{index}") class=class on:click=on_click>{text}</span> }
         }
     };
 

@@ -204,6 +204,9 @@ async fn staff_and_present_cookies_never_open_each_others_routes() {
     let response = content(&mut staff_only).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(error_code(response).await, "present_ended");
+    let narration = format!("/api/present/narration?keys={}", "a".repeat(64));
+    let response = staff_only.send(Method::GET, &narration, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let response = exit(&mut staff_only, json!({})).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
@@ -667,14 +670,18 @@ async fn demo_with_speech() -> (
     (state, client, created.presentation_id, speech, dir)
 }
 
-/// Waits until `n` clips are cached.
-async fn wait_for_clips(db: &SqlitePool, n: i64) {
+const SENTENCE_ROWS: &str = "SELECT COUNT(*) FROM audio_clips WHERE model NOT LIKE 'block:%'";
+const BLOCK_ROWS: &str = "SELECT COUNT(*) FROM audio_clips WHERE model LIKE 'block:%'";
+
+async fn count(db: &SqlitePool, sql: &'static str) -> i64 {
+    let (count,): (i64,) = sqlx::query_as(sql).fetch_one(db).await.unwrap();
+    count
+}
+
+/// Waits until `count(sql)` reaches `n`.
+async fn wait_for_rows(db: &SqlitePool, sql: &'static str, n: i64) {
     for _ in 0..400 {
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audio_clips")
-            .fetch_one(db)
-            .await
-            .unwrap();
-        if count >= n {
+        if count(db, sql).await >= n {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -699,10 +706,14 @@ async fn prewarm_skips_staff_text_and_quota_counts_only_misses() {
         StatusCode::OK
     );
     let patient: PatientView = json_body(content(&mut client).await).await;
-    let texts = crate::api::present::prewarm_texts(&patient);
+    let blocks = crate::api::present::prewarm_blocks(&patient);
+    let texts: Vec<String> = blocks.iter().flatten().cloned().collect();
     assert!(!texts.iter().any(|t| t == edited));
     let unique: std::collections::HashSet<&String> = texts.iter().collect();
-    wait_for_clips(&state.db, unique.len() as i64).await;
+    let unique_blocks: std::collections::HashSet<&Vec<String>> = blocks.iter().collect();
+    wait_for_rows(&state.db, SENTENCE_ROWS, unique.len() as i64).await;
+    // Every generated block was merged ahead of time too.
+    wait_for_rows(&state.db, BLOCK_ROWS, unique_blocks.len() as i64).await;
     // Give a stray staff sentence time to show up if it were pre-warmed.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let calls = speech.calls();
@@ -770,4 +781,164 @@ async fn narration_budget_share_does_not_stop_generation() {
     client.csrf = Some(exited.csrf_token);
     let response = create(&mut client).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn narration_plays_one_block_of_the_bound_version_as_one_clip() {
+    let (state, mut client, id, speech, _dir) = demo_with_speech().await;
+    assert_eq!(
+        start_present(&mut client, &id).await.status(),
+        StatusCode::OK
+    );
+    let patient: PatientView = json_body(content(&mut client).await).await;
+    let blocks: Vec<&dc_core::present::PatientBlock> =
+        patient.sections.iter().flat_map(|s| &s.blocks).collect();
+    let block = blocks.iter().find(|b| b.sentences.len() >= 2).unwrap();
+    // Let pre-warming finish, so it does not add calls below.
+    let parts = crate::api::present::prewarm_blocks(&patient);
+    let unique: std::collections::HashSet<&Vec<String>> = parts.iter().collect();
+    wait_for_rows(&state.db, BLOCK_ROWS, unique.len() as i64).await;
+    let keys: Vec<&str> = block
+        .sentences
+        .iter()
+        .map(|s| s.audio_key.as_str())
+        .collect();
+    let url = |keys: &[&str]| format!("/api/present/narration?keys={}", keys.join(","));
+
+    let response = client.send(Method::GET, &url(&keys), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+    let offsets: Vec<u32> = response.headers()["x-dc-sentence-offsets"]
+        .to_str()
+        .unwrap()
+        .split(',')
+        .map(|o| o.parse().unwrap())
+        .collect();
+    let duration: u32 = response.headers()["x-dc-duration-ms"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    // Fake speech is 10 ms per character, with 250 ms between sentences.
+    let mut expected = Vec::new();
+    let mut at = 0;
+    for sentence in &block.sentences {
+        expected.push(at);
+        at += u32::try_from(sentence.text.chars().count() * 10).unwrap() + 250;
+    }
+    assert_eq!(offsets, expected);
+    assert_eq!(duration, at - 250);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[0..4], b"RIFF");
+    // Exactly the WAV is served, without the stored offsets.
+    let riff = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+    assert_eq!(body.len(), riff + 8);
+
+    // A later part of the same block, in order, is fine; a replay is cached.
+    let calls = speech.calls();
+    let tail = client.send(Method::GET, &url(&keys[1..]), None).await;
+    assert_eq!(tail.status(), StatusCode::OK);
+    let again = client.send(Method::GET, &url(&keys), None).await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(speech.calls(), calls);
+
+    // Keys from two blocks, out of order or not in this version are refused.
+    let other = blocks
+        .iter()
+        .find(|b| b.sentences[0].audio_key != keys[0])
+        .unwrap();
+    let foreign = audio_key(
+        crate::narration::speech_model_id(&state),
+        "en",
+        "A sentence from another presentation.",
+    );
+    let reversed: Vec<&str> = keys.iter().rev().copied().collect();
+    for bad in [
+        vec![keys[keys.len() - 1], other.sentences[0].audio_key.as_str()],
+        vec![keys[0], other.sentences[0].audio_key.as_str()],
+        reversed,
+        vec![keys[0], foreign.as_str()],
+        vec![foreign.as_str()],
+    ] {
+        let response = client.send(Method::GET, &url(&bad), None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(error_code(response).await, "audio_not_found");
+    }
+    // Malformed requests.
+    let thirteen = vec![keys[0]; 13];
+    for bad in [
+        url(&thirteen),
+        url(&[]),
+        url(&["abc"]),
+        format!("/api/present/narration?keys={},", keys[0]),
+        format!("/api/present/narration?other=1&keys={}", keys[0]),
+        "/api/present/narration".to_owned(),
+    ] {
+        let response = client.send(Method::GET, &bad, None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(speech.calls(), calls);
+}
+
+#[tokio::test]
+async fn narration_quota_is_charged_per_synthesized_sentence() {
+    let (state, mut client, id, speech, _dir) = demo_with_speech().await;
+    let edited = [
+        "Rest for a day and call us if the pain grows.",
+        "Eat soft food on the other side until it heals.",
+    ];
+    let response = put_block(
+        &mut client,
+        &id,
+        json!({ "section_key": "procedure:p1", "field": "recovery", "sentences": edited }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        start_present(&mut client, &id).await.status(),
+        StatusCode::OK
+    );
+    let patient: PatientView = json_body(content(&mut client).await).await;
+    let block = patient
+        .sections
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .find(|b| b.sentences.iter().any(|s| s.text == edited[0]))
+        .unwrap();
+    let keys: Vec<&str> = block
+        .sentences
+        .iter()
+        .map(|s| s.audio_key.as_str())
+        .collect();
+    // Let pre-warming of generated text finish so it does not overlap.
+    let blocks = crate::api::present::prewarm_blocks(&patient);
+    let unique: std::collections::HashSet<&Vec<String>> = blocks.iter().collect();
+    wait_for_rows(&state.db, BLOCK_ROWS, unique.len() as i64).await;
+    let before = speech.calls();
+
+    let url = format!("/api/present/narration?keys={}", keys.join(","));
+    assert_eq!(
+        client.send(Method::GET, &url, None).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(speech.calls(), before + 2);
+    let response = client.send(Method::GET, &url, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(speech.calls(), before + 2);
+
+    // The address was charged the pre-warmed sentences once each, plus the
+    // two edited sentences: nothing for merging or for the replay.
+    let prewarmed: std::collections::HashSet<&String> = blocks.iter().flatten().collect();
+    let used = prewarmed.iter().map(|t| t.chars().count()).sum::<usize>()
+        + edited.iter().map(|t| t.chars().count()).sum::<usize>();
+    let day = crate::narration::DEMO_ADDRESS_CHARS_PER_DAY;
+    let address = crate::limits::ip_key("0.0.0.0".parse().unwrap());
+    let window = std::time::Duration::from_secs(24 * 60 * 60);
+    let limiter = &state.limits.narration_address;
+    let left = day - u32::try_from(used).unwrap();
+    // One more character than is left is refused; exactly what is left is not.
+    assert!(limiter.take(&address, left + 1, day, window).is_err());
+    assert!(limiter.take(&address, left, day, window).is_ok());
 }

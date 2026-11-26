@@ -156,7 +156,7 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/staff/analytics` | 401 | A | 423 | 401 | aggregate only |
 | `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 |
 | `/api/staff/secrets` (write-only) | 401 | A, write only, never returns values | 423 | 401 | 403 |
-| `/api/present/content`, `variant`, `audio/:key` | 401 | 401 | 401 | A, bound version only | A, bound version only |
+| `/api/present/content`, `variant`, `audio/:key`, `narration?keys=` | 401 | 401 | 401 | A, bound version only | A, bound version only |
 | `/api/present/qa` | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
 | `/api/present/analytics` (engagement events) | 401 | 401 | 401 | A, write only | A, write only |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
@@ -232,7 +232,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Q&A conversations | questions and answers | 30 days | 24 h | scheduled hard delete |
 | Analytics events | sections visited, plays, language, active time; no free text | raw 90 days, then aggregated without presentation linkage | 24 h | scheduled delete |
 | `ai_calls` | metadata only, no prompt or response text | 12 months | 30 days | scheduled delete |
-| Audio clips | per-sentence audio | 30 days after last play | 24 h after last play | the 10-minute maintenance task deletes the row and file of stale clips, then the least recently played clips while the cache is over 2 GB, then clip files with no row older than the retention; only names of 64 hex characters with a known extension inside the audio directory are deleted |
+| Audio clips | per-sentence audio and merged block clips | 30 days after last play | 24 h after last play | the 10-minute maintenance task deletes the row and file of stale clips, then the least recently played clips while the cache is over 2 GB, then clip files with no row older than the retention; only names of 64 hex characters with a known extension inside the audio directory are deleted |
 | PDF booklets | rendered booklet | 7 days (re-exportable) | 24 h | scheduled delete |
 | Audit events | logins, unlocks, exports, deletions, review actions | 12 months | 7 days | scheduled delete |
 | Logs | redacted operational logs | 30 days, daily rotation | platform default, max 7 days | rotation |
@@ -257,7 +257,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 - Generated, translated and Q&A text is rendered as text nodes only. Leptos `inner_html` is banned in `dc-web` by a clippy `disallowed_methods` rule, with one reviewed exception for our own static SVG assets.
 - Validator V15 rejects HTML, Markdown and URLs in model output. Reference links come only from KB entries, which allow `https` URLs only.
 - PDF: text goes to Typst through the JSON data model and is placed as content strings, never evaluated as Typst markup. Test fixtures include Typst control characters (`#`, `$`, `[`, `]`).
-- Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-<hash of each inline script in the embedded index.html>'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. Trunk loads the WASM through one inline module script, so the server computes its hash at startup from the embedded `index.html` and no `'unsafe-inline'` is needed.
+- Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-<hash of each inline script in the embedded index.html>'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. Trunk loads the WASM through one inline module script, so the server computes its hash at startup from the embedded `index.html` and no `'unsafe-inline'` is needed. `media-src` allows `blob:` because the patient screens fetch a block's narration (to read its sentence offsets) and play the bytes from an object URL; a page can only make object URLs for data it already holds.
 - Also sent: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`, `Cross-Origin-Opener-Policy: same-origin`, and `Cache-Control: no-store` on `/api`.
 
 ## Demo abuse controls
@@ -273,7 +273,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | On-demand variants | 10 per hour per visitor |
 | Q&A | 20 questions per hour per visitor, 500 characters each |
 | Staff edits | 2,000 characters per block, 400 per sentence; 60 saved edits per hour per visitor; text containing `{{` or `}}` is refused (`422 invalid_edit`), because placeholders are filled in after the length checks |
-| Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted on cache misses only; `429 narration_quota`. Pre-warming on entering Present mode covers generated sentences only; staff-edited text is narrated only when played |
+| Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted per synthesized sentence on cache misses only, never for merging a block or replaying a cached clip; `429 narration_quota`. The block route `/api/present/narration` serves only keys that are consecutive sentences of one block of the present session's bound version, in order (at most 12); keys from two blocks or outside that version answer `404 audio_not_found`. Pre-warming on entering Present mode covers generated blocks only; staff-edited text is narrated only when played |
 | Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue with a visible position |
 | Budget | $25 per month, reservation-based guard, 80% soft stop on new generations (see [AI_PIPELINE.md](AI_PIPELINE.md)). Narration may spend at most 20% of the cap, tracked in `ai_usage.speech_cost_usd`; past it narration answers `503 budget_reached` while generation keeps working |
 | Uploads | none; no endpoint accepts files |

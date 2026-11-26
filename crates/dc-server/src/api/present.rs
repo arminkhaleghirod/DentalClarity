@@ -19,14 +19,15 @@ use crate::security::{CurrentPresent, CurrentSession};
 use crate::sessions::{self, MAX_PIN_ATTEMPTS, PresentSession, Session, SessionKind};
 use crate::{AppState, audit, jobs};
 use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{Path, RawQuery, State};
+use axum::http::{HeaderMap, HeaderName, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use dc_core::Mode;
 use dc_core::plan::PlanSnapshot;
 use dc_core::present::{
-    ExitPresentRequest, ExitPresentResponse, PatientBlock, PatientSection, PatientSectionKind,
-    PatientSentence, PatientView, PracticeBrand, StartPresentResponse, audio_key,
+    ExitPresentRequest, ExitPresentResponse, MAX_NARRATION_SENTENCES, NARRATION_DURATION_HEADER,
+    PatientBlock, PatientSection, PatientSectionKind, PatientSentence, PatientView, PracticeBrand,
+    SENTENCE_OFFSETS_HEADER, StartPresentResponse, audio_key,
 };
 use dc_core::presentation::{BlockSource, SectionVisibility, TextBlock};
 use dc_generation::facts::FactSheet;
@@ -91,20 +92,22 @@ async fn prewarm_narration(
 ) {
     match patient_view(state, id, version).await {
         Ok(view) => {
-            crate::narration::prewarm(state, &view.language, prewarm_texts(&view), quota);
+            crate::narration::prewarm(state, &view.language, prewarm_blocks(&view), quota);
         }
         Err(failure) => tracing::debug!(code = failure.code, "narration pre-warm skipped"),
     }
 }
 
-/// The sentences worth narrating ahead of time: those of generated blocks.
-pub(super) fn prewarm_texts(view: &PatientView) -> Vec<String> {
+/// The clips worth narrating ahead of time: those of generated blocks, in
+/// screen order, split into parts of `MAX_NARRATION_SENTENCES` the way the
+/// patient screens request them.
+pub(super) fn prewarm_blocks(view: &PatientView) -> Vec<Vec<String>> {
     view.sections
         .iter()
         .flat_map(|s| &s.blocks)
         .filter(|b| b.source == BlockSource::Generated)
-        .flat_map(|b| &b.sentences)
-        .map(|s| s.text.clone())
+        .flat_map(|b| b.sentences.chunks(MAX_NARRATION_SENTENCES))
+        .map(|part| part.iter().map(|s| s.text.clone()).collect())
         .collect()
 }
 
@@ -194,6 +197,78 @@ pub async fn audio(
     let (mime, bytes) =
         crate::narration::clip(&state, &view.language, &text, quota.as_ref()).await?;
     Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+}
+
+/// `GET /api/present/narration?keys=<k1>,<k2>,...`: one clip for up to
+/// `MAX_NARRATION_SENTENCES` consecutive sentences of one block of the bound
+/// version, in order. The `x-dc-sentence-offsets` header gives each
+/// sentence's start in milliseconds and `x-dc-duration-ms` the length.
+/// Keys from different blocks, out of order or not in the version answer 404.
+pub async fn narration(
+    State(state): State<AppState>,
+    CurrentPresent(present): CurrentPresent,
+    ClientIp(ip): ClientIp,
+    RawQuery(query): RawQuery,
+) -> Result<Response, Failure> {
+    let keys = narration_keys(query.as_deref()).ok_or_else(|| {
+        Failure::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "Ask for one to twelve narration keys.",
+        )
+    })?;
+    let view = patient_view(&state, &present.presentation_id, present.version).await?;
+    let texts = block_texts(&view, &keys).ok_or_else(|| {
+        Failure::new(
+            StatusCode::NOT_FOUND,
+            "audio_not_found",
+            "These narration keys are not one part of this presentation.",
+        )
+    })?;
+    let quota = crate::narration::quota(&state, &present.staff_token_hash, ip);
+    let clip = crate::narration::block(&state, &view.language, &texts, quota.as_ref()).await?;
+    let offsets = clip
+        .offsets_ms
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok((
+        [
+            (header::CONTENT_TYPE, "audio/wav".to_owned()),
+            (HeaderName::from_static(SENTENCE_OFFSETS_HEADER), offsets),
+            (
+                HeaderName::from_static(NARRATION_DURATION_HEADER),
+                clip.duration_ms.to_string(),
+            ),
+        ],
+        clip.wav,
+    )
+        .into_response())
+}
+
+/// The keys of `keys=<k1>,<k2>,...`: one to `MAX_NARRATION_SENTENCES` keys of
+/// 64 hex characters. Anything else in the query is refused.
+pub(super) fn narration_keys(query: Option<&str>) -> Option<Vec<String>> {
+    let value = query?.strip_prefix("keys=")?;
+    let value = value.replace("%2C", ",").replace("%2c", ",");
+    let keys: Vec<String> = value.split(',').map(str::to_owned).collect();
+    let valid = (1..=MAX_NARRATION_SENTENCES).contains(&keys.len())
+        && keys
+            .iter()
+            .all(|k| k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit()));
+    valid.then_some(keys)
+}
+
+/// The texts of the sentences `keys` name, if they are consecutive sentences
+/// of one block of `view`, in order.
+pub(super) fn block_texts(view: &PatientView, keys: &[String]) -> Option<Vec<String>> {
+    view.sections
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .flat_map(|b| b.sentences.windows(keys.len()))
+        .find(|run| run.iter().zip(keys).all(|(s, k)| &s.audio_key == k))
+        .map(|run| run.iter().map(|s| s.text.clone()).collect())
 }
 
 /// Builds what the patient may see for the present session's version: only

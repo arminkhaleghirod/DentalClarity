@@ -44,6 +44,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
     let present = Router::new()
         .route("/content", get(present::content))
         .route("/audio/{key}", get(present::audio))
+        .route("/narration", get(present::narration))
         .route("/exit", post(present::exit))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));
 
