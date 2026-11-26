@@ -40,8 +40,13 @@ fn file(path: &str) -> Option<Response> {
     let mime = asset.metadata.mimetype().to_owned();
     let cache = if path == "index.html" {
         "no-cache"
-    } else {
+    } else if is_fingerprinted(path) {
+        // Trunk names bundle files after their content hash, so a changed
+        // file always gets a new name and the old one can be cached forever.
         "public, max-age=31536000, immutable"
+    } else {
+        // Files that keep their name when edited, such as illustrations.
+        "public, max-age=3600"
     };
     Some(
         (
@@ -53,6 +58,17 @@ fn file(path: &str) -> Option<Response> {
         )
             .into_response(),
     )
+}
+
+/// Whether a file name carries a content hash, like `dc-web-821f1201088705e_bg.wasm`
+/// or `staff-419279d036edb34c.css`: a run of at least 12 hex digits after a dash.
+fn is_fingerprinted(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let stem = name.split('.').next().unwrap_or(name);
+    stem.split('-').skip(1).any(|part| {
+        let hex = part.trim_end_matches("_bg");
+        hex.len() >= 12 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    })
 }
 
 /// The Content Security Policy for every response.
@@ -113,6 +129,16 @@ mod tests {
         assert_eq!(hashes.len(), 1);
         let expected = STANDARD.encode(Sha256::digest(b"init()"));
         assert_eq!(hashes[0], format!("sha256-{expected}"));
+    }
+
+    #[test]
+    fn only_fingerprinted_files_are_immutable() {
+        assert!(is_fingerprinted("dc-web-821f1201088705e_bg.wasm"));
+        assert!(is_fingerprinted("staff-419279d036edb34c.css"));
+        assert!(is_fingerprinted("dc-web-c1a64fa8a15941e3.js"));
+        assert!(!is_fingerprinted("illustrations/root_canal.svg"));
+        assert!(!is_fingerprinted("illustrations/filling_composite.svg"));
+        assert!(!is_fingerprinted("index.html"));
     }
 
     #[test]

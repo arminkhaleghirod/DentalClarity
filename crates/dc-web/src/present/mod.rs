@@ -289,7 +289,10 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
         let _ = root.set_attribute("lang", &language);
     }
 
-    let journey_exists = section(&view, PatientSectionKind::Journey).is_some();
+    // The journey can always be drawn from the plan facts, even when its
+    // section is held, so the tab shows whenever there is something to order.
+    let journey_exists =
+        section(&view, PatientSectionKind::Journey).is_some() || !view.procedures.is_empty();
     let data = StoredValue::new(view);
     let narrator = Narrator::new();
     let nav = Nav {
