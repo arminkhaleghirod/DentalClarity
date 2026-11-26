@@ -9,14 +9,17 @@
 //! provider. No prompt or response text is written outside `results.jsonl`.
 
 use crate::baseline;
+use crate::batch::{self, BatchModel};
 use crate::case::{Case, LoadedCase, Split, TaskKind};
+use crate::claude_cli::ClaudeCli;
 use crate::judge::{self, Judgment};
 use crate::meta;
 use crate::score::visible::{self, VisibleScore};
 use crate::score::{self, Metric, SectionRecord};
 pub use crate::systems::Params;
 use crate::systems::{
-    self, BASELINE_TIMEOUT_S, EndpointSnapshot, JUDGE_TIMEOUT_S, SeedMode, SystemKind, SystemSpec,
+    self, BASELINE_TIMEOUT_S, EndpointSnapshot, JUDGE_TIMEOUT_S, Route, SeedMode, SystemKind,
+    SystemSpec,
 };
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
@@ -110,6 +113,9 @@ impl TextModel for Dispatch {
 pub struct Recorder {
     inner: Arc<dyn TextModel>,
     calls: Mutex<Vec<CallRecord>>,
+    /// Run-wide spend, raised as each billed call returns, so the cost cap
+    /// sees money spent while presentations are still running.
+    spend: Option<Arc<Mutex<f64>>>,
 }
 
 impl Recorder {
@@ -117,7 +123,13 @@ impl Recorder {
         Recorder {
             inner,
             calls: Mutex::new(Vec::new()),
+            spend: None,
         }
+    }
+
+    pub fn with_spend(mut self, spend: Arc<Mutex<f64>>) -> Self {
+        self.spend = Some(spend);
+        self
     }
 
     pub fn take(&self) -> Vec<CallRecord> {
@@ -150,6 +162,9 @@ impl TextModel for Recorder {
         let started = Instant::now();
         let result = self.inner.generate(request).await;
         let latency_ms = started.elapsed().as_millis() as u64;
+        if let (Some(spend), Ok(r)) = (&self.spend, &result) {
+            *spend.lock().expect("spend lock") += billed(r.route.as_deref(), r.usage.cost_usd);
+        }
         let record = match &result {
             Ok(r) => CallRecord {
                 role: role.into(),
@@ -182,6 +197,16 @@ impl TextModel for Recorder {
         };
         self.calls.lock().expect("recorder lock").push(record);
         result
+    }
+}
+
+/// Money a call cost. The subscription route reports a list-price estimate,
+/// which is not spent, so it does not count against the cap.
+pub fn billed(route: Option<&str>, cost: Option<f64>) -> f64 {
+    if route == Some(crate::claude_cli::ROUTE) {
+        0.0
+    } else {
+        cost.unwrap_or(0.0)
     }
 }
 
@@ -593,6 +618,7 @@ pub fn plan_systems(opts: &RunOptions) -> Vec<(SystemSpec, ModelChoice)> {
                         parallel_sections: 1,
                         seed: None,
                         timeout_s: Some(BASELINE_TIMEOUT_S),
+                        temperature_sent: true,
                     },
                     prompt_versions: vec![opts.baseline_variant.version()],
                     routing,
@@ -610,23 +636,75 @@ struct Clients {
     judge: Arc<dyn TextModel>,
 }
 
+/// Per-call timeout on the flex tier, which may queue a request before serving it.
+const FLEX_TIMEOUT_S: u64 = 600;
+
 fn build_clients(
     root: &Path,
     models: &[String],
     judge_model: Option<&str>,
     seeds: &BTreeMap<String, Option<u64>>,
+    no_temperature: &BTreeMap<String, bool>,
+    endpoints: &BTreeMap<String, EndpointSnapshot>,
+    budget: &batch::Budget,
 ) -> Result<Clients> {
     let _ = dotenvy::from_path(root.join(".env"));
-    let key = std::env::var("OPENROUTER_API_KEY")
-        .context("OPENROUTER_API_KEY is not set (environment or .env)")?;
-    let make = |m: &str, timeout: Option<u64>| -> Result<Arc<dyn TextModel>> {
-        let mut c = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), key.clone())?
-            .with_routing(systems::routing_for(m))
-            .with_seed(seeds.get(m).copied().flatten());
-        if let Some(t) = timeout {
-            c = c.with_timeout(Duration::from_secs(t))?;
+    let needs_key = models
+        .iter()
+        .map(String::as_str)
+        .chain(judge_model)
+        .any(|m| systems::route_of(m) != Route::Subscription);
+    let key = match std::env::var("OPENROUTER_API_KEY") {
+        Ok(k) => k,
+        Err(_) if !needs_key => String::new(),
+        Err(_) => bail!("OPENROUTER_API_KEY is not set (environment or .env)"),
+    };
+    let slots = ClaudeCli::shared_slots();
+    // One batch client per model, shared by the pipeline, baseline and judge,
+    // so all of a model's requests in a round go out in the same batch.
+    let mut batches: HashMap<String, Arc<dyn TextModel>> = HashMap::new();
+    let mut make = |m: &str, timeout: Option<u64>| -> Result<Arc<dyn TextModel>> {
+        let seed = seeds.get(m).copied().flatten();
+        let omit_temperature = no_temperature.get(m).copied().unwrap_or(false);
+        match systems::route_of(m) {
+            Route::Subscription => Ok(Arc::new(ClaudeCli::new(slots.clone())?)),
+            Route::Batch => {
+                if let Some(c) = batches.get(m) {
+                    return Ok(c.clone());
+                }
+                let eps = endpoints
+                    .get(m)
+                    .map(|s| s.endpoints.clone())
+                    .unwrap_or_default();
+                let c: Arc<dyn TextModel> = Arc::new(BatchModel::new(
+                    key.clone(),
+                    m,
+                    seed,
+                    omit_temperature,
+                    &eps,
+                    budget.clone(),
+                )?);
+                batches.insert(m.to_owned(), c.clone());
+                Ok(c)
+            }
+            route @ (Route::Live | Route::Flex) => {
+                let mut c = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), key.clone())?
+                    .with_routing(systems::routing_for(m))
+                    .with_seed(seed)
+                    .with_upstream_model(systems::upstream_model(m))
+                    .without_temperature(omit_temperature);
+                let mut timeout = timeout;
+                if route == Route::Flex {
+                    // The flex tier queues requests when busy.
+                    c = c.with_service_tier(Some("flex".into()));
+                    timeout = Some(timeout.unwrap_or(0).max(FLEX_TIMEOUT_S));
+                }
+                if let Some(t) = timeout {
+                    c = c.with_timeout(Duration::from_secs(t))?;
+                }
+                Ok(Arc::new(c))
+            }
         }
-        Ok(Arc::new(c))
     };
     let mut pipeline = HashMap::new();
     let mut baseline = HashMap::new();
@@ -745,20 +823,27 @@ pub async fn run(
     let mut endpoints = BTreeMap::new();
     let mut seeds: BTreeMap<String, Option<u64>> = BTreeMap::new();
     let mut seed_notes = BTreeMap::new();
+    let mut no_temperature: BTreeMap<String, bool> = BTreeMap::new();
     for m in &all_models {
-        let snap = if opts.dry_run {
+        let route = systems::route_of(m);
+        let reasoning = plans
+            .iter()
+            .any(|(s, _)| s.writer_model == *m && s.params.reasoning.is_some());
+        let snap = if opts.dry_run || route == Route::Subscription {
             None
         } else {
             let s = systems::fetch_endpoints(m).await;
             if let Some(e) = &s.error {
                 eprintln!("warning: endpoint list for {m} unavailable: {e}");
             } else {
-                let reasoning = plans
-                    .iter()
-                    .any(|(s, _)| s.writer_model == *m && s.params.reasoning.is_some());
-                if s.eligible(reasoning) == 0 {
+                if s.eligible(reasoning, route == Route::Batch) == 0 {
                     bail!(
-                        "{m}: no OpenRouter endpoint meets the routing (8-bit or better, structured output{}); pick another model or reasoning setting",
+                        "{m}: no OpenRouter endpoint meets the routing ({}structured output{}); pick another model or reasoning setting",
+                        if route == Route::Batch {
+                            ""
+                        } else {
+                            "8-bit or better, "
+                        },
                         if reasoning { ", reasoning" } else { "" }
                     );
                 }
@@ -767,14 +852,34 @@ pub async fn run(
         };
         let (seed, note) = if opts.dry_run {
             (Some(opts.seed), "dry run: no provider".to_owned())
+        } else if route == Route::Subscription {
+            (
+                None,
+                "seed not sent: the subscription route takes no seed".to_owned(),
+            )
         } else {
             systems::seed_decision(
                 opts.seed_mode,
                 opts.seed,
                 &systems::routing_for(m),
                 snap.as_ref(),
+                reasoning,
+                route == Route::Batch,
             )
         };
+        // A model whose eligible endpoints all ignore `temperature` runs at
+        // their default; sending it with `require_parameters` would find none.
+        let omit = route == Route::Subscription
+            || snap.as_ref().is_some_and(|s| {
+                s.error.is_none()
+                    && !s.eligible_accept_temperature(reasoning, route == Route::Batch)
+            });
+        let note = if omit && route != Route::Subscription {
+            format!("{note}; temperature not sent: no endpoint that meets the routing accepts it")
+        } else {
+            note
+        };
+        no_temperature.insert(m.clone(), omit);
         seeds.insert(m.clone(), seed);
         seed_notes.insert(m.clone(), note);
         if let Some(s) = snap {
@@ -785,10 +890,15 @@ pub async fn run(
         .into_iter()
         .map(|(mut s, c)| {
             s.params.seed = seeds.get(&s.writer_model).copied().flatten();
+            s.params.temperature_sent = !no_temperature
+                .get(&s.writer_model)
+                .copied()
+                .unwrap_or(false);
             (s, c)
         })
         .collect();
 
+    let spent = Arc::new(Mutex::new(0.0f64));
     let clients = if opts.dry_run {
         let fake: Arc<dyn TextModel> = Arc::new(crate::dryrun::ScriptedModel);
         Clients {
@@ -797,7 +907,18 @@ pub async fn run(
             judge: fake,
         }
     } else {
-        build_clients(root, &models, opts.judge.as_deref(), &seeds)?
+        build_clients(
+            root,
+            &models,
+            opts.judge.as_deref(),
+            &seeds,
+            &no_temperature,
+            &endpoints,
+            &batch::Budget {
+                spent: spent.clone(),
+                cap: opts.max_cost_usd,
+            },
+        )?
     };
 
     let started = SystemTime::now();
@@ -936,7 +1057,6 @@ pub async fn run(
         .map(|(i, (c, s, m))| (i, c, s, m))
         .collect();
     let total_jobs = jobs.len();
-    let spent = Arc::new(Mutex::new(0.0f64));
     let skipped = Arc::new(Mutex::new(0usize));
     let decided: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
     let ctx = JobContext {
@@ -946,42 +1066,41 @@ pub async fn run(
         judge: opts.judge.as_deref(),
         judge_reasoning: opts.judge_reasoning,
         baseline_variant: opts.baseline_variant,
+        spent: spent.clone(),
     };
-    let mut stream = futures::stream::iter(jobs)
-        .map(|(i, loaded, system, choice)| {
-            let spent = spent.clone();
-            let skipped = skipped.clone();
-            let decided = decided.clone();
-            let ctx = &ctx;
-            async move {
-                let go = *decided
-                    .lock()
-                    .expect("decision lock")
-                    .entry(loaded.case.case_id.clone())
-                    .or_insert_with(|| *spent.lock().expect("spent lock") < opts.max_cost_usd);
-                if !go {
-                    *skipped.lock().expect("skipped lock") += 1;
-                    return None;
-                }
-                eprintln!(
-                    "[{}/{total_jobs}] {} {} ({:?})",
-                    i + 1,
-                    system.label,
-                    loaded.case.case_id,
-                    loaded.case.task.kind
-                );
-                let result = run_job(ctx, loaded, system, choice).await;
-                let cost = result.cost_usd.unwrap_or(0.0)
-                    + result
-                        .judgments
-                        .iter()
-                        .filter_map(|j| j.cost_usd)
-                        .sum::<f64>();
-                *spent.lock().expect("spent lock") += cost;
-                Some(result)
-            }
-        })
-        .buffer_unordered(opts.concurrency.max(1));
+    // Live-route presentations run `concurrency` at a time, so their latency
+    // is measured under a steady load. Flex-tier presentations get their own
+    // pool of the same size, so they neither crowd out the live ones nor
+    // flood the tier. Batch and subscription presentations all start at once:
+    // a batch round only goes out when every request of that round has
+    // arrived, and the subscription route limits its own processes.
+    let (flex, rest): (Vec<_>, Vec<_>) = jobs
+        .into_iter()
+        .partition(|(_, _, s, _)| systems::route_of(&s.writer_model) == Route::Flex);
+    let (timed, untimed): (Vec<_>, Vec<_>) = rest
+        .into_iter()
+        .partition(|(_, _, s, _)| systems::route_of(&s.writer_model).timed());
+    let untimed_n = untimed.len().max(1);
+    let gate = Gate {
+        spent: spent.clone(),
+        skipped: skipped.clone(),
+        decided: decided.clone(),
+        cap: opts.max_cost_usd,
+        total_jobs,
+    };
+    let mut stream = futures::stream::select(
+        futures::stream::select(
+            futures::stream::iter(timed)
+                .map(|job| start_job(job, &ctx, &gate))
+                .buffer_unordered(opts.concurrency.max(1)),
+            futures::stream::iter(flex)
+                .map(|job| start_job(job, &ctx, &gate))
+                .buffer_unordered(opts.concurrency.max(1)),
+        ),
+        futures::stream::iter(untimed)
+            .map(|job| start_job(job, &ctx, &gate))
+            .buffer_unordered(untimed_n),
+    );
 
     let mut results = std::fs::File::create(dir.join("results.jsonl"))?;
     let mut returned: Vec<String> = Vec::new();
@@ -1050,6 +1169,43 @@ pub async fn run(
     Ok(dir)
 }
 
+type Job<'a> = (usize, &'a LoadedCase, &'a SystemSpec, &'a ModelChoice);
+
+/// The cost cap's per-case decision, shared by both job pools.
+struct Gate {
+    spent: Arc<Mutex<f64>>,
+    skipped: Arc<Mutex<usize>>,
+    decided: Arc<Mutex<HashMap<String, bool>>>,
+    cap: f64,
+    total_jobs: usize,
+}
+
+async fn start_job<'a>(
+    (i, loaded, system, choice): Job<'a>,
+    ctx: &'a JobContext<'a>,
+    gate: &'a Gate,
+) -> Option<CaseResult> {
+    let go = *gate
+        .decided
+        .lock()
+        .expect("decision lock")
+        .entry(loaded.case.case_id.clone())
+        .or_insert_with(|| *gate.spent.lock().expect("spent lock") < gate.cap);
+    if !go {
+        *gate.skipped.lock().expect("skipped lock") += 1;
+        return None;
+    }
+    eprintln!(
+        "[{}/{}] {} {} ({:?})",
+        i + 1,
+        gate.total_jobs,
+        system.label,
+        loaded.case.case_id,
+        loaded.case.task.kind
+    );
+    Some(run_job(ctx, loaded, system, choice).await)
+}
+
 fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
     std::fs::write(
         dir.join("manifest.json"),
@@ -1065,6 +1221,7 @@ struct JobContext<'a> {
     judge: Option<&'a str>,
     judge_reasoning: Option<ReasoningEffort>,
     baseline_variant: baseline::Variant,
+    spent: Arc<Mutex<f64>>,
 }
 
 /// The baseline's single call, with the pipeline's three transport retries.
@@ -1100,10 +1257,13 @@ async fn run_job(
     let mut error = None;
     let mut sections: Vec<SectionRecord> = Vec::new();
     let reviewer_model = system.reviewer_model.clone().unwrap_or_default();
-    let recorder = Arc::new(Recorder::new(match system.kind {
-        SystemKind::Pipeline => ctx.clients.pipeline.clone(),
-        SystemKind::Baseline => ctx.clients.baseline.clone(),
-    }));
+    let recorder = Arc::new(
+        Recorder::new(match system.kind {
+            SystemKind::Pipeline => ctx.clients.pipeline.clone(),
+            SystemKind::Baseline => ctx.clients.baseline.clone(),
+        })
+        .with_spend(ctx.spent.clone()),
+    );
 
     let snapshot = if !case.task.kind.runnable() {
         error = Some(format!(
@@ -1213,6 +1373,10 @@ async fn run_job(
             )
         }))
         .await;
+        *ctx.spent.lock().expect("spent lock") += judgments
+            .iter()
+            .map(|j| billed(j.provider_route.as_deref(), j.cost_usd))
+            .sum::<f64>();
     }
 
     let calls = recorder.take();

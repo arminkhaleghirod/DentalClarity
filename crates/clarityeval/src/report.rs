@@ -12,7 +12,7 @@ use crate::runner::{CaseResult, Manifest};
 use crate::score::visible::{self, Group, ViolationKind};
 use crate::score::{self, State};
 use crate::stats::{self, Estimate, Obs};
-use crate::systems::{SystemKind, reasoning_str};
+use crate::systems::{self, SystemKind, reasoning_str};
 use anyhow::{Context as _, Result};
 use dc_knowledge::KnowledgeBase;
 use serde::{Deserialize, Serialize};
@@ -503,6 +503,15 @@ pub fn summarize(
             .collect();
         call_ms.sort_by(f64::total_cmp);
         let own = rs.iter().filter(|r| infra_failure(r)).count();
+        // Latency is measured on the live route only (DECISIONS E20).
+        let timed = systems::route_of(&first.writer_model).timed();
+        let untime = |mut m: Metrics| {
+            if !timed {
+                m.latency_p50_s = None;
+                m.latency_p90_s = None;
+            }
+            m
+        };
         systems.push(SystemSummary {
             label: label.clone(),
             kind: first.system_kind,
@@ -519,10 +528,10 @@ pub fn summarize(
                     )
                 })
                 .sum(),
-            metrics: metrics(&scored, b),
+            metrics: untime(metrics(&scored, b)),
             by_category: by_cat
                 .iter()
-                .map(|(k, v)| (k.clone(), metrics(v, b)))
+                .map(|(k, v)| (k.clone(), untime(metrics(v, b))))
                 .collect(),
             violations_by_kind: kinds,
             violations_by_group: groups,
@@ -536,7 +545,11 @@ pub fn summarize(
                 .iter()
                 .map(|r| r.calls.iter().filter(|c| c.error.is_some()).count())
                 .sum(),
-            call_latency_p50_s: stats::percentile(&call_ms, 50.0),
+            call_latency_p50_s: if timed {
+                stats::percentile(&call_ms, 50.0)
+            } else {
+                None
+            },
             judge: judge_summary(&rs, &scored, b),
         });
     }
@@ -858,7 +871,7 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
              presentations ({} with unconfirmed note content, {} on the checks the validators do \
              not run), {} percentage points of sections not shown, ${} per presentation over the \
              {} cases where both reported a cost (paired bootstrap, {} plans).",
-            p.model,
+            systems::display_model(&p.model),
             p.cases,
             p.violating_sentences_per_presentation.fmt(100.0, 1),
             p.violating_sentences_with_note_per_presentation
@@ -1068,7 +1081,10 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
          one successful call without a reported cost, so its figure is a lower bound. Per \
          presentation cost and latency cover scored presentations only, so they leave out \
          infrastructure failures; total spend and tokens cover every presentation. Latency is \
-         client wall clock per presentation at concurrency {}.",
+         client wall clock per presentation at concurrency {}. It is n/a for models that ran on \
+         an asynchronous or shared route, where time waiting in a queue would swamp the model's \
+         own time; their cost is the discounted rate actually charged, or for Claude models the \
+         client's list-price estimate.",
         m.concurrency.max(1)
     );
 
@@ -1082,7 +1098,9 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
              validation, and are not yet calibrated against dentists. A presentation with visible \
              text whose judge calls all failed is missing from these figures, not counted as \
              clean.\n",
-            m.judge.as_ref().map_or("?", |j| j.model.as_str()),
+            m.judge
+                .as_ref()
+                .map_or("?".to_owned(), |j| systems::display_model(&j.model)),
             m.judge.as_ref().map_or("?", |j| j.prompt_version.as_str())
         );
         let _ = writeln!(
@@ -1205,7 +1223,11 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
                 s.reviewer_model
                     .as_ref()
                     .map_or("none (no review pass)".into(), |r| format!("`{r}`")),
-                s.params.temperature,
+                if s.params.temperature_sent {
+                    s.params.temperature.to_string()
+                } else {
+                    "the model's default (not accepted)".to_owned()
+                },
                 reasoning_str(s.params.reasoning),
                 s.params.max_tokens,
                 s.params.max_repairs,
@@ -1259,7 +1281,7 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
                 None => format!(
                     "{} listed, {} meet the routing filters with reasoning",
                     e.endpoints.len(),
-                    e.eligible(true)
+                    e.eligible(true, systems::route_of(model) == systems::Route::Batch)
                 ),
             },
         );

@@ -47,6 +47,14 @@ pub struct Params {
     /// Client-side timeout per call.
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// False when the model's endpoints do not accept `temperature`, so it
+    /// ran at the provider's default (see [`temperature_accepted`]).
+    #[serde(default = "yes")]
+    pub temperature_sent: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Params {
@@ -68,6 +76,7 @@ impl Params {
                 }
                 .as_secs(),
             ),
+            temperature_sent: true,
         }
     }
 }
@@ -91,19 +100,81 @@ pub struct SystemSpec {
 }
 
 impl SystemSpec {
+    /// `pipeline:<model>` with the model's display name (see [`display_model`]).
     pub fn label(kind: SystemKind, model: &str) -> String {
-        format!("{}:{model}", kind.as_str())
+        format!("{}:{}", kind.as_str(), display_model(model))
     }
 }
 
-/// Provider routing for a model. The app's default model keeps its benchmarked
-/// provider order; every other model is sorted by throughput with fallbacks,
-/// so a comparison measures the model rather than a slow or low-bit provider.
-pub fn routing_for(model: &str) -> Value {
-    if model == dc_ai::defaults::DEMO_TEXT_MODEL {
-        default_routing(dc_ai::defaults::DEMO_PROVIDER_ORDER)
+/// How a model is reached (docs/DECISIONS.md E20), decided by its id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// OpenRouter chat completions, one request at a time.
+    Live,
+    /// OpenRouter's batch API: ids ending in `:batch`.
+    Batch,
+    /// OpenRouter live on the provider's `flex` service tier: ids ending in
+    /// `:flex`, sent upstream without the suffix.
+    Flex,
+    /// Claude Code print mode on the owner's subscription: `claude-cli/...` ids.
+    Subscription,
+}
+
+impl Route {
+    /// Whether per-call and per-presentation latency mean anything on this
+    /// route. Batch calls wait in a queue and subscription calls wait for a
+    /// shared process slot, so only the live route is timed.
+    pub fn timed(self) -> bool {
+        self == Route::Live
+    }
+}
+
+pub fn route_of(model: &str) -> Route {
+    if crate::claude_cli::is_cli_model(model) {
+        Route::Subscription
+    } else if crate::batch::is_batch_model(model) {
+        Route::Batch
+    } else if model.ends_with(FLEX_SUFFIX) {
+        Route::Flex
     } else {
-        default_routing(&[])
+        Route::Live
+    }
+}
+
+pub const FLEX_SUFFIX: &str = ":flex";
+
+/// The model's name in reports: the same model on any route has one name.
+pub fn display_model(model: &str) -> String {
+    crate::claude_cli::display_name(model).unwrap_or_else(|| {
+        model
+            .strip_suffix(crate::batch::SUFFIX)
+            .or_else(|| model.strip_suffix(FLEX_SUFFIX))
+            .unwrap_or(model)
+            .to_owned()
+    })
+}
+
+/// The id OpenRouter knows: `:flex` is ours and is removed; `:batch` is
+/// OpenRouter's own variant id and stays.
+pub fn upstream_model(model: &str) -> &str {
+    model.strip_suffix(FLEX_SUFFIX).unwrap_or(model)
+}
+
+/// Provider routing for a model. The app's default model keeps its benchmarked
+/// provider order; every other live model is sorted by throughput with
+/// fallbacks, so a comparison measures the model rather than a slow or
+/// low-bit provider. The batch API accepts only `only` and `allow_fallbacks`,
+/// and the subscription route has no routing.
+pub fn routing_for(model: &str) -> Value {
+    match route_of(model) {
+        Route::Subscription => serde_json::json!({ "route": crate::claude_cli::ROUTE }),
+        Route::Batch => serde_json::json!({ "allow_fallbacks": true }),
+        Route::Flex => default_routing(&[]),
+        Route::Live if model == dc_ai::defaults::DEMO_TEXT_MODEL => {
+            default_routing(dc_ai::defaults::DEMO_PROVIDER_ORDER)
+        }
+        Route::Live => default_routing(&[]),
     }
 }
 
@@ -136,21 +207,62 @@ pub struct Endpoint {
     pub supports_seed: bool,
     pub supports_reasoning: bool,
     pub supports_response_format: bool,
+    #[serde(default)]
+    pub supports_temperature: bool,
+    /// US dollars per token, as listed.
+    #[serde(default)]
+    pub prompt_price: Option<f64>,
+    #[serde(default)]
+    pub completion_price: Option<f64>,
 }
 
 impl EndpointSnapshot {
-    /// Endpoints the default routing may use (8-bit or better, structured output).
-    pub fn eligible(&self, reasoning: bool) -> usize {
+    /// Endpoints the routing may use: structured output, reasoning when asked,
+    /// and 8-bit or better weights unless `any_quantization` (the batch route,
+    /// which cannot filter by quantization).
+    pub fn eligible(&self, reasoning: bool, any_quantization: bool) -> usize {
         self.endpoints
             .iter()
             .filter(|e| {
-                matches!(
-                    e.quantization.as_deref().unwrap_or("unknown"),
-                    "fp8" | "bf16" | "fp16" | "unknown"
-                ) && e.supports_response_format
+                (any_quantization
+                    || matches!(
+                        e.quantization.as_deref().unwrap_or("unknown"),
+                        "fp8" | "bf16" | "fp16" | "unknown"
+                    ))
+                    && e.supports_response_format
                     && (!reasoning || e.supports_reasoning)
             })
             .count()
+    }
+
+    /// Whether any endpoint counted by [`Self::eligible`] accepts `temperature`.
+    pub fn eligible_accept_temperature(&self, reasoning: bool, any_quantization: bool) -> bool {
+        let only = EndpointSnapshot {
+            fetched_at: String::new(),
+            error: None,
+            endpoints: self
+                .endpoints
+                .iter()
+                .filter(|e| e.supports_temperature)
+                .cloned()
+                .collect(),
+        };
+        only.eligible(reasoning, any_quantization) > 0
+    }
+
+    /// Whether any endpoint counted by [`Self::eligible`] accepts `seed`.
+    fn eligible_accept_seed(&self, reasoning: bool, any_quantization: bool) -> bool {
+        let only_seeded = EndpointSnapshot {
+            fetched_at: String::new(),
+            error: None,
+            endpoints: self
+                .endpoints
+                .iter()
+                .filter(|e| e.supports_seed)
+                .cloned()
+                .collect(),
+        };
+        only_seeded.eligible(reasoning, any_quantization) > 0
     }
 
     fn pinned_support_seed(&self, order: &[String]) -> bool {
@@ -175,6 +287,8 @@ pub fn seed_decision(
     seed: u64,
     routing: &Value,
     snapshot: Option<&EndpointSnapshot>,
+    reasoning: bool,
+    any_quantization: bool,
 ) -> (Option<u64>, String) {
     match mode {
         SeedMode::Never => (None, "seed disabled (--seed-mode never)".into()),
@@ -191,6 +305,14 @@ pub fn seed_decision(
                 })
                 .unwrap_or_default();
             if order.is_empty() {
+                if let Some(s) = snapshot.filter(|s| s.error.is_none())
+                    && !s.eligible_accept_seed(reasoning, any_quantization)
+                {
+                    return (
+                        None,
+                        "seed not sent: no endpoint that meets the routing accepts it".into(),
+                    );
+                }
                 return (
                     Some(seed),
                     "seed sent; require_parameters limits routing to providers that accept it"
@@ -219,6 +341,7 @@ pub fn seed_decision(
 
 /// Fetches the public endpoint list for a model (no key needed).
 pub async fn fetch_endpoints(model: &str) -> EndpointSnapshot {
+    let model = upstream_model(model);
     let fetched_at = crate::meta::rfc3339(std::time::SystemTime::now());
     let url = format!("https://openrouter.ai/api/v1/models/{model}/endpoints");
     let result: Result<Value> = async {
@@ -244,6 +367,13 @@ pub async fn fetch_endpoints(model: &str) -> EndpointSnapshot {
             endpoints: parse_endpoints(&v),
         },
     }
+}
+
+fn price(endpoint: &Value, key: &str) -> Option<f64> {
+    endpoint
+        .pointer(&format!("/pricing/{key}"))
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse().ok())
 }
 
 pub fn parse_endpoints(v: &Value) -> Vec<Endpoint> {
@@ -272,6 +402,9 @@ pub fn parse_endpoints(v: &Value) -> Vec<Endpoint> {
                         supports_reasoning: params.contains(&"reasoning"),
                         supports_response_format: params.contains(&"response_format")
                             || params.contains(&"structured_outputs"),
+                        supports_temperature: params.contains(&"temperature"),
+                        prompt_price: price(e, "prompt"),
+                        completion_price: price(e, "completion"),
                     }
                 })
                 .collect()
@@ -380,17 +513,79 @@ mod tests {
     #[test]
     fn auto_seed_respects_pinned_providers() {
         let pinned = routing_for(dc_ai::defaults::DEMO_TEXT_MODEL);
-        let (s, why) = seed_decision(SeedMode::Auto, 7, &pinned, Some(&snapshot(false)));
+        let (s, why) = seed_decision(
+            SeedMode::Auto,
+            7,
+            &pinned,
+            Some(&snapshot(false)),
+            true,
+            false,
+        );
         assert_eq!(s, None, "{why}");
-        let (s, _) = seed_decision(SeedMode::Auto, 7, &pinned, Some(&snapshot(true)));
+        let (s, _) = seed_decision(
+            SeedMode::Auto,
+            7,
+            &pinned,
+            Some(&snapshot(true)),
+            true,
+            false,
+        );
         assert_eq!(s, Some(7));
-        let (s, _) = seed_decision(SeedMode::Auto, 7, &routing_for("x/y"), None);
+        let (s, _) = seed_decision(SeedMode::Auto, 7, &routing_for("x/y"), None, true, false);
+        assert_eq!(s, Some(7));
+        // Unpinned, and the only seed-taking endpoint is 4-bit: no seed.
+        let (s, why) = seed_decision(
+            SeedMode::Auto,
+            7,
+            &routing_for("x/y"),
+            Some(&snapshot(false)),
+            true,
+            false,
+        );
+        assert_eq!(s, None, "{why}");
+        let (s, _) = seed_decision(
+            SeedMode::Auto,
+            7,
+            &routing_for("x/y"),
+            Some(&snapshot(false)),
+            true,
+            true,
+        );
         assert_eq!(s, Some(7));
         assert_eq!(
-            seed_decision(SeedMode::Never, 7, &routing_for("x/y"), None).0,
+            seed_decision(SeedMode::Never, 7, &routing_for("x/y"), None, true, false).0,
             None
         );
-        assert_eq!(snapshot(false).eligible(true), 1);
+        assert_eq!(snapshot(false).eligible(true, false), 1);
+        assert_eq!(snapshot(false).eligible(true, true), 2);
+    }
+
+    #[test]
+    fn routes_and_names_follow_the_id() {
+        assert_eq!(route_of("openai/gpt-6-luna:batch"), Route::Batch);
+        assert_eq!(route_of("claude-cli/claude-opus-5-5"), Route::Subscription);
+        assert_eq!(route_of("tencent/hy4-flash"), Route::Live);
+        assert_eq!(route_of("openai/gpt-6-luna:flex"), Route::Flex);
+        assert_eq!(display_model("openai/gpt-6-luna:flex"), "openai/gpt-6-luna");
+        assert_eq!(
+            upstream_model("openai/gpt-6-luna:flex"),
+            "openai/gpt-6-luna"
+        );
+        assert_eq!(upstream_model("z-ai/glm-5.3:batch"), "z-ai/glm-5.3:batch");
+        assert_eq!(
+            display_model("openai/gpt-6-luna:batch"),
+            "openai/gpt-6-luna"
+        );
+        assert_eq!(
+            display_model("claude-cli/claude-sonnet-5-5"),
+            "anthropic/claude-sonnet-5.5"
+        );
+        assert_eq!(
+            SystemSpec::label(SystemKind::Baseline, "z-ai/glm-5.3:batch"),
+            "baseline:z-ai/glm-5.3"
+        );
+        assert_eq!(routing_for("z-ai/glm-5.3:batch")["allow_fallbacks"], true);
+        assert!(routing_for("z-ai/glm-5.3:batch").get("order").is_none());
     }
 
     #[test]

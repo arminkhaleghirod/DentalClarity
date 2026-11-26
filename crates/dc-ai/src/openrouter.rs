@@ -27,6 +27,19 @@ pub struct OpenRouter {
     seed: Option<u64>,
     /// Replaces both default timeouts when set.
     timeout: Option<Duration>,
+    /// Benchmark-only request adjustments; the app uses the defaults.
+    tweaks: Tweaks,
+}
+
+/// Adjustments ClarityEval makes to the request body. The app never sets them.
+#[derive(Debug, Clone, Default)]
+struct Tweaks {
+    /// Model id sent upstream instead of the request's (a route suffix removed).
+    model: Option<String>,
+    /// Leave `temperature` out, for models whose endpoints do not accept it.
+    omit_temperature: bool,
+    /// OpenRouter `service_tier`, such as `flex`.
+    service_tier: Option<String>,
 }
 
 /// Provider routing sent with every text request.
@@ -71,7 +84,28 @@ impl OpenRouter {
             routing: default_routing(crate::defaults::DEMO_PROVIDER_ORDER),
             seed: None,
             timeout: None,
+            tweaks: Tweaks::default(),
         })
+    }
+
+    /// Sends `model` upstream in place of the request's model id.
+    pub fn with_upstream_model(mut self, model: impl Into<String>) -> Self {
+        self.tweaks.model = Some(model.into());
+        self
+    }
+
+    /// Leaves `temperature` out of every request. With `require_parameters`
+    /// routing, sending it to a model whose endpoints ignore it finds no
+    /// endpoint at all.
+    pub fn without_temperature(mut self, omit: bool) -> Self {
+        self.tweaks.omit_temperature = omit;
+        self
+    }
+
+    /// Asks for an OpenRouter service tier (`flex` or `priority`).
+    pub fn with_service_tier(mut self, tier: Option<String>) -> Self {
+        self.tweaks.service_tier = tier;
+        self
     }
 
     /// Sends `seed` with every request. With `require_parameters` routing this
@@ -144,27 +178,7 @@ impl TextModel for OpenRouter {
     }
 
     async fn generate(&self, request: TextRequest) -> Result<TextResponse> {
-        let mut body = json!({
-            "model": request.model,
-            "messages": request.messages,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "usage": { "include": true },
-            "provider": self.routing,
-        });
-        if let Some(seed) = self.seed {
-            body["seed"] = json!(seed);
-        }
-        if let Some(effort) = request.reasoning {
-            body["reasoning"] = json!({ "effort": effort });
-        }
-        if let Some(schema) = &request.response_schema {
-            body["response_format"] = json!({
-                "type": "json_schema",
-                "json_schema": { "name": "output", "strict": true, "schema": schema },
-            });
-        }
-
+        let body = self.request_body(&request);
         let timeout = self.timeout_for(&request);
         // A timed-out call may still be billed, so it is reported as a
         // response that came back unusable, not as a failed request.
@@ -194,33 +208,80 @@ impl TextModel for OpenRouter {
             return Err(AiError::Request(format!("HTTP {status}")));
         }
 
-        let parsed: ChatResponse = response.json().await.map_err(|e| {
+        let parsed: serde_json::Value = response.json().await.map_err(|e| {
             if e.is_timeout() {
                 timed_out()
             } else {
                 AiError::BadResponse(e.without_url().to_string())
             }
         })?;
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .ok_or_else(|| AiError::BadResponse("no message content".into()))?;
-        let usage = parsed.usage.map_or_else(Usage::default, |u| Usage {
-            input_tokens: u.prompt_tokens.unwrap_or(0),
-            output_tokens: u.completion_tokens.unwrap_or(0),
-            cost_usd: u.cost,
-        });
-
-        Ok(TextResponse {
-            model: parsed.model.unwrap_or(request.model),
-            route: parsed.provider,
-            content,
-            usage,
-            latency_ms: started.elapsed().as_millis() as u64,
-        })
+        parse_reply(parsed, &request.model, started.elapsed().as_millis() as u64)
     }
+}
+
+impl OpenRouter {
+    /// The chat completions body for `request`, as [`TextModel::generate`]
+    /// sends it. Public so a batch client can send the identical body.
+    pub fn request_body(&self, request: &TextRequest) -> serde_json::Value {
+        let mut body = json!({
+            "model": self.tweaks.model.as_deref().unwrap_or(&request.model),
+            "messages": request.messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "usage": { "include": true },
+            "provider": self.routing,
+        });
+        if self.tweaks.omit_temperature
+            && let Some(o) = body.as_object_mut()
+        {
+            o.remove("temperature");
+        }
+        if let Some(tier) = &self.tweaks.service_tier {
+            body["service_tier"] = json!(tier);
+        }
+        if let Some(seed) = self.seed {
+            body["seed"] = json!(seed);
+        }
+        if let Some(effort) = request.reasoning {
+            body["reasoning"] = json!({ "effort": effort });
+        }
+        if let Some(schema) = &request.response_schema {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": { "name": "output", "strict": true, "schema": schema },
+            });
+        }
+        body
+    }
+}
+
+/// Reads a chat completions reply. `requested` is the model id used when the
+/// reply does not name one.
+pub fn parse_reply(
+    reply: serde_json::Value,
+    requested: &str,
+    latency_ms: u64,
+) -> Result<TextResponse> {
+    let parsed: ChatResponse =
+        serde_json::from_value(reply).map_err(|e| AiError::BadResponse(e.to_string()))?;
+    let content = parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .ok_or_else(|| AiError::BadResponse("no message content".into()))?;
+    let usage = parsed.usage.map_or_else(Usage::default, |u| Usage {
+        input_tokens: u.prompt_tokens.unwrap_or(0),
+        output_tokens: u.completion_tokens.unwrap_or(0),
+        cost_usd: u.cost,
+    });
+    Ok(TextResponse {
+        model: parsed.model.unwrap_or_else(|| requested.to_owned()),
+        route: parsed.provider,
+        content,
+        usage,
+        latency_ms,
+    })
 }
 
 #[cfg(test)]
@@ -250,6 +311,31 @@ mod tests {
         assert_eq!(adapter.timeout_for(&request), REASONING_TIMEOUT);
         let adapter = adapter.with_timeout(Duration::from_secs(240)).unwrap();
         assert_eq!(adapter.timeout_for(&request), Duration::from_secs(240));
+    }
+
+    #[test]
+    fn tweaks_change_only_the_benchmark_body() {
+        let request = TextRequest {
+            model: "a/b:flex".into(),
+            messages: vec![],
+            response_schema: None,
+            max_tokens: 10,
+            temperature: 0.2,
+            reasoning: None,
+        };
+        let plain = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), "k".into()).unwrap();
+        let body = plain.request_body(&request);
+        assert_eq!(body["model"], "a/b:flex");
+        assert!(body.get("temperature").is_some() && body.get("service_tier").is_none());
+        let tweaked = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), "k".into())
+            .unwrap()
+            .with_upstream_model("a/b")
+            .without_temperature(true)
+            .with_service_tier(Some("flex".into()));
+        let body = tweaked.request_body(&request);
+        assert_eq!(body["model"], "a/b");
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["service_tier"], "flex");
     }
 
     #[test]

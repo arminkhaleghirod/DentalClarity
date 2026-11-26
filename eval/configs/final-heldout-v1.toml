@@ -1,0 +1,62 @@
+# Final held-out ClarityEval run (docs/CLARITYEVAL.md, "Running the benchmark").
+# Run once: cargo run -p clarityeval -- run --config eval/configs/final-heldout-v1.toml --final
+#
+# Routes follow the model id (DECISIONS E20): ids ending in `:batch` use
+# OpenRouter's batch API, `:flex` ids run live on the provider's flex tier,
+# `claude-cli/` ids use Claude Code on a Claude subscription, and other ids
+# run live on OpenRouter. Reports show each model under one name whatever its
+# route.
+
+name = "final-heldout-v1"
+split = "heldout"
+baseline = true
+baseline_variant = "rules"
+reasoning = "high"
+judge = "claude-cli/claude-opus-5-5"
+seed = 20261204
+concurrency = 4
+max_cost_usd = 25.0
+
+# OpenRouter batch API
+[[systems]]
+model = "deepseek/deepseek-v4.1-flash-1017:batch"
+
+[[systems]]
+model = "openai/gpt-oss-120b:batch"
+
+[[systems]]
+model = "z-ai/glm-5.3:batch"
+
+[[systems]]
+model = "z-ai/glm-5.3-flash:batch"
+
+# OpenRouter live on OpenAI's flex tier: the batch price without the batch
+# queue, which held a single round for over an hour in the preflight.
+[[systems]]
+model = "openai/gpt-6-luna-pro:flex"
+
+[[systems]]
+model = "openai/gpt-6-luna:flex"
+
+# OpenRouter live (no batch variant)
+[[systems]]
+model = "tencent/hy4-flash"
+
+[[systems]]
+model = "minimax/minimax-m3.1-flash"
+
+[[systems]]
+model = "xiaomi/mimo-v2.6-flash"
+
+[[systems]]
+model = "ricursiveai/ripple-65b-preview"
+
+# Claude subscription
+[[systems]]
+model = "claude-cli/claude-opus-5-5"
+
+[[systems]]
+model = "claude-cli/claude-sonnet-5-5"
+
+[[systems]]
+model = "claude-cli/claude-haiku-5-5"
