@@ -1,6 +1,7 @@
 //! The session gate: setup, sign-in and lock screens shown before the workspace.
 
 use crate::api;
+use crate::icons::Logo;
 use dc_core::Mode;
 use dc_core::api::{SessionInfo, SessionState, SetupRequest};
 use leptos::ev::SubmitEvent;
@@ -60,7 +61,7 @@ fn AuthCard(title: &'static str, subtitle: String, children: Children) -> impl I
     view! {
         <div class="auth-page">
             <div class="auth-card">
-                <div class="wordmark">"dental"<span>"clarity"</span></div>
+                <div class="wordmark"><Logo /></div>
                 <h1>{title}</h1>
                 <p class="auth-subtitle">{subtitle}</p>
                 {children()}

@@ -54,11 +54,14 @@ pub fn Dashboard() -> impl IntoView {
 
 #[component]
 fn StatusCards(rows: RwSignal<Vec<PatientRow>>) -> impl IntoView {
+    // Each card counts the rows of today's table whose presentation is in
+    // that state, so "0 of 7" reads against the seven appointments listed.
     let card = move |class: &'static str, title: &'static str, status: PresentationStatus| {
         let text = move || {
-            let n = rows.with(|r| r.iter().filter(|r| r.status == status).count());
-            let noun = if n == 1 { "patient" } else { "patients" };
-            format!("{n} {noun} today")
+            rows.with(|r| {
+                let n = r.iter().filter(|r| r.status == status).count();
+                status_count_text(n, r.len())
+            })
         };
         view! {
             <div class=format!("status-card {class}")>
@@ -75,6 +78,12 @@ fn StatusCards(rows: RwSignal<Vec<PatientRow>>) -> impl IntoView {
             {card("review", "Needs review", PresentationStatus::NeedsReview)}
         </section>
     }
+}
+
+/// "2 of 7 patients today": a status count against today's appointments.
+fn status_count_text(n: usize, total: usize) -> String {
+    let noun = if total == 1 { "patient" } else { "patients" };
+    format!("{n} of {total} {noun} today")
 }
 
 #[component]
@@ -164,5 +173,16 @@ pub fn NotFound() -> impl IntoView {
     view! {
         <header class="topbar"><h1 class="page-title">"Page not found"</h1></header>
         <div class="notice">"That page does not exist."</div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_count_text;
+
+    #[test]
+    fn status_counts_read_against_todays_list() {
+        assert_eq!(status_count_text(0, 7), "0 of 7 patients today");
+        assert_eq!(status_count_text(1, 1), "1 of 1 patient today");
     }
 }

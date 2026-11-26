@@ -196,6 +196,24 @@ impl ToothGeom {
         (self.x + dx * d, self.y + dy * d)
     }
 
+    /// Where the tooth number goes. An incisor narrows toward the tongue,
+    /// so its number moves a little toward the wide biting edge; centered,
+    /// it would touch the slanted sides of the narrow lower incisors.
+    pub fn label_center(&self) -> (f64, f64) {
+        if self.kind != ToothKind::Incisor {
+            return (self.x, self.y);
+        }
+        let (dx, dy) = self.outward();
+        let d = self.h * 0.12;
+        (self.x + dx * d, self.y + dy * d)
+    }
+
+    /// Lower incisors and other crowns under 18 units wide, whose numbers
+    /// are set a size smaller to stay clear of the outline.
+    pub fn is_narrow(&self) -> bool {
+        self.w < 18.0
+    }
+
     fn transform(&self) -> String {
         format!(
             "translate({:.2} {:.2}) rotate({:.2})",
@@ -663,9 +681,9 @@ pub fn ToothChart(
         .into_iter()
         .map(|g| {
             view! {
-                <g class="tooth" class:is-primary=matches!(g.tooth, ToothRef::Primary(_))>
+                <g class="tooth" class:is-primary=matches!(g.tooth, ToothRef::Primary(_)) class:is-narrow=g.is_narrow()>
                     <path class="body" d=crown_path(g.kind, g.w, g.h) transform=g.transform() />
-                    <text x=format!("{:.2}", g.x) y=format!("{:.2}", g.y + 0.5)
+                    <text x=format!("{:.2}", g.label_center().0) y=format!("{:.2}", g.label_center().1 + 0.5)
                         text-anchor="middle" dominant-baseline="middle">{g.label.clone()}</text>
                 </g>
             }
@@ -734,14 +752,14 @@ pub fn ToothChart(
             let (bx, by) = g.badge_center();
             let transform = g.transform();
             view! {
-                <g class="tooth is-planned" class:is-selected=is_selected id=tooth_id(&label)
+                <g class="tooth is-planned" class:is-selected=is_selected class:is-narrow=g.is_narrow() id=tooth_id(&label)
                     role="button" tabindex=tabindex aria-label=name aria-pressed=pressed
                     on:click=on_click on:keydown=on_key>
                     <circle class="hit" cx=format!("{:.2}", g.x) cy=format!("{:.2}", g.y) r=HIT_RADIUS />
                     <path class="ring" d=crown_path(g.kind, g.w + 2.0 * RING_GAP, g.h + 2.0 * RING_GAP)
                         transform=transform.clone() />
                     <path class="body" d=crown_path(g.kind, g.w, g.h) transform=transform />
-                    <text x=format!("{:.2}", g.x) y=format!("{:.2}", g.y + 0.5)
+                    <text x=format!("{:.2}", g.label_center().0) y=format!("{:.2}", g.label_center().1 + 0.5)
                         text-anchor="middle" dominant-baseline="middle">{label.clone()}</text>
                     <circle class="badge" cx=format!("{bx:.2}") cy=format!("{by:.2}") r=BADGE_RADIUS />
                     <text class="badge-text" x=format!("{bx:.2}") y=format!("{:.2}", by + 0.5)
@@ -916,6 +934,42 @@ mod tests {
 
     fn find<'a>(geoms: &'a [ToothGeom], label: &str) -> &'a ToothGeom {
         geoms.iter().find(|g| g.label == label).expect(label)
+    }
+
+    /// A two-digit number is about 11 by 7 chart units at 9.5 px and 10 by
+    /// 6 at the 8.5 px of narrow crowns. Its box, turned into the crown's
+    /// own frame, must stay inside the incisor outline with a unit to spare.
+    #[test]
+    fn incisor_numbers_stay_inside_the_crown() {
+        let geoms = layout(Dentition::Permanent);
+        for label in ["7", "8", "9", "10", "23", "24", "25", "26"] {
+            let g = find(&geoms, label);
+            let (hw, hh) = if g.is_narrow() {
+                (5.0, 3.0)
+            } else {
+                (5.5, 3.5)
+            };
+            let (a, b) = (g.w / 2.0, g.h / 2.0);
+            let r = 0.18 * g.w.min(g.h);
+            // Half width of the outline at local y (outer side is -y).
+            let half_width = |y: f64| {
+                let t = ((y - (-b + r)) / (2.0 * (b - r))).clamp(0.0, 1.0);
+                a + (0.62 * a - a) * t
+            };
+            let (cx, cy) = g.label_center();
+            let rad = (-g.angle).to_radians();
+            for (ox, oy) in [(-hw, -hh), (hw, -hh), (-hw, hh), (hw, hh)] {
+                let (px, py) = (cx + ox - g.x, cy + oy - g.y);
+                let lx = px * rad.cos() - py * rad.sin();
+                let ly = px * rad.sin() + py * rad.cos();
+                assert!(ly.abs() <= b - 1.0, "tooth {label}: {ly} outside {b}");
+                assert!(
+                    lx.abs() <= half_width(ly) - 1.0,
+                    "tooth {label}: {lx} wider than {}",
+                    half_width(ly)
+                );
+            }
+        }
     }
 
     #[test]

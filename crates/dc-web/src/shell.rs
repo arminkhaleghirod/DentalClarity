@@ -4,7 +4,7 @@
 //! for screen readers and shows it as a tooltip.
 
 use crate::api;
-use crate::icons::{self, Icon};
+use crate::icons::{self, Icon, Logo};
 use crate::session::use_session;
 use dc_core::Mode;
 use leptos::prelude::*;
@@ -28,8 +28,7 @@ pub fn StaffShell(children: Children) -> impl IntoView {
             <a class="skip-link" href="#main-content">"Skip to content"</a>
             <nav class="sidebar" aria-label="Main">
                 <div class="wordmark">
-                    <span class="wordmark-full">"dental"<span>"clarity"</span></span>
-                    <span class="wordmark-short" aria-hidden="true">"d"<span>"c"</span></span>
+                    <Logo />
                 </div>
                 <NavLink href="/" icon=icons::HOME label="Dashboard" exact=true />
                 <NavLink href="/patients" icon=icons::PATIENTS label="Patients" />

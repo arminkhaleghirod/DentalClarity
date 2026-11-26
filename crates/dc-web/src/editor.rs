@@ -1483,8 +1483,8 @@ fn details(p: &PresentationView) -> AnyView {
             <dt>"Language"</dt><dd>{language}</dd>
             <dt>"Reading level"</dt><dd>{level_name(p.reading_level)}</dd>
             {p.provider_display_name.clone().map(|d| view! { <dt>"Provider"</dt><dd>{d}</dd> })}
-            <dt>"Writer"</dt><dd class="mono">{p.writer_model.clone()}</dd>
-            <dt>"Prompt"</dt><dd class="mono">{p.prompt_version.clone()}</dd>
+            <dt class="stacked">"Writer"</dt><dd class="mono" title=p.writer_model.clone()>{p.writer_model.clone()}</dd>
+            <dt class="stacked">"Prompt"</dt><dd class="mono" title=p.prompt_version.clone()>{p.prompt_version.clone()}</dd>
             <dt>"Generation time"</dt><dd>{seconds}</dd>
         </dl>
     }

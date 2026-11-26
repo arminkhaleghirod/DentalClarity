@@ -3,7 +3,7 @@
 
 use super::present::*;
 use super::*;
-use dc_core::present::BlockChangeResponse;
+use dc_core::present::{BlockChangeResponse, ExitPresentResponse};
 use dc_core::presentation::{RegenerateSectionResponse, SectionView};
 
 /// Generation for Daniel's plan where `procedure:p6` fails the checks on
@@ -86,6 +86,62 @@ async fn expire_present(db: &SqlitePool) {
         .execute(db)
         .await
         .unwrap();
+}
+
+/// The attributes of the session cookie a response sets, without its value.
+fn session_cookie_attributes(response: &Response) -> String {
+    let set = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .find(|v| v.starts_with("dc_session=") && !v.starts_with("dc_session=;"))
+        .expect("the response sets a session cookie");
+    set.split_once(';').unwrap().1.to_owned()
+}
+
+#[tokio::test]
+async fn rotated_session_cookies_keep_the_visit_cookie_lifetime() {
+    let (app, db, _) = app_with(Mode::Demo, scripted(2, &[], None)).await;
+    let mut client = Client::new(app);
+    let visit = client.send(Method::POST, "/api/visit", None).await;
+    let visit_attrs = session_cookie_attributes(&visit);
+    client.session().await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+    let id = created.presentation_id;
+
+    // Leaving Present with Done rotates the session token.
+    assert_eq!(
+        start_present(&mut client, &id).await.status(),
+        StatusCode::OK
+    );
+    let exited = exit(&mut client, json!({})).await;
+    assert_eq!(exited.status(), StatusCode::OK);
+    assert_eq!(session_cookie_attributes(&exited), visit_attrs);
+    let exited: ExitPresentResponse = json_body(exited).await;
+    client.csrf = Some(exited.csrf_token);
+
+    // So does unlocking after the present session expired.
+    assert_eq!(
+        start_present(&mut client, &id).await.status(),
+        StatusCode::OK
+    );
+    expire_present(&db).await;
+    client.session().await;
+    let unlocked = unlock(&mut client, json!({})).await;
+    assert_eq!(unlocked.status(), StatusCode::OK);
+    assert_eq!(session_cookie_attributes(&unlocked), visit_attrs);
+
+    // Visitor and staff cookies both end with the browser session today.
+    assert!(!visit_attrs.contains("Max-Age"));
+    let mut staff = Client::new(app_with_db(Mode::Clinical).await.0);
+    staff.session().await;
+    let setup = staff
+        .send(Method::POST, "/api/setup", Some(json!({ "setup_code": SETUP_CODE, "practice_name": "Maple Grove Family Dental", "password": PASSWORD, "pin": "480913" })))
+        .await;
+    assert_eq!(setup.status(), StatusCode::OK);
+    assert!(!session_cookie_attributes(&setup).contains("Max-Age"));
 }
 
 // Stale locks ----------------------------------------------------------------

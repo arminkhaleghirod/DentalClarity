@@ -107,12 +107,12 @@ fn CostBar(ins: Money, you: Money, fee: Option<Money>) -> impl IntoView {
     }
 }
 
-/// Tooth cell: "#30", an area as written, or a visual hyphen read as "None".
+/// Tooth cell: "#30", an area as written, or a visual dash read as "None".
 fn tooth_cell(p: &ProcedureFactView) -> AnyView {
     let label = tooth_label(&p.tooth);
     if label.is_empty() {
         view! {
-            <span class="p-cost-none" aria-hidden="true">"-"</span>
+            <span class="p-cost-none" aria-hidden="true">"—"</span>
             <span class="visually-hidden">"None"</span>
         }
         .into_any()
@@ -141,9 +141,9 @@ fn PhaseTable(phase: Phase) -> impl IntoView {
                 <tr>
                     <th scope="row" class="name">{p.name.clone()}</th>
                     <td class="tooth">{tooth_cell(p)}</td>
-                    <td class="num fee">{money_view(p.fee)}</td>
-                    <td class="num ins">{money_view(p.insurance_estimate)}</td>
-                    <td class="num you">{money_view(p.patient_estimate)}</td>
+                    <td class="num fee" data-label="Fee">{money_view(p.fee)}</td>
+                    <td class="num ins" data-label="Insurance estimate">{money_view(p.insurance_estimate)}</td>
+                    <td class="num you" data-label="You pay">{money_view(p.patient_estimate)}</td>
                 </tr>
             }
         })
@@ -171,9 +171,9 @@ fn PhaseTable(phase: Phase) -> impl IntoView {
                 <tfoot>
                     <tr>
                         <th scope="row" colspan="2" class="name">{format!("Phase {} subtotal", phase.number)}</th>
-                        <td class="num fee">{money_view(fee)}</td>
-                        <td class="num ins">{money_view(ins)}</td>
-                        <td class="num you">{money_view(you)}</td>
+                        <td class="num fee" data-label="Fee">{money_view(fee)}</td>
+                        <td class="num ins" data-label="Insurance estimate">{money_view(ins)}</td>
+                        <td class="num you" data-label="You pay">{money_view(you)}</td>
                     </tr>
                 </tfoot>
             </table>
@@ -198,9 +198,9 @@ fn PlanTotal(fee: Option<Money>, insurance: Option<Money>, share: Option<Money>)
                 <tbody>
                     <tr>
                         <th scope="row" class="name">"All phases"</th>
-                        <td class="num fee">{money_view(fee)}</td>
-                        <td class="num ins">{money_view(insurance)}</td>
-                        <td class="num you">{money_view(share)}</td>
+                        <td class="num fee" data-label="Fees">{money_view(fee)}</td>
+                        <td class="num ins" data-label="Insurance estimate">{money_view(insurance)}</td>
+                        <td class="num you" data-label="You pay">{money_view(share)}</td>
                     </tr>
                 </tbody>
             </table>

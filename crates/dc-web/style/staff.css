@@ -55,15 +55,27 @@ a {
   background: var(--color-surface-sunken);
 }
 
+/* Mark and wordmark as in assets/brand/logo.svg: "dental" in navy,
+   "clarity" and the mark in dental blue, the same on every screen. */
 .wordmark {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
   padding: 0 6px 26px;
   font-size: var(--text-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: var(--color-text-strong);
+  color: var(--logo-ink);
 }
 
-.wordmark span {
+.logo-mark {
+  flex: none;
+  width: 1.3em;
+  height: 1.3em;
+  fill: var(--color-primary);
+}
+
+.wordmark-accent {
   color: var(--color-primary);
 }
 
@@ -101,10 +113,6 @@ a {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.wordmark-short {
-  display: none;
 }
 
 .nav-link[aria-current="page"] {
@@ -592,6 +600,18 @@ a.button {
 }
 
 /* Patient directory */
+
+/* The Open link column fits its link; the spare width goes to the name. */
+.directory th:last-child,
+.directory td.action {
+  width: 1%;
+  padding-right: 18px;
+  text-align: right;
+}
+
+.directory th:first-child {
+  width: 26%;
+}
 
 .search-field {
   position: relative;
@@ -1804,7 +1824,7 @@ a.button {
 .detail-list {
   margin: 0;
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 6px 12px;
   font-size: var(--text-xs);
 }
@@ -1815,8 +1835,24 @@ a.button {
 
 .detail-list dd {
   margin: 0;
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow-wrap: break-word;
   color: var(--color-text-strong);
+}
+
+/* Model ids and prompt hashes get the full rail width under their label
+   and stay on one line. On a very narrow rail they end in an ellipsis;
+   the title holds the whole value. */
+.detail-list dt.stacked,
+.detail-list dd.mono {
+  grid-column: 1 / -1;
+}
+
+.detail-list dd.mono {
+  margin-top: -4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Presentations list */
@@ -2285,12 +2321,8 @@ a.button {
     padding: 0 0 22px;
   }
 
-  .wordmark-full {
+  .sidebar .wordmark-text {
     display: none;
-  }
-
-  .wordmark-short {
-    display: inline;
   }
 
   .nav-link {

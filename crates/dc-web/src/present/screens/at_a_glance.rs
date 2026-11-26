@@ -49,12 +49,12 @@ pub fn AtAGlance() -> impl IntoView {
         .is_some_and(|s| s.text.chars().count() <= 80);
     let headline = match summary {
         Some(b) if short_lead => view! {
-            <NarratedBlock section_key=glance_key.clone() block=b headline=true />
+            <NarratedBlock section_key=glance_key.clone() block=b headline=true label="Your plan in brief" />
         }
         .into_any(),
         Some(b) => view! {
             <h1 class="p-headline">{local_headline(&view, all_phases.len())}</h1>
-            <NarratedBlock section_key=glance_key.clone() block=b hide_heading=true />
+            <NarratedBlock section_key=glance_key.clone() block=b hide_heading=true label="Your plan in brief" />
         }
         .into_any(),
         None => view! { <h1 class="p-headline">{local_headline(&view, all_phases.len())}</h1> }
@@ -123,8 +123,7 @@ pub fn AtAGlance() -> impl IntoView {
 fn PhaseCard(phase: Phase) -> impl IntoView {
     let nav = use_nav();
     let label = phase.label();
-    let names: Vec<&str> = phase.procedures.iter().map(|p| p.name.as_str()).collect();
-    let title = names.join(", ");
+    let title = grouped_names(phase.procedures.iter().map(|p| p.name.as_str()));
     let first = phase.procedures.first().map(|p| p.procedure_ref.clone());
     let count = steps_text(phase.procedures.len());
     let aria = format!("Learn more about phase {}", phase.number);
@@ -142,6 +141,44 @@ fn PhaseCard(phase: Phase) -> impl IntoView {
                 <span class="p-phase-count">{count}</span>
             </div>
         </div>
+    }
+}
+
+/// "Tooth-colored filling, Tooth-colored filling, Cleaning" reads as
+/// "2× Tooth-colored filling, Cleaning", as on the staff dashboard.
+fn grouped_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let mut groups: Vec<(&str, usize)> = Vec::new();
+    for name in names {
+        match groups.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => groups.push((name, 1)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(name, n)| {
+            if n == 1 {
+                name.to_owned()
+            } else {
+                format!("{n}× {name}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grouped_names;
+
+    #[test]
+    fn repeated_procedures_are_grouped() {
+        let names = ["Tooth-colored filling", "Tooth-colored filling", "Cleaning"];
+        assert_eq!(
+            grouped_names(names.into_iter()),
+            "2× Tooth-colored filling, Cleaning"
+        );
+        assert_eq!(grouped_names(["Crown"].into_iter()), "Crown");
     }
 }
 

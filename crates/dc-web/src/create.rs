@@ -3,6 +3,7 @@
 
 use crate::api;
 use crate::format::{PRESENTATION_LANGUAGES, default_presentation_language};
+use crate::icons::Logo;
 use crate::motion::SkeletonCard;
 use crate::patients::{
     PatientHead, PlanChip, PlanNotes, PlanTable, patient_href, plan_has_unknown,
@@ -71,7 +72,7 @@ fn SubpageBar(name: Option<String>, patient_key: String) -> impl IntoView {
     view! {
         <header class="subbar">
             <A href="/" attr:class="wordmark subbar-wordmark" attr:aria-label="DentalClarity dashboard">
-                "dental"<span>"clarity"</span>
+                <Logo />
             </A>
             <nav class="breadcrumb" aria-label="Breadcrumb">
                 <A href="/patients">"Patients"</A>

@@ -77,15 +77,18 @@ fn ReadingLevel(current: dc_core::content::ReadingLevel) -> impl IntoView {
         (Level::Standard, "Standard"),
         (Level::Detailed, "Detailed"),
     ];
+    // Only the level the presentation was written at exists for now. It
+    // shows as selected; the others show as unavailable and say why.
     view! {
         <div class="p-segmented" role="radiogroup" aria-label="Reading level"
-            aria-disabled="true" aria-describedby="p-level-later"
-            title="More reading levels arrive in a later update">
+            aria-describedby="p-level-later">
             {options.into_iter().map(|(level, label)| {
                 let on = level == current;
                 view! {
-                    <span role="radio" class="p-segment" class:is-on=on
-                        aria-checked=if on { "true" } else { "false" } aria-disabled="true">
+                    <span role="radio" class="p-segment" class:is-on=on class:is-unavailable=!on
+                        aria-checked=if on { "true" } else { "false" }
+                        aria-disabled=(!on).then_some("true")
+                        title=(!on).then_some("Not available yet. More reading levels arrive in a later update.")>
                         {label}
                     </span>
                 }

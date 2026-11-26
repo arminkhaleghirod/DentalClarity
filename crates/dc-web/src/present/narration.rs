@@ -643,7 +643,10 @@ pub fn PlayControl(id: String, sentences: Vec<PatientSentence>, label: String) -
 }
 
 /// One narrated text block: heading, play control, sentences as text nodes.
-/// `headline` renders the first sentence as the page headline (At a glance).
+/// `headline` renders the first sentence as the page headline (At a glance),
+/// with the play control on its own row between the headline and the text.
+/// `label` replaces the heading with a small label on that row, so the
+/// control does not float alone.
 #[component]
 pub fn NarratedBlock(
     section_key: String,
@@ -652,6 +655,7 @@ pub fn NarratedBlock(
     #[prop(optional)] headline: bool,
     #[prop(optional)] list: bool,
     #[prop(optional)] hide_heading: bool,
+    #[prop(optional, into)] label: Option<String>,
 ) -> impl IntoView {
     let narrator = use_narrator();
     let id = format!("{section_key}/{}", block.field);
@@ -705,12 +709,29 @@ pub fn NarratedBlock(
         }
     };
 
+    let heading = block.heading.clone();
+    let has_audio = block.sentences.iter().all(|s| !s.audio_key.is_empty());
+    let compact = label.is_some();
+    let title = match label {
+        Some(l) => Some(l),
+        None => (!hide_heading && !headline).then(|| heading.clone()),
+    };
+    let head = view! {
+        <div class="p-block-head" class:is-compact=compact>
+            {note_label.map(|l| view! { <div class="p-note-label">{l}</div> })}
+            {title.map(|t| view! { <h2 class="p-block-title">{t}</h2> })}
+            {has_audio.then(|| view! { <PlayControl id=id.clone() sentences=block.sentences.clone() label=heading.clone() /> })}
+        </div>
+    };
+
     let texts: Vec<String> = block.sentences.iter().map(|s| s.text.clone()).collect();
+    let mut lead = None;
     let body = if headline {
         let mut rest = texts.into_iter().enumerate();
-        let first = rest.next();
+        lead = rest
+            .next()
+            .map(|(i, t)| view! { <h1 class="p-headline">{sentence_view(i, t)}</h1> });
         view! {
-            {first.map(|(i, t)| view! { <h1 class="p-headline">{sentence_view(i, t)}</h1> })}
             <p class="p-read">
                 {rest.map(|(i, t)| view! { {sentence_view(i, t)} " " }).collect_view()}
             </p>
@@ -736,15 +757,10 @@ pub fn NarratedBlock(
         let id = id.clone();
         move || narrator.message_for(&id)
     };
-    let heading = block.heading.clone();
-    let has_audio = block.sentences.iter().all(|s| !s.audio_key.is_empty());
     view! {
         <section class="p-block" class:is-note=is_note>
-            <div class="p-block-head">
-                {note_label.map(|l| view! { <div class="p-note-label">{l}</div> })}
-                {(!hide_heading && !headline).then(|| view! { <h2 class="p-block-title">{heading.clone()}</h2> })}
-                {has_audio.then(|| view! { <PlayControl id=id.clone() sentences=block.sentences.clone() label=heading.clone() /> })}
-            </div>
+            {lead}
+            {head}
             {body}
             {move || message().map(|m| view! { <p class="p-inline-note">{m}</p> })}
         </section>

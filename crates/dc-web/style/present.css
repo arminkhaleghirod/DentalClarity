@@ -447,6 +447,17 @@
   margin-left: auto;
 }
 
+/* A small label with the play control beside it, between a headline and
+   its text. */
+.p-block-head.is-compact {
+  min-height: 0;
+  margin-top: 2px;
+}
+
+.p-block-head.is-compact .p-play {
+  margin-left: 0;
+}
+
 .p-read {
   max-width: var(--p-measure);
   font-size: var(--p-fs-read);
@@ -471,7 +482,10 @@
 
 .p-sentence {
   border-radius: 4px;
+  /* The padding gives the highlight some air; the negative margin takes the
+     same room back, so the gap between sentences stays one space wide. */
   padding: 1px 2px;
+  margin: 0 -2px;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
   /* The highlight moves from sentence to sentence as a soft fade. */
@@ -547,13 +561,17 @@
 }
 
 .p-play-button {
-  transition: background-color var(--dur-base) var(--ease-standard);
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
   width: 44px;
   height: 44px;
   flex: none;
-  border: 0;
+  /* A soft tint at rest, so a page of Listen controls stays quiet; the
+     solid brand color marks the block that is playing or paused. */
+  border: 1px solid var(--brand-soft-track);
   border-radius: 10px;
-  background: var(--brand-primary);
+  background: var(--brand-soft);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -572,6 +590,15 @@
 }
 
 .p-play-button:hover:not([aria-disabled="true"]) {
+  background: var(--brand-soft-track);
+}
+
+.p-play.is-on .p-play-button {
+  border-color: var(--brand-primary);
+  background: var(--brand-primary);
+}
+
+.p-play.is-on .p-play-button:hover:not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--brand-primary) 85%, white);
 }
 
@@ -598,8 +625,12 @@
   height: 0;
   margin-left: 3px;
   border-style: solid;
-  border-width: 8px 0 8px 13px;
-  border-color: transparent transparent transparent var(--brand-on-primary);
+  border-width: 7px 0 7px 11px;
+  border-color: transparent transparent transparent var(--brand-primary);
+}
+
+.p-play.is-on .p-glyph-play {
+  border-left-color: var(--brand-on-primary);
 }
 
 .p-glyph-pause {
@@ -722,6 +753,15 @@
   font-size: 12px;
   font-weight: 700;
   fill: #101828;
+}
+
+/* Lower incisors are too narrow for the usual number size. */
+.p-arch .tooth.is-narrow text:not(.badge-text) {
+  font-size: 8.5px;
+}
+
+.p-arch .tooth.is-planned.is-narrow text:not(.badge-text) {
+  font-size: 10px;
 }
 
 .p-arch .tooth .ring {
@@ -960,6 +1000,9 @@
   min-height: 100%;
   display: grid;
   grid-template-columns: minmax(380px, 3fr) minmax(0, 4fr);
+  /* Each column keeps its own height, so the share card follows the phase
+     cards and the chart starts at the top of its panel. */
+  align-items: start;
   gap: clamp(32px, 1.2vw + 18px, 56px);
   padding: var(--p-pad);
 }
@@ -971,7 +1014,6 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 18px;
 }
 
@@ -1078,11 +1120,14 @@
   color: #101828;
 }
 
+/* The foot sits at the bottom, so cards in a row line up whatever the
+   length of their titles. */
 .p-phase-foot {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 12px;
+  margin-top: auto;
+  padding-top: 12px;
 }
 
 .p-phase-foot .p-mini-button {
@@ -1104,7 +1149,6 @@
 }
 
 .p-share-card {
-  margin-top: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1508,8 +1552,6 @@
   border: 1px solid #e4e7ec;
   border-radius: 10px;
   font-size: 14px;
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .p-segment {
@@ -1525,6 +1567,13 @@
   background: var(--brand-primary);
   color: var(--brand-on-primary);
   font-weight: 600;
+}
+
+/* Levels that are not built yet: faint text, no hover, a not-allowed
+   cursor, and a title that says why. */
+.p-segment.is-unavailable {
+  color: #98a2b3;
+  cursor: not-allowed;
 }
 
 .p-illustration {
@@ -1834,24 +1883,112 @@
   color: #475467;
 }
 
-.p-costs table {
-  table-layout: fixed;
-}
-
+/* The tooth column fits its content and the figure columns share one width,
+   which in an automatic table layout acts as a minimum. The procedure name
+   takes the rest, so names wrap only when the card is truly narrow, and the
+   figures of stacked phase tables line up. */
 .p-costs thead th.tooth {
-  width: 64px;
+  width: 1%;
 }
 
-.p-costs thead th.fee {
-  width: 100px;
+.p-costs thead th.num {
+  width: 80px;
 }
 
-.p-costs thead th.ins {
-  width: 112px;
+/* Narrow cards (a phone, or a portrait tablet with many phases): each row
+   becomes the name and tooth on one line and the three figures, each with
+   its own label, below. The column headings stay for screen readers. */
+.p-cost-table,
+.p-cost-total {
+  position: relative;
+  container-type: inline-size;
 }
 
-.p-costs thead th.you {
-  width: 116px;
+@container (max-width: 520px) {
+  .p-costs thead,
+  .p-costs thead tr {
+    display: block;
+  }
+
+  .p-costs thead th:not(#p-cost-total-title) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .p-costs thead th#p-cost-total-title {
+    display: block;
+    width: auto;
+    padding: 12px 16px;
+  }
+
+  .p-costs table,
+  .p-costs tbody,
+  .p-costs tfoot {
+    display: block;
+  }
+
+  .p-costs tbody tr,
+  .p-costs tfoot tr {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px 12px;
+    padding: 12px 16px;
+    border-top: 1px solid #f0f2f5;
+  }
+
+  .p-costs tfoot tr {
+    border-top-color: #e4e7ec;
+  }
+
+  .p-costs tbody th,
+  .p-costs tbody td,
+  .p-costs tfoot th,
+  .p-costs tfoot td,
+  .p-costs th:first-child,
+  .p-costs td:first-child,
+  .p-costs th:last-child,
+  .p-costs td:last-child {
+    padding: 0;
+    border-top: 0;
+  }
+
+  .p-costs tbody th.name,
+  .p-costs tfoot th.name {
+    grid-column: 1 / 3;
+  }
+
+  .p-costs tfoot th.name,
+  .p-cost-total tbody th.name {
+    grid-column: 1 / -1;
+  }
+
+  .p-costs td.tooth {
+    grid-column: 3;
+    text-align: right;
+  }
+
+  /* Label on top, figure at the bottom, so figures line up across a row
+     even when a label wraps. */
+  .p-costs td.num {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .p-costs td.num::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475467;
+  }
 }
 
 .p-costs .p-costs-figure .unknown {
