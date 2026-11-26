@@ -4,17 +4,21 @@
 //! origin. Patient-facing screens are added under `/present` in milestone M5.
 
 mod api;
+mod create;
+mod editor;
 mod format;
 mod icons;
 mod pages;
 mod patients;
+mod presentations;
+mod progress;
 mod session;
 mod settings;
 mod shell;
 
 use dc_core::api::SessionState;
 use leptos::prelude::*;
-use leptos_router::components::{Route, Router, Routes};
+use leptos_router::components::{Outlet, ParentRoute, Route, Router, Routes};
 use leptos_router::path;
 use session::SessionContext;
 
@@ -73,20 +77,29 @@ enum Gate {
     Workspace,
 }
 
+/// Staff routes. Most pages sit inside the sidebar shell; the create screen
+/// and the presentation preview use the full width (mockups 2b and 2c).
 #[component]
 fn Workspace() -> impl IntoView {
     view! {
         <Router>
-            <shell::StaffShell>
-                <Routes fallback=|| view! { <pages::NotFound /> }>
-                    <Route path=path!("/") view=pages::Dashboard />
-                    <Route path=path!("/patients") view=patients::PatientsPage />
-                    <Route path=path!("/patients/:key") view=patients::PatientPage />
-                    <Route path=path!("/presentations") view=|| view! { <pages::Upcoming title="Presentations" milestone="M5" /> } />
-                    <Route path=path!("/analytics") view=|| view! { <pages::Upcoming title="Analytics" milestone="M8" /> } />
-                    <Route path=path!("/settings") view=settings::SettingsPage />
-                </Routes>
-            </shell::StaffShell>
+            <Routes fallback=|| view! { <shell::StaffShell><pages::NotFound /></shell::StaffShell> }>
+                <Route path=path!("/patients/:key/plans/:plan/new") view=create::CreatePresentationPage />
+                <Route path=path!("/presentations/:id") view=editor::PresentationPage />
+                <ParentRoute path=path!("") view=ShellLayout>
+                    <Route path=path!("") view=pages::Dashboard />
+                    <Route path=path!("patients") view=patients::PatientsPage />
+                    <Route path=path!("patients/:key") view=patients::PatientPage />
+                    <Route path=path!("presentations") view=presentations::PresentationsPage />
+                    <Route path=path!("analytics") view=|| view! { <pages::Upcoming title="Analytics" milestone="M8" /> } />
+                    <Route path=path!("settings") view=settings::SettingsPage />
+                </ParentRoute>
+            </Routes>
         </Router>
     }
+}
+
+#[component]
+fn ShellLayout() -> impl IntoView {
+    view! { <shell::StaffShell><Outlet /></shell::StaffShell> }
 }

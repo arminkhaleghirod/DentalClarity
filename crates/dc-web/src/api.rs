@@ -8,6 +8,10 @@ use dc_core::api::{
     ApiError, HealthResponse, LoginRequest, PatientDetail, PatientListItem, PatientRow,
     PracticeSettings, SessionInfo, SetupRequest,
 };
+use dc_core::presentation::{
+    CreatePresentationRequest, CreatePresentationResponse, JobStatus, PresentationSummary,
+    PresentationView,
+};
 use gloo_net::http::{Request, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,6 +26,8 @@ thread_local! {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Failure {
     pub status: u16,
+    /// The server's `ApiError::code`, or empty when the body had none.
+    pub code: String,
     pub message: String,
 }
 
@@ -45,6 +51,7 @@ async fn finish<T: DeserializeOwned>(
     if response.ok() {
         return response.json().await.map_err(|e| Failure {
             status,
+            code: String::new(),
             message: e.to_string(),
         });
     }
@@ -55,16 +62,21 @@ async fn finish<T: DeserializeOwned>(
             }
         });
     }
-    let message = match response.json::<ApiError>().await {
-        Ok(body) => body.message,
-        Err(_) => format!("The server returned {status}."),
+    let (code, message) = match response.json::<ApiError>().await {
+        Ok(body) => (body.code, body.message),
+        Err(_) => (String::new(), format!("The server returned {status}.")),
     };
-    Err(Failure { status, message })
+    Err(Failure {
+        status,
+        code,
+        message,
+    })
 }
 
 fn network(e: gloo_net::Error) -> Failure {
     Failure {
         status: 0,
+        code: String::new(),
         message: format!("Could not reach the server. {e}"),
     }
 }
@@ -141,6 +153,7 @@ pub async fn logout() -> Result<(), Failure> {
     } else {
         Err(Failure {
             status: response.status(),
+            code: String::new(),
             message: "Sign-out failed. Close the browser to end the session.".into(),
         })
     }
@@ -169,4 +182,22 @@ pub async fn settings() -> Result<PracticeSettings, Failure> {
 
 pub async fn save_settings(settings: &PracticeSettings) -> Result<PracticeSettings, Failure> {
     put("/api/staff/settings", settings).await
+}
+
+pub async fn create_presentation(
+    request: &CreatePresentationRequest,
+) -> Result<CreatePresentationResponse, Failure> {
+    post("/api/staff/presentations", request).await
+}
+
+pub async fn job(id: String) -> Result<JobStatus, Failure> {
+    get(&format!("/api/staff/jobs/{}", encode(&id))).await
+}
+
+pub async fn presentation(id: String) -> Result<PresentationView, Failure> {
+    get(&format!("/api/staff/presentations/{}", encode(&id))).await
+}
+
+pub async fn presentations() -> Result<Vec<PresentationSummary>, Failure> {
+    get("/api/staff/presentations").await
 }

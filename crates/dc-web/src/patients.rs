@@ -1,8 +1,7 @@
 //! Patient directory and the patient page with the plan table.
 
 use crate::api;
-use crate::format::language_name;
-use dc_core::Money;
+use crate::format::{language_name, money_view};
 use dc_core::api::{PatientDetail, PatientListItem, PlanDetail, ProcedureLine};
 use leptos::html;
 use leptos::leptos_dom::helpers::debounce;
@@ -118,7 +117,7 @@ pub fn PatientPage() -> impl IntoView {
 }
 
 #[component]
-fn Breadcrumb(name: Option<String>) -> impl IntoView {
+pub fn Breadcrumb(name: Option<String>) -> impl IntoView {
     view! {
         <nav class="breadcrumb" aria-label="Breadcrumb">
             <A href="/patients">"Patients"</A>
@@ -140,8 +139,10 @@ fn initials(first: &str, last: &str) -> String {
         .collect()
 }
 
+/// Avatar, name and meta line shared by the patient page and the create
+/// screen. `children` go on the right, for the plan picker or chip.
 #[component]
-fn PatientView(patient: PatientDetail) -> impl IntoView {
+pub fn PatientHead(patient: PatientDetail, children: Children) -> impl IntoView {
     let name = format!("{} {}", patient.first_name, patient.last_name);
     let mut meta = Vec::new();
     if let Some(age) = patient.age_years {
@@ -151,28 +152,54 @@ fn PatientView(patient: PatientDetail) -> impl IntoView {
     if let Some(lang) = &patient.language {
         meta.push(format!("Prefers {}", language_name(lang)));
     }
+    view! {
+        <div class="patient-head">
+            <div class="patient-id">
+                <div class="avatar" aria-hidden="true">{initials(&patient.first_name, &patient.last_name)}</div>
+                <div>
+                    <h1 id="patient-name" class="patient-name">{name}</h1>
+                    <p class="patient-meta">{meta.join(" · ")}</p>
+                </div>
+            </div>
+            {children()}
+        </div>
+    }
+}
+
+#[component]
+fn PatientView(patient: PatientDetail) -> impl IntoView {
+    let name = format!("{} {}", patient.first_name, patient.last_name);
     let selected = RwSignal::new(0usize);
     let plans = StoredValue::new(patient.plans.clone());
     let plan_count = patient.plans.len();
     let patient_key = patient.patient_key.clone();
 
     view! {
-        <header class="topbar"><Breadcrumb name=Some(name.clone()) /></header>
+        <header class="topbar"><Breadcrumb name=Some(name) /></header>
         <section class="card patient-card" aria-labelledby="patient-name">
-            <div class="patient-head">
-                <div class="patient-id">
-                    <div class="avatar" aria-hidden="true">{initials(&patient.first_name, &patient.last_name)}</div>
-                    <div>
-                        <h1 id="patient-name" class="patient-name">{name}</h1>
-                        <p class="patient-meta">{meta.join(" · ")}</p>
-                    </div>
-                </div>
+            <PatientHead patient>
                 <PlanPicker plans selected count=plan_count />
-            </div>
+            </PatientHead>
             {move || {
                 let all = plans.get_value();
                 match all.get(selected.get()).cloned() {
-                    Some(plan) => view! { <PlanTable plan patient_key=patient_key.clone() /> }.into_any(),
+                    Some(plan) => {
+                        let create_href = format!(
+                            "/patients/{}/plans/{}/new",
+                            api::encode(&patient_key),
+                            api::encode(&plan.plan_key)
+                        );
+                        let has_unknown = plan_has_unknown(&plan);
+                        view! {
+                            <PlanTable plan />
+                            <div class="card-foot">
+                                <PlanNotes has_unknown />
+                                <div class="card-actions">
+                                    <A href=create_href attr:class="button primary">"Create presentation"</A>
+                                </div>
+                            </div>
+                        }.into_any()
+                    }
                     None => view! {
                         <div class="card-foot">
                             <p class="notice">"This patient has no open treatment plan."</p>
@@ -184,10 +211,18 @@ fn PatientView(patient: PatientDetail) -> impl IntoView {
     }
 }
 
-fn plan_label(plan: &PlanDetail) -> String {
+pub fn plan_label(plan: &PlanDetail) -> String {
     match &plan.provider_display_name {
         Some(provider) => format!("{} · {provider}", plan.name),
         None => plan.name.clone(),
+    }
+}
+
+/// The plan name on its own, for screens that show a single plan.
+#[component]
+pub fn PlanChip(plan: PlanDetail) -> impl IntoView {
+    view! {
+        <div class="plan-chip"><span class="muted">"Plan"</span><b>{plan_label(&plan)}</b></div>
     }
 }
 
@@ -225,24 +260,16 @@ fn PlanPicker(
     .into_any()
 }
 
-fn money_cell(value: Option<Money>) -> AnyView {
-    match value {
-        Some(m) => m.to_string().into_any(),
-        None => view! { <span class="unknown">"Not available"</span> }.into_any(),
-    }
+/// True when some fee or patient estimate is missing, so totals are incomplete.
+pub fn plan_has_unknown(plan: &PlanDetail) -> bool {
+    plan.procedures
+        .iter()
+        .any(|p| p.fee.is_none() || p.patient_estimate.is_none())
 }
 
+/// The plan's procedures with totals, read-only from the practice's records.
 #[component]
-fn PlanTable(plan: PlanDetail, patient_key: String) -> impl IntoView {
-    let has_unknown = plan
-        .procedures
-        .iter()
-        .any(|p| p.fee.is_none() || p.patient_estimate.is_none());
-    let create_href = format!(
-        "/patients/{}/plans/{}/new",
-        api::encode(&patient_key),
-        api::encode(&plan.plan_key)
-    );
+pub fn PlanTable(plan: PlanDetail) -> impl IntoView {
     view! {
         <table class="plan-table">
             <caption class="visually-hidden">{format!("Treatment plan: {}", plan_label(&plan))}</caption>
@@ -265,20 +292,22 @@ fn PlanTable(plan: PlanDetail, patient_key: String) -> impl IntoView {
                     <td></td>
                     <td></td>
                     <th scope="row">"Total"</th>
-                    <td class="amount">{money_cell(plan.total_fee)}</td>
-                    <td class="amount">{money_cell(plan.total_patient_estimate)}</td>
+                    <td class="amount">{money_view(plan.total_fee)}</td>
+                    <td class="amount">{money_view(plan.total_patient_estimate)}</td>
                 </tr>
             </tfoot>
         </table>
-        <div class="card-foot">
-            <Show when=move || has_unknown>
-                <p class="foot-note">"Some amounts are not available in the practice's records yet, so the totals are incomplete."</p>
-            </Show>
-            <p class="foot-note">"Read-only from the practice's records. DentalClarity never changes these values."</p>
-            <div class="card-actions">
-                <A href=create_href attr:class="button primary">"Create presentation"</A>
-            </div>
-        </div>
+    }
+}
+
+/// Notes under the plan table.
+#[component]
+pub fn PlanNotes(has_unknown: bool) -> impl IntoView {
+    view! {
+        <Show when=move || has_unknown>
+            <p class="foot-note">"Some amounts are not available in the practice's records yet, so the totals are incomplete."</p>
+        </Show>
+        <p class="foot-note">"Read-only from the practice's records. DentalClarity never changes these values."</p>
     }
 }
 
@@ -307,8 +336,8 @@ fn ProcedureRowView(p: ProcedureLine) -> impl IntoView {
             <td>{tooth}</td>
             <td class="mono code">{p.code}</td>
             <td class="desc">{description}</td>
-            <td class="amount">{money_cell(p.fee)}</td>
-            <td class="amount estimate">{money_cell(p.patient_estimate)}</td>
+            <td class="amount">{money_view(p.fee)}</td>
+            <td class="amount estimate">{money_view(p.patient_estimate)}</td>
         </tr>
     }
 }
