@@ -39,8 +39,14 @@ a {
   min-height: 100vh;
 }
 
+/* The sidebar stays in view while long pages scroll. */
 .sidebar {
-  width: 210px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  width: var(--sidebar-width);
   flex: none;
   display: flex;
   flex-direction: column;
@@ -69,15 +75,36 @@ a {
   align-items: center;
   gap: 10px;
   color: var(--color-text-strong);
+  font-size: var(--text-md);
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
 }
 
 .nav-link svg {
   flex: none;
   stroke: var(--color-text-muted);
+  transition: stroke var(--dur-base) var(--ease-standard);
 }
 
 .nav-link:hover {
   background: var(--color-border-faint);
+}
+
+.nav-link:active {
+  transform: scale(var(--press-scale));
+}
+
+.nav-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wordmark-short {
+  display: none;
 }
 
 .nav-link[aria-current="page"] {
@@ -113,7 +140,40 @@ a {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 28px 20px;
+  padding: 0 var(--space-page) var(--space-page);
+  outline: none;
+  view-transition-name: staff-main;
+}
+
+/* Page content fills the column up to a per-screen maximum, centered, so
+   wide monitors get wider tables instead of empty gutters. Screens built
+   around one card use the narrower maximum. */
+.main > * {
+  width: 100%;
+  max-width: var(--page-max, var(--staff-max));
+  margin-inline: auto;
+}
+
+.main:has(.patient-card),
+.main:has(.settings-card) {
+  --page-max: var(--staff-narrow-max);
+}
+
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: -64px;
+  z-index: 50;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: #1f72c4;
+  color: #ffffff;
+  font-weight: 600;
+  transition: top var(--dur-fast) var(--ease-standard);
+}
+
+.skip-link:focus {
+  top: 12px;
 }
 
 .topbar {
@@ -156,10 +216,11 @@ a {
 .status-cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: var(--space-gap);
 }
 
 .status-card {
+  min-height: 78px;
   padding: 16px 16px 14px;
   border-radius: var(--radius-lg);
   border: 1px solid;
@@ -191,7 +252,7 @@ a {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  margin: 24px 0 14px;
+  margin: var(--space-section) auto 14px;
 }
 
 .section-head h2 {
@@ -230,9 +291,23 @@ a {
 }
 
 .table td {
-  height: 46px;
+  height: var(--row-height);
   padding: 0 12px;
   border-top: 1px solid var(--color-border-faint);
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.table tbody tr:hover td {
+  background: #fafbfc;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius-lg);
+}
+
+.table .pill {
+  animation: dc-fade-in var(--dur-base) var(--ease-standard);
 }
 
 .table th:first-child,
@@ -251,6 +326,11 @@ a {
 .table .action {
   color: var(--color-primary-strong);
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.table .num {
+  white-space: nowrap;
 }
 
 .pill {
@@ -285,10 +365,11 @@ a {
   color: var(--status-review-fg);
 }
 
+/* Reduced motion: the tokens already remove movement (see tokens.css);
+   progress bars jump instead of sliding. */
 @media (prefers-reduced-motion: reduce) {
-  * {
-    animation: none !important;
-    transition: none !important;
+  .progress-fill {
+    transition: none;
   }
 }
 
@@ -314,8 +395,9 @@ a {
 
 .auth-card {
   width: 100%;
-  max-width: 420px;
-  padding: 32px;
+  max-width: clamp(420px, 12vw + 266px, 520px);
+  padding: clamp(28px, 0.8vw + 18px, 40px);
+  animation: dc-scale-in var(--dur-slow) var(--ease-emphasized) backwards;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
@@ -368,6 +450,13 @@ a {
   font: inherit;
   font-weight: 400;
   color: var(--color-text);
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-standard);
+}
+
+.field input:focus-visible {
+  box-shadow: 0 0 0 4px var(--color-primary-soft);
 }
 
 .field input:focus-visible {
@@ -382,6 +471,7 @@ a {
 }
 
 .form-error {
+  animation: dc-rise-in var(--dur-base) var(--ease-emphasized) backwards;
   margin: 0;
   padding: 10px 12px;
   border-radius: var(--radius-md);
@@ -400,12 +490,34 @@ a {
   font-weight: 600;
   color: var(--color-text-strong);
   cursor: pointer;
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-standard),
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.button:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--color-surface-sunken);
+  border-color: #b8c0cc;
+}
+
+.button:active:not(:disabled, [aria-disabled="true"]) {
+  transform: scale(var(--press-scale));
 }
 
 .button.primary {
   border-color: #1f72c4;
   background: #1f72c4;
   color: #ffffff;
+}
+
+.button.primary:hover:not(:disabled, [aria-disabled="true"]) {
+  border-color: #1a65b0;
+  background: #1a65b0;
+  box-shadow: 0 2px 8px rgba(31, 114, 196, 0.25);
 }
 
 .button:disabled {
@@ -457,6 +569,9 @@ a.button {
 }
 
 .search-field input {
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-standard);
   width: 100%;
   height: 44px;
   padding: 0 14px 0 40px;
@@ -474,6 +589,14 @@ a.button {
   outline: 2px solid var(--color-primary);
   outline-offset: 0;
   border-color: var(--color-primary);
+  box-shadow: 0 0 0 4px var(--color-primary-soft);
+}
+
+/* Narrow items line up with the left edge of the centered page column. */
+.search-field,
+.settings-card {
+  margin-left: max(0px, (100% - var(--page-max, var(--staff-max))) / 2);
+  margin-right: auto;
 }
 
 /* Patient page */
@@ -611,8 +734,12 @@ a.button {
 .plan-table th:nth-child(6) { width: 130px; }
 
 .plan-table tbody td {
-  height: 46px;
+  height: var(--row-height);
   border-top: 1px solid var(--color-border-faint);
+}
+
+.patient-card .plan-table {
+  animation: dc-fade-in var(--dur-base) var(--ease-standard);
 }
 
 .plan-table .amount {
@@ -823,12 +950,12 @@ a.button {
 }
 
 .subbar {
-  height: 68px;
+  min-height: 68px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 28px;
+  padding: 0 var(--space-page);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
@@ -846,14 +973,27 @@ a.button {
 
 .subpage-body {
   flex: 1;
-  padding: 24px 28px;
+  width: 100%;
+  max-width: calc(var(--staff-max) + 2 * var(--space-page));
+  margin-inline: auto;
+  padding: 24px var(--space-page);
+}
+
+.subpage {
+  outline: none;
 }
 
 .create-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) clamp(360px, 9vw + 285px, 480px);
+  gap: var(--space-6);
   align-items: start;
+}
+
+/* The settings column stays in view next to a long plan. */
+.create-side {
+  position: sticky;
+  top: 24px;
 }
 
 .create-side {
@@ -922,6 +1062,13 @@ a.button {
   align-items: center;
   color: var(--color-text-muted);
   cursor: pointer;
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard);
+}
+
+.segment:hover:not(.selected):not(:has(input:disabled)) {
+  background: var(--color-border-faint);
 }
 
 .segment.selected {
@@ -974,8 +1121,10 @@ a.button {
 }
 
 .progress-time {
+  min-width: 5ch;
+  text-align: right;
   font-size: var(--text-sm);
-  color: var(--color-text-subtle);
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -990,7 +1139,9 @@ a.button {
   height: 100%;
   border-radius: 3px;
   background: var(--color-primary);
-  transition: width 200ms cubic-bezier(0.2, 0, 0, 1);
+  transition:
+    width var(--dur-slow) var(--ease-standard),
+    background-color var(--dur-base) var(--ease-standard);
 }
 
 .progress-fill.failed {
@@ -1017,6 +1168,28 @@ a.button {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* A row is redrawn when its stage changes, so its state settles in. */
+.stage-state {
+  animation: dc-rise-in var(--dur-base) var(--ease-emphasized) backwards;
+}
+
+.stage-row.passed .stage-icon,
+.stage-row.held .stage-icon,
+.stage-row.failed .stage-icon {
+  animation: dc-pop var(--dur-slow) var(--ease-emphasized) backwards;
+}
+
+.stage-row.active .stage-dot {
+  animation: dc-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-row .stage-icon,
+  .stage-row.active .stage-dot {
+    animation: none;
+  }
 }
 
 .stage-icon {
@@ -1102,7 +1275,8 @@ a.button {
 
 .running-body .progress-card {
   width: 100%;
-  max-width: 480px;
+  max-width: clamp(480px, 12vw + 330px, 640px);
+  animation: dc-scale-in var(--dur-slow) var(--ease-emphasized) backwards;
 }
 
 /* Presentation preview (2c) */
@@ -1113,6 +1287,7 @@ a.button {
 }
 
 .back-button {
+  transition: background-color var(--dur-base) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
   width: 34px;
   height: 34px;
   flex: none;
@@ -1126,6 +1301,10 @@ a.button {
 
 .back-button:hover {
   background: var(--color-surface-sunken);
+}
+
+.back-button:active {
+  transform: scale(0.94);
 }
 
 .editor-name {
@@ -1198,12 +1377,16 @@ a.button {
   border-bottom: 6px solid transparent;
 }
 
+/* Side panels grow on wide screens; the canvas keeps a reading width. */
 .editor-grid {
   flex: 1;
   min-height: 0;
   height: calc(100vh - 68px);
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 300px;
+  grid-template-columns:
+    clamp(240px, 12vw + 86px, 320px)
+    minmax(0, 1fr)
+    clamp(300px, 9.4vw + 180px, 420px);
   background: var(--color-surface);
 }
 
@@ -1237,6 +1420,9 @@ a.button {
 }
 
 .rail-item {
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard);
   width: 100%;
   height: 38px;
   padding: 0 10px;
@@ -1313,11 +1499,25 @@ a.button {
 }
 
 .editor-canvas {
-  padding: 26px 32px;
+  padding: 26px clamp(24px, 1.6vw + 12px, 48px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.editor-canvas > * {
+  width: 100%;
+  max-width: 1040px;
+  margin-inline: auto;
+  flex: none;
+}
+
+/* Generated and edited text keeps a comfortable line length. */
+.block-body,
+.block-textarea,
+.question-list {
+  max-width: 76ch;
 }
 
 .pane-head .eyebrow {
@@ -1400,6 +1600,13 @@ a.button {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  transition:
+    border-color var(--dur-base) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-standard);
+}
+
+.block-card:hover:not(.editing) {
+  border-color: #d3d9e1;
 }
 
 .block-card.unconfirmed {
@@ -1592,6 +1799,8 @@ a.button {
 }
 
 .present-error {
+  animation: dc-scale-in var(--dur-base) var(--ease-emphasized) backwards;
+  transform-origin: top right;
   position: absolute;
   top: calc(100% + 8px);
   right: 20px;
@@ -1627,6 +1836,7 @@ a.button {
 }
 
 .block-textarea {
+  animation: dc-fade-in var(--dur-base) var(--ease-standard);
   width: 100%;
   min-height: 120px;
   padding: 10px 12px;
@@ -1673,6 +1883,7 @@ a.button {
 }
 
 .link-button {
+  transition: color var(--dur-fast) var(--ease-standard), opacity var(--dur-base) var(--ease-standard);
   min-height: 32px;
   padding: 0;
   border: 0;
@@ -1697,6 +1908,10 @@ a.button {
   display: none;
 }
 
+.change-status > * {
+  animation: dc-rise-in var(--dur-base) var(--ease-emphasized) backwards;
+}
+
 .check-callout.changed {
   background: var(--status-changed-bg);
   color: var(--color-text-strong);
@@ -1708,4 +1923,315 @@ a.button {
 
 .callout-outcome {
   margin: 6px 0 0;
+}
+
+/* Settings on wide screens: the form and its live preview side by side. */
+@media (min-width: 1360px) {
+  .settings-card {
+    max-width: 1120px;
+  }
+
+  .settings-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr);
+    gap: 16px 32px;
+    align-items: start;
+  }
+
+  .settings-form > * {
+    grid-column: 1;
+  }
+
+  .settings-form > .brand-preview {
+    grid-column: 2;
+    grid-row: 1 / span 4;
+    position: sticky;
+    top: 24px;
+  }
+}
+
+.preview-bar,
+.preview-tooth {
+  transition: background-color var(--dur-base) var(--ease-standard);
+}
+
+/* Skeletons */
+
+.skeleton-table {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.sk-row {
+  height: var(--row-height);
+  padding: 0 12px 0 18px;
+  display: grid;
+  grid-template-columns: 0.5fr 1.3fr 0.4fr 1.5fr 0.6fr 0.7fr 1fr 0.4fr;
+  align-items: center;
+  gap: 24px;
+  border-top: 1px solid var(--color-border-faint);
+}
+
+.sk-row.sk-head {
+  height: 38px;
+  border-top: 0;
+  background: var(--color-surface-sunken);
+}
+
+.sk-head .sk-bar {
+  height: 8px;
+  width: 60%;
+}
+
+.sk-row .sk-bar:nth-child(3n + 1) {
+  width: 70%;
+}
+
+.sk-row .sk-bar:nth-child(3n + 2) {
+  width: 88%;
+}
+
+.sk-row .sk-bar:nth-child(3n) {
+  width: 52%;
+}
+
+.sk-card {
+  min-height: 78px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sk-title {
+  width: 55%;
+  height: 16px;
+}
+
+.sk-line {
+  width: 35%;
+}
+
+.skeleton-card {
+  padding: 20px 22px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.sk-card-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sk-avatar {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 50%;
+  background: #eef1f5;
+}
+
+.sk-stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sk-stack .sk-title {
+  width: min(240px, 60%);
+}
+
+.sk-stack .sk-line {
+  width: min(320px, 80%);
+}
+
+.sk-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sk-text:nth-child(odd) {
+  width: 92%;
+}
+
+.sk-text:nth-child(even) {
+  width: 74%;
+}
+
+.sk-text:last-child {
+  width: 46%;
+}
+
+.auth-skeleton {
+  width: 100%;
+  max-width: clamp(420px, 12vw + 266px, 520px);
+}
+
+.editor-skeleton .editor-canvas > .skeleton-card {
+  max-width: 1040px;
+}
+
+/* Route transitions (view transitions). The sidebar stays put while the
+   page column cross-fades with a short rise; going back reverses it. */
+::view-transition-old(staff-main) {
+  animation: var(--dur-fast) var(--ease-exit) both dc-vt-out-up;
+}
+
+::view-transition-new(staff-main) {
+  animation: var(--dur-slow) var(--ease-emphasized) 40ms both dc-vt-in-up;
+}
+
+.router-back::view-transition-old(staff-main) {
+  animation-name: dc-vt-out-down;
+}
+
+.router-back::view-transition-new(staff-main) {
+  animation-name: dc-vt-in-down;
+}
+
+/* Editor section switches animate only the canvas and the checks. */
+.vt-section .editor-canvas {
+  view-transition-name: editor-canvas;
+}
+
+.vt-section .checks-rail {
+  view-transition-name: editor-checks;
+}
+
+::view-transition-old(editor-canvas) {
+  animation: var(--dur-fast) var(--ease-exit) both dc-vt-out-up;
+}
+
+::view-transition-new(editor-canvas) {
+  animation: var(--dur-slow) var(--ease-emphasized) 30ms both dc-vt-in-up;
+}
+
+/* Without view transitions, new page content rises in on its own. */
+@supports not (view-transition-name: none) {
+  .main > *,
+  .subpage > * {
+    animation: dc-rise-in var(--dur-slow) var(--ease-emphasized) backwards;
+  }
+}
+
+/* Collapsed sidebar below 1180 px: icons only, names as tooltips and for
+   screen readers. Pills grow to 44 px for touch. */
+@media (max-width: 1179px) {
+  .sidebar {
+    width: 68px;
+    padding: 18px 12px;
+    align-items: center;
+  }
+
+  .wordmark {
+    padding: 0 0 22px;
+  }
+
+  .wordmark-full {
+    display: none;
+  }
+
+  .wordmark-short {
+    display: inline;
+  }
+
+  .nav-link {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .nav-label,
+  .demo-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .demo-badge {
+    padding: 6px 4px;
+    text-align: center;
+  }
+}
+
+.demo-short {
+  display: none;
+}
+
+@media (max-width: 1179px) {
+  .demo-short {
+    display: inline;
+    font-weight: 600;
+  }
+}
+
+/* Tablet widths: stack the two-column screens, let the editor scroll as
+   one page with the checks under the canvas. */
+@media (max-width: 1100px) {
+  .status-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .table {
+    min-width: 680px;
+  }
+
+  .create-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .create-side {
+    position: static;
+    order: -1;
+  }
+
+  .editor-bar {
+    flex-wrap: wrap;
+    padding-block: 12px;
+    row-gap: 10px;
+  }
+
+  .editor-actions {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .editor-grid {
+    height: auto;
+    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .section-rail {
+    grid-row: span 2;
+  }
+
+  .editor-canvas {
+    overflow: visible;
+  }
+
+  .checks-rail {
+    grid-column: 2;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+    overflow: visible;
+  }
+
+  .locked-strip {
+    flex-wrap: wrap;
+  }
 }

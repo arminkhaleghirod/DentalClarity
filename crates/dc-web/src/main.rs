@@ -8,6 +8,7 @@ mod create;
 mod editor;
 mod format;
 mod icons;
+mod motion;
 mod pages;
 mod patients;
 mod present;
@@ -59,7 +60,11 @@ fn App() -> impl IntoView {
 
     view! {
         {move || match gate.get() {
-            Gate::Loading => view! { <div class="auth-page"><p class="auth-text">"Loading…"</p></div> }.into_any(),
+            Gate::Loading => view! {
+                <div class="auth-page">
+                    <motion::SkeletonCard label="Loading DentalClarity" lines=3 class="auth-skeleton" />
+                </div>
+            }.into_any(),
             Gate::Unreachable(message) => view! {
                 <div class="auth-page">
                     <div class="notice error" role="alert">"DentalClarity is not reachable. " {message}</div>
@@ -89,7 +94,8 @@ enum Gate {
 fn Workspace() -> impl IntoView {
     view! {
         <Router>
-            <Routes fallback=|| view! { <shell::StaffShell><pages::NotFound /></shell::StaffShell> }>
+            <RouteFocus />
+            <Routes transition=true fallback=|| view! { <shell::StaffShell><pages::NotFound /></shell::StaffShell> }>
                 <Route path=path!("/patients/:key/plans/:plan/new") view=create::CreatePresentationPage />
                 <Route path=path!("/presentations/:id") view=editor::PresentationPage />
                 <ParentRoute path=path!("") view=ShellLayout>
@@ -103,6 +109,20 @@ fn Workspace() -> impl IntoView {
             </Routes>
         </Router>
     }
+}
+
+/// After a route change, moves focus to the new page's content so screen
+/// reader and keyboard users start there instead of on the old link.
+#[component]
+fn RouteFocus() -> impl IntoView {
+    let location = leptos_router::hooks::use_location();
+    Effect::new(move |previous: Option<String>| {
+        let path = location.pathname.get();
+        if previous.is_some_and(|p| p != path) {
+            motion::focus_page_content("main-content");
+        }
+        path
+    });
 }
 
 #[component]

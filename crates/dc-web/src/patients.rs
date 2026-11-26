@@ -2,6 +2,7 @@
 
 use crate::api;
 use crate::format::{language_name, money_view};
+use crate::motion::{SkeletonCard, SkeletonTable};
 use dc_core::api::{PatientDetail, PatientListItem, PlanDetail, ProcedureLine};
 use leptos::html;
 use leptos::leptos_dom::helpers::debounce;
@@ -47,23 +48,24 @@ pub fn PatientsPage() -> impl IntoView {
                 on:input=on_input
             />
         </div>
-        <Suspense fallback=|| view! { <div class="notice">"Loading patients…"</div> }>
+        <Transition fallback=|| view! { <SkeletonTable label="Loading patients" rows=8 cols=7 /> }>
             {move || results.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! {
-                    <div class="notice">{format!("No patients match \"{}\".", query.get_untracked().trim())}</div>
+                    <div class="notice reveal">{format!("No patients match \"{}\".", query.get_untracked().trim())}</div>
                 }.into_any(),
                 Ok(rows) => view! { <DirectoryTable rows /> }.into_any(),
                 Err(failure) => view! {
-                    <div class="notice error" role="alert">"Could not load patients. " {failure.message}</div>
+                    <div class="notice error reveal" role="alert">"Could not load patients. " {failure.message}</div>
                 }.into_any(),
             })}
-        </Suspense>
+        </Transition>
     }
 }
 
 #[component]
 fn DirectoryTable(rows: Vec<PatientListItem>) -> impl IntoView {
     view! {
+        <div class="table-wrap reveal">
         <table class="table directory">
             <thead>
                 <tr>
@@ -94,6 +96,7 @@ fn DirectoryTable(rows: Vec<PatientListItem>) -> impl IntoView {
                 }).collect_view()}
             </tbody>
         </table>
+        </div>
     }
 }
 
@@ -104,7 +107,10 @@ pub fn PatientPage() -> impl IntoView {
     let detail = LocalResource::new(move || api::patient(key()));
 
     view! {
-        <Suspense fallback=|| view! { <div class="notice page-gap">"Loading patient…"</div> }>
+        <Suspense fallback=|| view! {
+            <header class="topbar"><Breadcrumb name=None /></header>
+            <SkeletonCard label="Loading patient" lines=6 class="patient-card" />
+        }>
             {move || detail.get().map(|result| match result {
                 Ok(patient) => view! { <PatientView patient /> }.into_any(),
                 Err(failure) => view! {
@@ -176,7 +182,7 @@ fn PatientView(patient: PatientDetail) -> impl IntoView {
 
     view! {
         <header class="topbar"><Breadcrumb name=Some(name) /></header>
-        <section class="card patient-card" aria-labelledby="patient-name">
+        <section class="card patient-card reveal" aria-labelledby="patient-name">
             <PatientHead patient>
                 <PlanPicker plans selected count=plan_count />
             </PatientHead>

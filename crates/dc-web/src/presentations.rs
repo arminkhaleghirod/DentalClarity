@@ -2,6 +2,7 @@
 
 use crate::api;
 use crate::format::timestamp;
+use crate::motion::SkeletonTable;
 use crate::progress::presentation_href;
 use dc_core::presentation::{JobState, PresentationSummary};
 use leptos::prelude::*;
@@ -22,17 +23,17 @@ pub fn PresentationsPage() -> impl IntoView {
     let rows = LocalResource::new(api::presentations);
     view! {
         <header class="topbar"><h1 class="page-title">"Presentations"</h1></header>
-        <Suspense fallback=|| view! { <div class="notice">"Loading presentations…"</div> }>
+        <Suspense fallback=|| view! { <SkeletonTable label="Loading presentations" rows=6 cols=7 /> }>
             {move || rows.get().map(|result| match result {
                 Ok(rows) if rows.is_empty() => view! {
-                    <div class="notice empty-state">
+                    <div class="notice empty-state reveal">
                         <p>"No presentations yet. Create one from a patient's treatment plan."</p>
                         <A href="/patients" attr:class="button">"Find a patient"</A>
                     </div>
                 }.into_any(),
                 Ok(rows) => view! { <PresentationTable rows /> }.into_any(),
                 Err(failure) => view! {
-                    <div class="notice error" role="alert">"Could not load presentations. " {failure.message}</div>
+                    <div class="notice error reveal" role="alert">"Could not load presentations. " {failure.message}</div>
                 }.into_any(),
             })}
         </Suspense>
@@ -42,6 +43,7 @@ pub fn PresentationsPage() -> impl IntoView {
 #[component]
 fn PresentationTable(rows: Vec<PresentationSummary>) -> impl IntoView {
     view! {
+        <div class="table-wrap reveal">
         <table class="table">
             <thead>
                 <tr>
@@ -73,5 +75,6 @@ fn PresentationTable(rows: Vec<PresentationSummary>) -> impl IntoView {
                 }).collect_view()}
             </tbody>
         </table>
+        </div>
     }
 }

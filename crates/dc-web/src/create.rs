@@ -3,6 +3,7 @@
 
 use crate::api;
 use crate::format::{PRESENTATION_LANGUAGES, default_presentation_language};
+use crate::motion::SkeletonCard;
 use crate::patients::{
     PatientHead, PlanChip, PlanNotes, PlanTable, patient_href, plan_has_unknown,
 };
@@ -26,10 +27,13 @@ pub fn CreatePresentationPage() -> impl IntoView {
     let detail = LocalResource::new(move || api::patient(key()));
 
     view! {
-        <div class="subpage">
+        <div id="main-content" class="subpage" tabindex="-1">
             <Suspense fallback=|| view! {
                 <SubpageBar name=None patient_key=String::new() />
-                <div class="subpage-body"><div class="notice">"Loading plan…"</div></div>
+                <div class="subpage-body create-grid">
+                    <SkeletonCard label="Loading plan" lines=6 />
+                    <SkeletonCard label="Loading presentation settings" lines=2 class="create-side" />
+                </div>
             }>
                 {move || detail.get().map(|result| match result {
                     Ok(patient) => {
@@ -142,7 +146,7 @@ fn CreateView(patient: PatientDetail, plan: PlanDetail) -> impl IntoView {
 
     view! {
         <SubpageBar name=Some(name) patient_key=patient_key.clone() />
-        <div class="subpage-body create-grid">
+        <div class="subpage-body create-grid reveal">
             <section class="card patient-card create-plan" aria-labelledby="patient-name">
                 <PatientHead patient>
                     <PlanChip plan=chip_plan />

@@ -10,6 +10,7 @@ mod exit;
 mod narration;
 mod screens;
 
+use crate::motion::view_transition;
 use dc_core::ToothRef;
 use dc_core::present::{
     PatientBlock, PatientSection, PatientSectionKind, PatientView, PracticeBrand,
@@ -55,26 +56,72 @@ pub struct Nav {
     narrator: Narrator,
 }
 
+/// Root classes for a tab change: which region animates and which way it
+/// slides, following the order of the tabs.
+fn tab_scope(from: Tab, to: Tab) -> &'static str {
+    if (to as u8) >= (from as u8) {
+        "vt-tab vt-forward"
+    } else {
+        "vt-tab vt-back"
+    }
+}
+
 impl Nav {
     pub fn go(&self, tab: Tab) {
         self.narrator.stop();
-        if tab == Tab::Procedures && self.procedure.get_untracked().is_none() {
-            let first = self
-                .data
-                .with_value(|v| v.procedures.first().map(|p| p.procedure_ref.clone()));
-            self.procedure.set(first);
+        let nav = *self;
+        let from = self.tab.get_untracked();
+        let update = move || {
+            if tab == Tab::Procedures && nav.procedure.get_untracked().is_none() {
+                let first = nav
+                    .data
+                    .with_value(|v| v.procedures.first().map(|p| p.procedure_ref.clone()));
+                nav.procedure.set(first);
+            }
+            nav.tab.set(tab);
+            focus_main();
+        };
+        if from == tab {
+            update();
+        } else {
+            view_transition(tab_scope(from, tab), update);
         }
-        self.tab.set(tab);
-        focus_main();
     }
 
     pub fn open_procedure(&self, procedure_ref: String) {
         self.narrator.stop();
-        self.procedure.set(Some(procedure_ref));
-        if self.tab.get_untracked() != Tab::Procedures {
-            self.tab.set(Tab::Procedures);
-            focus_main();
+        let nav = *self;
+        let from = self.tab.get_untracked();
+        if from != Tab::Procedures {
+            view_transition(tab_scope(from, Tab::Procedures), move || {
+                nav.procedure.set(Some(procedure_ref));
+                nav.tab.set(Tab::Procedures);
+                focus_main();
+            });
+            return;
         }
+        let current = self.procedure.get_untracked();
+        if current.as_deref() == Some(procedure_ref.as_str()) {
+            return;
+        }
+        let position = |r: Option<&str>| {
+            nav.data.with_value(|v| {
+                v.procedures
+                    .iter()
+                    .position(|p| Some(p.procedure_ref.as_str()) == r)
+            })
+        };
+        let scope = if position(Some(&procedure_ref)) >= position(current.as_deref()) {
+            "vt-detail vt-forward"
+        } else {
+            "vt-detail vt-back"
+        };
+        view_transition(scope, move || {
+            nav.procedure.set(Some(procedure_ref));
+            if let Some(main) = document().get_element_by_id("p-main") {
+                main.set_scroll_top(0);
+            }
+        });
     }
 
     /// Opens the first procedure, in plan order, on the given tooth.
@@ -247,9 +294,7 @@ pub fn PresentApp() -> impl IntoView {
     let content = LocalResource::new(api::content);
     view! {
         {move || match content.get() {
-            None => view! {
-                <div class="present p-center"><p class="p-center-text" role="status">"Loading…"</p></div>
-            }.into_any(),
+            None => view! { <LoadingScreen /> }.into_any(),
             Some(Err(failure)) if failure.session_ended() => view! { <Ended /> }.into_any(),
             Some(Err(_)) => view! {
                 <div class="present p-center">
@@ -263,6 +308,33 @@ pub fn PresentApp() -> impl IntoView {
             }.into_any(),
             Some(Ok(view)) => view! { <PresentRoot view /> }.into_any(),
         }}
+    }
+}
+
+/// Placeholder in the shape of the header and At a glance, so the first
+/// screen fades in without the layout jumping.
+#[component]
+fn LoadingScreen() -> impl IntoView {
+    view! {
+        <div class="present p-loading">
+            <p class="visually-hidden" role="status">"Loading your treatment plan"</p>
+            <div class="p-loading-header skeleton" aria-hidden="true">
+                <span class="sk-bar sk-logo"></span>
+                <span class="sk-bar sk-name"></span>
+                <span class="sk-bar sk-tabs"></span>
+                <span class="sk-bar sk-tool"></span>
+            </div>
+            <div class="p-glance p-loading-body skeleton" aria-hidden="true">
+                <div class="p-chart-panel sk-panel"></div>
+                <div class="p-glance-main">
+                    <span class="sk-bar sk-eyebrow"></span>
+                    <span class="sk-bar sk-headline"></span>
+                    <span class="sk-bar sk-headline sk-short"></span>
+                    <span class="sk-bar sk-block"></span>
+                    <span class="sk-bar sk-block"></span>
+                </div>
+            </div>
+        </div>
     }
 }
 

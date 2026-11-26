@@ -45,16 +45,222 @@
   /* Type */
   --font-sans: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  /* Fluid type: the mockup sizes at 1280 px, growing gently toward 2560 px. */
   --text-xs: 12px;
-  --text-sm: 13px;
-  --text-md: 14px;
-  --text-lg: 15px;
-  --text-xl: 19px;
-  --text-2xl: 21px;
+  --text-sm: clamp(13px, 0.08vw + 12px, 14px);
+  --text-md: clamp(14px, 0.08vw + 13px, 15px);
+  --text-lg: clamp(15px, 0.16vw + 13px, 17px);
+  --text-xl: clamp(19px, 0.23vw + 16px, 22px);
+  --text-2xl: clamp(21px, 0.39vw + 16px, 26px);
+
+  /* Spacing. Fixed steps from the spec, plus fluid page-level values that
+     match the mockup at 1280 px and scale with the viewport. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-page: clamp(20px, 1.25vw + 12px, 44px);
+  --space-gap: clamp(14px, 0.6vw + 6.3px, 22px);
+  --space-section: clamp(24px, 0.9vw + 12.5px, 36px);
+  --row-height: clamp(46px, 0.47vw + 40px, 52px);
+
+  /* Layout widths */
+  --sidebar-width: clamp(210px, 2.3vw + 180.5px, 240px);
+  --staff-max: 1840px;
+  --staff-narrow-max: 1360px;
 
   /* Shape */
   --radius-sm: 6px;
   --radius-md: 9px;
   --radius-lg: 12px;
   --radius-pill: 99px;
+
+  /* Motion. Durations and curves for every transition and animation. */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  /* Distances, so reduced motion can turn movement off in one place. */
+  --motion-rise: 6px;
+  --motion-slide: 16px;
+  --motion-scale: 0.97;
+  --press-scale: 0.98;
 }
+
+/* Reduced motion: nothing moves or scales. Short opacity fades stay, since
+   they carry no motion, and repeating animations stop. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 120ms;
+    --dur-slow: 150ms;
+    --motion-rise: 0px;
+    --motion-slide: 0px;
+    --motion-scale: 1;
+    --press-scale: 1;
+  }
+}
+
+/* Shared keyframes */
+
+@keyframes dc-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dc-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes dc-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-rise));
+  }
+}
+
+@keyframes dc-scale-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-rise)) scale(var(--motion-scale));
+  }
+}
+
+@keyframes dc-scale-out {
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--motion-rise) / 2)) scale(var(--motion-scale));
+  }
+}
+
+@keyframes dc-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes dc-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes dc-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Content that arrives after loading fades up into place. */
+.reveal {
+  animation: dc-rise-in var(--dur-slow) var(--ease-emphasized) backwards;
+}
+
+/* Skeletons: muted bars in the shape of the coming content. They fade in
+   after a short delay, so fast loads never flash them. */
+.skeleton {
+  animation: dc-fade-in var(--dur-base) var(--ease-standard) 140ms backwards;
+}
+
+.sk-bar {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef1f5 0%, #eef1f5 35%, #f7f8fa 50%, #eef1f5 65%, #eef1f5 100%);
+  background-size: 200% 100%;
+  animation: dc-shimmer 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk-bar {
+    animation: none;
+    background: #eef1f5;
+  }
+}
+
+/* View transitions. The old view leaves quickly while the new one settles
+   in; the root keeps the browser's plain cross-fade. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-standard);
+}
+
+::view-transition-group(*) {
+  animation-duration: var(--dur-slow);
+  animation-timing-function: var(--ease-emphasized);
+}
+
+@keyframes dc-vt-out-up {
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--motion-rise) * -1));
+  }
+}
+
+@keyframes dc-vt-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-slide));
+  }
+}
+
+@keyframes dc-vt-out-down {
+  to {
+    opacity: 0;
+    transform: translateY(var(--motion-rise));
+  }
+}
+
+@keyframes dc-vt-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--motion-slide) * -1));
+  }
+}
+
+@keyframes dc-vt-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(calc(var(--motion-slide) * -0.5));
+  }
+}
+
+@keyframes dc-vt-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(var(--motion-slide));
+  }
+}
+
+@keyframes dc-vt-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(calc(var(--motion-slide) * 0.5));
+  }
+}
+
+@keyframes dc-vt-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--motion-slide) * -1));
+  }
+}
+

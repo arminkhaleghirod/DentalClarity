@@ -124,6 +124,9 @@ fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| procedure.name.clone());
 
+    // On wide screens the questions join the drawing in a side column, so
+    // the narrated text keeps a reading width.
+    let mut questions = Vec::new();
     let body = match section {
         None => view! { <Held /> }.into_any(),
         Some(section) => {
@@ -137,33 +140,37 @@ fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
                     view! { <NarratedBlock section_key=key.clone() block=b provider=provider.clone() /> }
                 })
                 .collect_view();
-            let questions = section.questions.clone();
-            view! {
-                {blocks}
-                {(!questions.is_empty()).then(|| view! {
-                    <section class="p-block p-questions">
-                        <h2 class="p-block-title">"Questions you might ask your dental team"</h2>
-                        <ul class="p-question-list">
-                            {questions.into_iter().map(|q| view! { <li>{q}</li> }).collect_view()}
-                        </ul>
-                    </section>
-                })}
-            }
-            .into_any()
+            questions = section.questions.clone();
+            blocks.into_any()
         }
     };
+    let questions = (!questions.is_empty()).then(|| {
+        view! {
+            <section class="p-block p-questions">
+                <h2 class="p-block-title">"Questions you might ask your dental team"</h2>
+                <ul class="p-question-list">
+                    {questions.into_iter().map(|q| view! { <li>{q}</li> }).collect_view()}
+                </ul>
+            </section>
+        }
+    });
 
     view! {
         <article class="p-detail-inner">
-            <div class="p-detail-head">
-                <div>
-                    <div class="p-eyebrow">{location}</div>
-                    <h1 class="p-detail-title">{title}</h1>
+            <div class="p-detail-main">
+                <div class="p-detail-head">
+                    <div>
+                        <div class="p-eyebrow">{location}</div>
+                        <h1 class="p-detail-title">{title}</h1>
+                    </div>
+                    <ReadingLevel current=level />
                 </div>
-                <ReadingLevel current=level />
+                <div class="p-detail-body">{body}</div>
             </div>
-            <Illustration category=procedure.category.clone() />
-            {body}
+            <div class="p-detail-side">
+                <Illustration category=procedure.category.clone() />
+                {questions}
+            </div>
         </article>
     }
 }

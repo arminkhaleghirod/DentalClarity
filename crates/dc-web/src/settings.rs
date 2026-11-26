@@ -1,6 +1,7 @@
 //! Practice and branding settings.
 
 use crate::api;
+use crate::motion::SkeletonCard;
 use crate::session::use_session;
 use dc_core::Mode;
 use dc_core::api::{DEFAULT_BRAND_HIGHLIGHT, DEFAULT_BRAND_PRIMARY, PracticeSettings};
@@ -26,7 +27,7 @@ pub fn SettingsPage() -> impl IntoView {
         };
         return view! {
             {header}
-            <section class="card settings-card" aria-labelledby="branding-title">
+            <section class="card settings-card reveal" aria-labelledby="branding-title">
                 <h2 id="branding-title" class="card-title">"Practice and branding"</h2>
                 <p class="notice">"Settings are read-only in the demo."</p>
                 <dl class="settings-values">
@@ -47,11 +48,11 @@ pub fn SettingsPage() -> impl IntoView {
     let loaded = LocalResource::new(api::settings);
     view! {
         {header}
-        <Suspense fallback=|| view! { <div class="notice">"Loading settings…"</div> }>
+        <Suspense fallback=|| view! { <SkeletonCard label="Loading settings" lines=7 class="settings-card" /> }>
             {move || loaded.get().map(|result| match result {
                 Ok(values) => view! { <BrandingForm values /> }.into_any(),
                 Err(failure) => view! {
-                    <div class="notice error" role="alert">"Could not load settings. " {failure.message}</div>
+                    <div class="notice error reveal" role="alert">"Could not load settings. " {failure.message}</div>
                 }.into_any(),
             })}
         </Suspense>
@@ -119,7 +120,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
     };
 
     view! {
-        <section class="card settings-card" aria-labelledby="branding-title">
+        <section class="card settings-card reveal" aria-labelledby="branding-title">
             <h2 id="branding-title" class="card-title">"Practice and branding"</h2>
             <form class="form settings-form" on:submit=on_submit>
                 <label class="field">

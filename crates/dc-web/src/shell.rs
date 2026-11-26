@@ -1,4 +1,7 @@
 //! Staff layout: sidebar navigation and the main content area.
+//!
+//! Below 1180 px the sidebar collapses to icons; each link keeps its text
+//! for screen readers and shows it as a tooltip.
 
 use crate::api;
 use crate::icons::{self, Icon};
@@ -22,8 +25,12 @@ pub fn StaffShell(children: Children) -> impl IntoView {
 
     view! {
         <div class="shell">
+            <a class="skip-link" href="#main-content">"Skip to content"</a>
             <nav class="sidebar" aria-label="Main">
-                <div class="wordmark">"dental"<span>"clarity"</span></div>
+                <div class="wordmark">
+                    <span class="wordmark-full">"dental"<span>"clarity"</span></span>
+                    <span class="wordmark-short" aria-hidden="true">"d"<span>"c"</span></span>
+                </div>
                 <NavLink href="/" icon=icons::HOME label="Dashboard" exact=true />
                 <NavLink href="/patients" icon=icons::PATIENTS label="Patients" />
                 <NavLink href="/presentations" icon=icons::PRESENTATIONS label="Presentations" />
@@ -33,18 +40,19 @@ pub fn StaffShell(children: Children) -> impl IntoView {
                 <Show
                     when=is_demo
                     fallback=move || view! {
-                        <button class="nav-link nav-button" on:click=sign_out>
+                        <button class="nav-link nav-button" title="Sign out" on:click=sign_out>
                             <Icon path=icons::SIGN_OUT />
-                            "Sign out"
+                            <span class="nav-label">"Sign out"</span>
                         </button>
                     }
                 >
-                    <div class="demo-badge">
-                        <strong>"Synthetic demo data"</strong>". No real patient records."
+                    <div class="demo-badge" title="Synthetic demo data. No real patient records.">
+                        <span class="demo-full"><strong>"Synthetic demo data"</strong>". No real patient records."</span>
+                        <span class="demo-short" aria-hidden="true">"Demo"</span>
                     </div>
                 </Show>
             </nav>
-            <main class="main">{children()}</main>
+            <main id="main-content" class="main" tabindex="-1">{children()}</main>
         </div>
     }
 }
@@ -57,9 +65,9 @@ fn NavLink(
     #[prop(optional)] exact: bool,
 ) -> impl IntoView {
     view! {
-        <A href=href exact=exact attr:class="nav-link">
+        <A href=href exact=exact attr:class="nav-link" attr:title=label>
             <Icon path=icon />
-            {label}
+            <span class="nav-label">{label}</span>
         </A>
     }
 }

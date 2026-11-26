@@ -3,6 +3,7 @@
 
 use crate::api;
 use crate::format::{language_name, money_view, timestamp, tooth_label};
+use crate::motion::{SkeletonCard, view_transition};
 use crate::patients::patient_href;
 use crate::progress::GenerationProgress;
 use crate::session::use_session;
@@ -35,10 +36,14 @@ pub fn PresentationPage() -> impl IntoView {
     let refetch = Callback::new(move |_| view_data.refetch());
 
     view! {
-        <div class="subpage">
+        <div id="main-content" class="subpage" tabindex="-1">
             <Suspense fallback=|| view! {
                 <header class="subbar"><BackLink href="/presentations".into() label="Back to presentations" /></header>
-                <div class="subpage-body"><div class="notice">"Loading presentation…"</div></div>
+                <div class="editor-grid editor-skeleton">
+                    <div class="section-rail"></div>
+                    <div class="editor-canvas"><SkeletonCard label="Loading presentation" lines=5 /></div>
+                    <div class="checks-rail"></div>
+                </div>
             }>
                 {move || view_data.get().map(|result| match result {
                     Ok(p) if !p.job_state.is_finished() => {
@@ -432,7 +437,7 @@ fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
     let no_sections = move || data.with(|p| p.sections.is_empty());
 
     view! {
-        <div class="editor-grid">
+        <div class="editor-grid reveal">
             {move || {
                 let entries = data.with(nav_entries);
                 view! { <SectionRail entries selected /> }
@@ -558,7 +563,17 @@ fn SectionRail(entries: Vec<NavEntry>, selected: RwSignal<String>) -> impl IntoV
                                 class:indent=entry.procedure
                                 class:spaced=spaced
                                 aria-current=move || if is_current() { Some("true") } else { None }
-                                on:click=move |_| selected.set(key_for_click.clone())
+                                on:click=move |_| {
+                                    let key = key_for_click.clone();
+                                    if selected.get_untracked() != key {
+                                        view_transition("vt-section", move || {
+                                            selected.set(key);
+                                            if let Ok(Some(canvas)) = document().query_selector(".editor-canvas") {
+                                                canvas.set_scroll_top(0);
+                                            }
+                                        });
+                                    }
+                                }
                             >
                                 <span class="rail-text">{entry.label}</span>
                                 <span class=mark_class aria-hidden="true">{mark}</span>
@@ -953,7 +968,7 @@ fn checks_for(p: &PresentationView, key: &str) -> AnyView {
             <ul class="check-list">
                 {check_row("Tooth, code, phase and cost match the practice's records")}
                 {check_row("No diagnosis or outcome promises")}
-                {check_row("Passed independent review")}
+                {check_row("Passed a separate review pass")}
             </ul>
         }
         .into_any(),

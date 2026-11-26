@@ -4,6 +4,7 @@
 
 use super::api::{self, ExitBody};
 use super::narration::use_narrator;
+use crate::motion::{DUR_BASE_MS, after_exit};
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::html;
 use leptos::prelude::*;
@@ -24,6 +25,8 @@ fn go_to_staff(path: &str) -> Result<(), String> {
 pub fn ExitControl(demo: bool) -> impl IntoView {
     let narrator = use_narrator();
     let open = RwSignal::new(false);
+    // Set while the dialog plays its exit animation, before it unmounts.
+    let closing = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let done_button = NodeRef::<html::Button>::new();
@@ -57,10 +60,17 @@ pub fn ExitControl(demo: bool) -> impl IntoView {
         }
     };
     let close = Callback::new(move |()| {
-        open.set(false);
+        if closing.get_untracked() {
+            return;
+        }
+        closing.set(true);
         if let Some(button) = done_button.get_untracked() {
             let _ = button.focus();
         }
+        after_exit(DUR_BASE_MS, move || {
+            open.try_set(false);
+            closing.try_set(false);
+        });
     });
 
     view! {
@@ -74,14 +84,14 @@ pub fn ExitControl(demo: bool) -> impl IntoView {
                 <p class="p-exit-error" role="alert">{move || error.get().unwrap_or_default()}</p>
             </Show>
             <Show when=move || open.get()>
-                <PinDialog close />
+                <PinDialog close closing=closing.into() />
             </Show>
         </div>
     }
 }
 
 #[component]
-fn PinDialog(close: Callback<()>) -> impl IntoView {
+fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
     let narrator = use_narrator();
     let secret = RwSignal::new(String::new());
     let locked = RwSignal::new(false);
@@ -174,7 +184,7 @@ fn PinDialog(close: Callback<()>) -> impl IntoView {
     };
 
     view! {
-        <div class="p-modal-backdrop">
+        <div class="p-modal-backdrop" class:is-closing=move || closing.get()>
             <div class="p-modal" role="dialog" aria-modal="true" aria-labelledby="p-exit-title"
                 aria-describedby="p-exit-desc">
                 <div class="p-modal-eyebrow">"For staff"</div>
