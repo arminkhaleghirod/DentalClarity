@@ -1546,11 +1546,11 @@ mod tests {
     #[test]
     fn wav_parsing_skips_other_chunks_and_partial_frames() {
         let plain = wav(3, 8_000, 1, 5);
-        let mut bytes = b"RIFF    WAVE".to_vec();
+        let mut bytes = b"RIFF\0\0\0\0WAVE".to_vec();
         // An odd-sized chunk before `fmt `, padded to an even length.
         bytes.extend_from_slice(b"LIST");
         bytes.extend_from_slice(&3u32.to_le_bytes());
-        bytes.extend_from_slice(b"abc ");
+        bytes.extend_from_slice(b"abc\0");
         bytes.extend_from_slice(&plain[12..36]);
         // Three frames and half of a fourth.
         bytes.extend_from_slice(b"data");
