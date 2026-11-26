@@ -56,3 +56,10 @@ codegen-units = 1
 inherits = "release"
 opt-level = "z"
 lto = true
+
+# Password hashing is slow without optimizations; keep dev builds and tests fast.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
