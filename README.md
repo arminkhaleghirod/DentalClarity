@@ -69,6 +69,7 @@ The patient screens carry the practice's name and colors, not the DentalClarity 
 - A patient directory and a read-only view of each plan.
 - A progress view while sections are written, checked and reviewed.
 - An editor that shows, per section, where each block came from (written and checked, derived from the clinical note, or built from the plan), which checks passed, the model and prompt version used, and controls to edit, revert or confirm text.
+- For a held section, controls to write it again or, once its text passes every deterministic check, to release it to the patient after a staff confirmation.
 
 ## Safety by design
 
@@ -77,7 +78,7 @@ The patient screens carry the practice's name and colors, not the DentalClarity 
 - 17 deterministic validators run on every section. Any blocking issue sends the section to repair, and a section that still fails is held.
 - A separate review call checks faithfulness, scope, balance, certainty and clarity. A reviewer pass can never override a deterministic failure, and it is never presented as clinician approval.
 - Explanations taken from the clinical note are held until staff confirm them. Until then the patient sees the knowledge base's general wording.
-- Held or failed sections are never shown to the patient. Their place shows a neutral note instead.
+- Held or failed sections are never shown to the patient. Their place shows a neutral note instead. Staff can release a held section only when its text, including their own edits, passes every deterministic check.
 - Demo mode uses OpenRouter with synthetic data only. Clinical mode is designed to use the practice's own AWS account and never constructs the OpenRouter adapter.
 - Only an allowlisted set of fields can reach a model. Names, patient numbers, dates, contact details, insurance identifiers and money values stay on the server and are filled in locally after validation.
 
