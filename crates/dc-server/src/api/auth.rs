@@ -2,18 +2,19 @@
 
 use crate::credentials::{check_password, check_pin, hash_secret, verify_secret};
 use crate::http::{
-    ClientIp, Failure, JsonBody, clear_session_cookie, cookie, session_cookie, session_cookie_name,
+    ClientIp, Failure, JsonBody, clear_present_cookie, clear_session_cookie, cookie,
+    session_cookie, session_cookie_name,
 };
 use crate::limits::ip_key;
 use crate::security::{check_csrf, check_new_visitor, expected_kind};
-use crate::sessions::{self, Session, SessionKind};
+use crate::sessions::{self, Session, SessionKind, Unlock};
 use crate::{AppState, audit, settings};
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use dc_core::Mode;
-use dc_core::api::{LoginRequest, SessionInfo, SessionState, SetupRequest};
+use dc_core::api::{LoginRequest, SessionInfo, SessionState, SetupRequest, UnlockSessionRequest};
 use std::net::IpAddr;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
@@ -29,7 +30,21 @@ fn info(
         state: session_state,
         practice_name,
         csrf_token: session.map(|s| s.csrf_token.clone()),
+        present_ended: false,
     }
+}
+
+/// [`info`] for a locked session, reporting whether its present session ended.
+async fn locked_info(
+    state: &AppState,
+    practice_name: String,
+    session: &Session,
+) -> Result<SessionInfo, Failure> {
+    let ended = !sessions::live_present(&state.db, &session.token_hash).await?;
+    Ok(SessionInfo {
+        present_ended: ended,
+        ..info(state, practice_name, SessionState::Locked, Some(session))
+    })
 }
 
 /// The caller's session, if it is the kind this mode uses.
@@ -73,17 +88,16 @@ pub async fn session(
     let existing = current(&state, &headers).await?;
     let practice = settings::practice_name(&state).await?;
     let body = match (state.mode, existing) {
-        // A visitor who started Present mode sees the lock screen too; it
-        // offers sign-out if the present session ended without an exit.
-        (Mode::Demo, Some(s)) if s.locked => info(&state, practice, SessionState::Locked, Some(&s)),
+        // A visitor who started Present mode sees the lock screen too. If
+        // the present session ended without an exit, `present_ended` tells
+        // the app to offer `POST /api/session/unlock`.
+        (Mode::Demo, Some(s)) if s.locked => locked_info(&state, practice, &s).await?,
         (Mode::Demo, Some(s)) => info(&state, practice, SessionState::Visitor, Some(&s)),
         (Mode::Demo, None) => info(&state, practice, SessionState::NewVisitor, None),
         (Mode::Clinical, _) if !staff_account_exists(&state).await? => {
             info(&state, practice, SessionState::SetupRequired, None)
         }
-        (Mode::Clinical, Some(s)) if s.locked => {
-            info(&state, practice, SessionState::Locked, Some(&s))
-        }
+        (Mode::Clinical, Some(s)) if s.locked => locked_info(&state, practice, &s).await?,
         (Mode::Clinical, Some(s)) => info(&state, practice, SessionState::Staff, Some(&s)),
         (Mode::Clinical, None) => info(&state, practice, SessionState::SignedOut, None),
     };
@@ -102,12 +116,12 @@ pub async fn visit(
     }
     let practice = settings::practice_name(&state).await?;
     if let Some(s) = current(&state, &headers).await? {
-        let session_state = if s.locked {
-            SessionState::Locked
+        let body = if s.locked {
+            locked_info(&state, practice, &s).await?
         } else {
-            SessionState::Visitor
+            info(&state, practice, SessionState::Visitor, Some(&s))
         };
-        return Ok(Json(info(&state, practice, session_state, Some(&s))).into_response());
+        return Ok(Json(body).into_response());
     }
     check_new_visitor(&state, ip)?;
     let issued = sessions::create(&state.db, SessionKind::Visitor).await?;
@@ -289,6 +303,119 @@ pub async fn logout(
         [(header::SET_COOKIE, clear_session_cookie(&state.http))],
     )
         .into_response())
+}
+
+/// `POST /api/session/unlock`: lifts a lock whose present session has ended
+/// (it expired, or the patient screen closed without an exit). Demo mode
+/// unlocks without a password. Clinical mode needs the staff password; the
+/// PIN is refused here, because its five-try allowance belongs to a present
+/// session and none is left. Rotates the session token and CSRF token like
+/// leaving Present mode, and moves demo presentations to the new scope.
+pub async fn unlock(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    JsonBody(request): JsonBody<UnlockSessionRequest>,
+) -> Result<Response, Failure> {
+    let session = current(&state, &headers)
+        .await?
+        .ok_or_else(|| Failure::new(StatusCode::UNAUTHORIZED, "signed_out", "Please sign in."))?;
+    check_csrf(&headers, &session)?;
+    if !session.locked {
+        return Err(Failure::new(
+            StatusCode::CONFLICT,
+            "not_locked",
+            "This session is not locked.",
+        ));
+    }
+    let present_active = || {
+        Failure::new(
+            StatusCode::CONFLICT,
+            "present_active",
+            "A patient is still viewing a presentation in this browser. Leave it from the patient screen.",
+        )
+    };
+    if sessions::live_present(&state.db, &session.token_hash).await? {
+        return Err(present_active());
+    }
+    let method = match state.mode {
+        Mode::Demo => "demo",
+        Mode::Clinical => {
+            let Some(password) = request.password.filter(|p| !p.is_empty()) else {
+                return Err(Failure::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "password_required",
+                    "Enter the staff password to unlock.",
+                ));
+            };
+            check_attempt(&state, ip)?;
+            let stored: Option<(String,)> =
+                sqlx::query_as("SELECT password_hash FROM staff_account WHERE id = 1")
+                    .fetch_optional(&state.db)
+                    .await?;
+            let Some((hash,)) = stored else {
+                return Err(Failure::new(
+                    StatusCode::CONFLICT,
+                    "setup_required",
+                    "DentalClarity has not been set up yet.",
+                ));
+            };
+            let ok = tokio::task::spawn_blocking(move || verify_secret(&password, &hash))
+                .await
+                .map_err(Failure::internal)?;
+            if !ok {
+                record_failure(&state, ip, "session_unlock_failed").await?;
+                return Err(Failure::new(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_credentials",
+                    "That password is not correct.",
+                ));
+            }
+            state.limits.login_backoff.record_success(ip);
+            "password"
+        }
+    };
+    let issued = match sessions::unlock_stale(&state.db, &session.token_hash).await? {
+        Unlock::Unlocked(issued) => issued,
+        Unlock::PresentActive => return Err(present_active()),
+        Unlock::Gone => {
+            return Err(Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "signed_out",
+                "Please sign in.",
+            ));
+        }
+    };
+    // The demo scope moved to the new token; its quotas move with it.
+    state
+        .limits
+        .transfer_scope(&session.token_hash, &issued.session.token_hash);
+    let actor = match session.kind {
+        SessionKind::Staff => "staff",
+        SessionKind::Visitor => "visitor",
+    };
+    audit::record(
+        &state.db,
+        actor,
+        "session_unlocked",
+        &format!("present session had ended; with {method}"),
+    )
+    .await?;
+    let practice = settings::practice_name(&state).await?;
+    let session_state = match state.mode {
+        Mode::Demo => SessionState::Visitor,
+        Mode::Clinical => SessionState::Staff,
+    };
+    let body = info(&state, practice, session_state, Some(&issued.session));
+    let mut response_headers = HeaderMap::new();
+    response_headers.append(
+        header::SET_COOKIE,
+        session_cookie(&state.http, &issued.token),
+    );
+    // A stale present cookie may still sit in the browser; it no longer
+    // opens anything, but there is no reason to keep it.
+    response_headers.append(header::SET_COOKIE, clear_present_cookie(&state.http));
+    Ok((response_headers, Json(body)).into_response())
 }
 
 async fn signed_in(state: &AppState, practice: String) -> Result<Response, Failure> {

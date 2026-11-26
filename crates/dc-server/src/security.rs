@@ -14,6 +14,9 @@ use subtle::ConstantTimeEq;
 /// Header carrying the session's CSRF token on state-changing requests.
 pub const CSRF_HEADER: &str = "x-dc-csrf";
 
+/// `423` code for a locked session that has no live present session left.
+pub const LOCKED_PRESENT_ENDED: &str = "locked_present_ended";
+
 fn is_safe(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
@@ -111,11 +114,23 @@ async fn check_session(
         return Err(signed_out());
     }
     if session.locked {
-        return Err(Failure::new(
-            StatusCode::LOCKED,
-            "locked",
-            "This session is locked while a patient is viewing a presentation.",
-        ));
+        // A lock whose present session has ended can only be lifted with
+        // `POST /api/session/unlock`, so the app needs to tell the two apart.
+        return Err(
+            if sessions::live_present(&state.db, &session.token_hash).await? {
+                Failure::new(
+                    StatusCode::LOCKED,
+                    "locked",
+                    "This session is locked while a patient is viewing a presentation.",
+                )
+            } else {
+                Failure::new(
+                    StatusCode::LOCKED,
+                    LOCKED_PRESENT_ENDED,
+                    "This session is still locked, but the presentation that locked it has ended. Unlock it to continue.",
+                )
+            },
+        );
     }
     state
         .limits

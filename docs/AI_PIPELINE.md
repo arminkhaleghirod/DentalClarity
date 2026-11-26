@@ -38,7 +38,7 @@ S0 snapshot -> S1 KB resolve -> S2 locked facts -> S3 prompt build
                          S8 assemble version -> S9 variants and narration
 ```
 
-The job state machine and restart recovery are in ARCHITECTURE section 5. The design is that each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P] Implemented in M4 as a simplification: section results are written once, when the job finishes, and a job left `queued` or `running` at startup is re-run from the start. Live progress (`jobs.progress_json`) is written at most every 250 ms while the job runs. At most 2 jobs run at once across the server; later jobs wait as `queued`.
+The job state machine and restart recovery are in ARCHITECTURE section 5. The design is that each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P] Implemented as a simplification at section level: each section result is saved to `job_section_results` the moment it finishes, and a job left `queued` or `running` at startup runs again, skipping the sections it already saved, so their model calls are not paid twice. A section that was in flight starts over. When every section is done, the results replace the presentation's sections in one transaction (DECISIONS E5). Live progress (`jobs.progress_json`) is written at most every 250 ms while the job runs. At most 2 jobs run at once across the server; later jobs wait as `queued`.
 
 ### Stage table
 
@@ -202,7 +202,7 @@ struct QaOut {
 
 ## Deterministic validators
 
-All live in `dc-generation::validate`. Each returns `Issue { code, path, severity: Block | Warn, detail }`. They run on writer output (S5), translations (S9), Q&A answers, and staff edits (as warnings). Each has adversarial fixtures in tests [C, ARCH 9].
+All live in `dc-generation::validate`. Each returns `Issue { code, path, severity: Block | Warn, detail }`. They run on writer output (S5), translations (S9), Q&A answers, and staff edits (as warnings, except that a blocking finding refuses the release of a held section; see [Present gating](#present-gating)). Each has adversarial fixtures in tests [C, ARCH 9].
 
 | # | Check | Implementation | Severity |
 |---|---|---|---|
@@ -420,6 +420,15 @@ A staff edit is never silently carried onto content generated from different cli
 ### Present gating
 
 `Passed` and `StaffEdit` blocks are patient-facing. `NeedsReview` and `Failed` blocks show the neutral placeholder; locked facts always show. The editor lists every block that has not passed, with reasons. Staff resolve a block by editing it, regenerating it, or marking it reviewed. Marking it reviewed writes an `audit_events` row, with the shared-account attribution limits described in [SECURITY.md](SECURITY.md).
+
+Implemented per section (DECISIONS E12):
+
+| Route | What it does | Refused with |
+|---|---|---|
+| `POST /api/staff/presentations/{id}/sections/{section_key}/regenerate` | Writes one section again from the same facts as a job; returns `{ presentation_id, job_id, section_key }`. Progress comes from `GET /api/staff/jobs/{job_id}`, whose `sections` list every section and whose `section_key` names the one being written. The job's final state describes the whole presentation. Staff edits on the section carry forward; its note confirmations are dropped | `404 section_not_found`; `409 no_knowledge_entry` for a procedure with no knowledge entry (S1), which stays held; `409 generation_in_progress` while a job of this presentation runs; demo gates as for a new presentation (`429 generation_in_progress`, `429 rate_limited`, `503 budget_reached`); `503 provider_not_configured` |
+| `POST /api/staff/presentations/{id}/sections/{section_key}/release` | Marks a `NeedsReview` section ready for patients and returns the updated section (`BlockChangeResponse`). The stored output is checked again by the deterministic validators with the citations its prompt allowed; each staff-edited block is checked as staff text instead (no citation checks), and findings on the generated text it replaced no longer apply. Writes `section_released` | `409 release_blocked` while any blocking finding remains (listed in the message and in `SectionView.release_blockers`); `409 nothing_to_release` for a section with no stored output; `409 already_ready`; `409 generation_in_progress`; `404 section_not_found` |
+
+`SectionView` carries `can_regenerate`, `can_release` and `release_blockers`, so the editor can show the actions before staff try them. Saving staff text never fails on a finding; only a release does. Edits to a section that is already ready get warnings only.
 
 ## Q&A grounding and retention
 

@@ -83,6 +83,7 @@ Implemented in M1: staff and demo visitor sessions use one cookie, named `__Host
 - The session kind must match the mode: demo accepts only visitor sessions, clinical accepts only staff sessions.
 - The mode is stored in settings. When the server starts in a different mode than last time, all sessions are deleted.
 - `GET /api/session` is read-only. Demo visitor sessions are created by `POST /api/visit`, which is Origin-checked and limited to 30 new visitor sessions per minute per client address.
+- A locked session whose present session has ended reports `present_ended: true` in `GET /api/session`, and staff routes answer `423 locked_present_ended` instead of `423 locked`. `POST /api/session/unlock` lifts that lock with a rotated token and CSRF token, like an exit (DECISIONS E13).
 
 API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. In demo mode the platform terminates TLS and the public origin is `https://`.
 
@@ -105,6 +106,8 @@ API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. I
 | Global failed login count | over 50 failures in 15 min | one `login_failure_surge` audit event per 15 min; the banner on next staff login is Later (not implemented in M1) |
 | Other staff API | 300 per minute per session | `429` |
 | `PUT /api/staff/presentations/{id}/blocks` (demo) | 60 saved edits per hour per visitor scope | `429` with `Retry-After` |
+| `POST /api/session/unlock` (clinical) | the sign-in limit and backoff: 5 per minute per client address, failures count toward the login backoff | `429` with `Retry-After`; a wrong password is `401 invalid_credentials` and is audited as `session_unlock_failed` |
+| `POST /api/staff/presentations/{id}/sections/{key}/regenerate` (demo) | 6 per hour per visitor scope and 20 per day per client address, counted from the `jobs` table so they survive a restart; one running job per visitor, shared with new presentations | `429 rate_limited` or `429 generation_in_progress`, with `Retry-After` |
 | Narration synthesis (demo) | 20,000 synthesized characters per hour per visitor scope and 60,000 per day per client address; cached clips are free | `429 narration_quota` with `Retry-After` |
 
 A global login limit was dropped because a few devices could use it to block everyone. All limits are in memory, keyed by client address and session, and reset on restart. A restart-persisted counter is not needed for the prototype.
@@ -118,19 +121,19 @@ A global login limit was dropped because a few devices could use it to block eve
 
 ### Audit events written
 
-`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
+`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. Also `session_unlocked` (with how), `session_unlock_failed`, `section_regeneration_started` and `section_released`. `present_started` and `section_released` are written in the same transaction as the change they record. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
 
 ## Present-mode isolation
 
 Confirmed flow from ARCHITECTURE section 5 [C, P8], with details [P]:
 
-1. Staff click Present. `POST /api/staff/presentations/:id/present` creates a `present_session` bound to `(presentation_id, version)`, sets `staff_session.locked = true` in SQLite, and sets the `__Host-dc_present` cookie. It is refused with `409` until the job has finished and at least one section is ready. Demo visitor sessions lock the same way.
+1. Staff click Present. `POST /api/staff/presentations/:id/present` creates a `present_session` bound to `(presentation_id, version)`, sets `staff_session.locked = true` and writes `present_started` in one SQLite transaction, and sets the `__Host-dc_present` cookie. Nothing after the commit can fail the request, so a locked session always gets its present cookie. It is refused with `409` until the job has finished and at least one section is ready. Demo visitor sessions lock the same way.
 2. The frontend does a full page load of `/present`, which drops all staff state held in WASM memory. The Present bundle never fetches staff data.
 3. While locked, every `/api/staff/*` call with that staff session returns `423 Locked` and no body beyond an error code. This covers other tabs, the back button and direct API calls. The staff SPA shows a lock screen on `423`.
 4. `/api/present/*` handlers take the presentation and version only from the present session. Any id in the path or body is ignored or must match, otherwise `403`.
 5. Exit, clinical: `POST /api/present/exit` with the PIN (or the password after 5 wrong PINs). On success the present session ends, the locked session is replaced by a new session token and a new CSRF token (the old token stops working at once), the present cookie is cleared, and an audit event is written.
 6. Exit, demo: `POST /api/present/exit` without a PIN [C, P8]. Accepted because demo data is synthetic.
-7. If the present session expires (60 min idle or 4 h), the staff session stays locked. Without a present session there is nothing to exit, so `GET /api/session` reports `locked` and the lock screen offers sign-out; staff then sign in again.
+7. If the present session expires (60 min idle or 4 h), the staff session stays locked. Without a present session there is nothing to exit, so `GET /api/session` reports `locked` with `present_ended: true`, and staff routes answer `423 locked_present_ended`. The lock screen then offers `POST /api/session/unlock` (CSRF token required). Demo mode unlocks without a password. Clinical mode needs the staff password; the PIN is refused, because its five-try allowance belonged to the present session that ended. Unlocking rotates the token as an exit does, moves demo presentations to the new visitor scope, clears the present cookie and writes `session_unlocked`. While a present session is still live it answers `409 present_active`. Sign-out also still works.
 8. Other workstations log in with their own staff session, which is not locked. Locking applies per session.
 
 Fullscreen is cosmetic and is never treated as an access control [C, brainstorm 3]. For a stronger lock on a shared tablet, practices can use the OS kiosk or guided-access feature. That is optional and documented in the install guide.
@@ -145,10 +148,11 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `GET /healthz` (no details) | A | A | A | A | A |
 | `/api/setup/*` | needs the one-time setup code; 403 after setup | 403 | 403 | 403 | disabled (404) |
 | `GET /api/session` (read-only) | A | A | A | A | A |
+| `POST /api/session/unlock` | 401 | 409 `not_locked` | A only when its present session ended; password in clinical | 401 | A when locked and its present session ended; no password |
 | `POST /api/visit` | 404 in clinical | 404 | 404 | 404 | A (demo only, Origin-checked, rate-limited) |
 | `POST /api/auth/login`, `logout` | A (login) | A (logout) | logout only | 403 | 404 |
 | `/api/staff/patients`, `plans` (read PMS) | 401 | A | 423 | 401 | A (synthetic, read-only) |
-| `/api/staff/presentations` create, edit, regenerate, history | 401 | A | 423 | 401 | A, own visitor scope only |
+| `/api/staff/presentations` create, edit, regenerate (`sections/:key/regenerate`), release (`sections/:key/release`), history | 401 | A | 423 | 401 | A, own visitor scope only |
 | `/api/staff/jobs/:id` | 401 | A | 423 | 401 | A, own jobs only |
 | `/api/staff/presentations/:id/export` (PDF) | 401 | A | 423 | 401 | A, own scope |
 | `/api/staff/presentations/:id/present` | 401 | A | 423 | 401 | A |
@@ -270,6 +274,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Session creation | 30 new visitor sessions per minute per client address |
 | Visitor isolation | presentations, edits, jobs and Q&A are scoped to the visitor id; the synthetic dataset is read-only and shared; visitor data is purged after 24 h |
 | New generations | 3 per hour per visitor, 10 per day per IP |
+| Section rewrites | 6 single-section regenerations per hour per visitor, 20 per day per IP; they share the one-running-job limit and the budget soft stop with new generations |
 | On-demand variants | 10 per hour per visitor |
 | Q&A | 20 questions per hour per visitor, 500 characters each |
 | Staff edits | 2,000 characters per block, 400 per sentence; 60 saved edits per hour per visitor; text containing `{{` or `}}` is refused (`422 invalid_edit`), because placeholders are filled in after the length checks |

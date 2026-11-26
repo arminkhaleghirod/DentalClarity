@@ -2,7 +2,7 @@
 
 This is the authoritative list of product and technical decisions. Every other planning doc must agree with it. Confirmed means the project owner decided it. Proposed means engineering chose it and it can change if evidence warrants. When a decision changes, edit it here first.
 
-Last updated: 2026-11-25
+Last updated: 2026-11-26
 
 ## Product
 
@@ -45,13 +45,15 @@ Last updated: 2026-11-25
 | E2 | Frontend is Leptos 0.8 client-side rendered, built with Trunk and embedded in the server binary. One binary, no Node/Python/Docker at runtime. | Proposed |
 | E3 | Server ↔ frontend use a JSON REST API. Request and response types live in `dc-core` and compile for both native and wasm. | Proposed |
 | E4 | App storage: SQLite (sqlx, migrations). Large artifacts (audio, PDF) are stored as content-addressed files in the data directory. | Proposed |
-| E5 | Generation jobs live in SQLite, run on a Tokio worker pool and resume after restart. | Proposed |
+| E5 | Generation jobs live in SQLite, run on a Tokio worker pool and resume after restart. Each section result is saved as it finishes, so a resumed job skips finished sections and does not pay for them twice; a section that was in flight starts over. | Proposed |
 | E6 | Source sync: periodic read-only polling with a normalized snapshot fingerprint (SHA-256 of canonical JSON). An unchanged fingerprint means no inference. | Proposed |
 | E7 | PDF booklet: Typst compiled in-process, with bundled fonts. | Proposed |
 | E8 | Fonts (Figtree, IBM Plex Mono; both OFL) are self-hosted. No external CDN, since practice LANs may block them. | Proposed |
 | E9 | Logging uses `tracing`. PHI-bearing values are wrapped in a `Sensitive<T>` type whose `Debug` and `Display` are redacted. | Proposed |
 | E10 | Windows: runs as a Windows service (`windows-service` crate); the installer technology is chosen in milestone M9. | Proposed |
 | E11 | License: Apache-2.0. | Confirmed |
+| E12 | Staff resolve a held section in two ways. Regenerate writes that one section again from the same facts as a job, under the same gates as a new presentation (provider, one running job per demo visitor, budget soft stop) and its own demo limits of 6 per visitor per hour and 20 per network per day. A procedure with no knowledge entry cannot be regenerated and stays held. Release marks a `NeedsReview` section ready for patients; it needs stored output, and the deterministic validators run again on the current text, staff edits included, so a release never skips a blocking finding. Each release writes an `audit_events` row. Regenerating keeps staff edits (same facts) and drops that section's note confirmations. | Proposed |
+| E13 | A session stays locked when its present session expires. The lock is lifted with `POST /api/session/unlock`: in demo mode without a password, rotating the token and moving the visitor's presentations as a normal exit does; in clinical mode only with the staff password. The PIN is refused there, because its five-try allowance belonged to the present session that ended. | Proposed |
 
 ## Design
 

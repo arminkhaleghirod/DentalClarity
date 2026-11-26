@@ -5,6 +5,7 @@ mod auth;
 mod edits;
 mod present;
 mod presentations;
+mod review;
 mod staff;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,14 @@ pub fn routes(state: &AppState) -> Router<AppState> {
             "/presentations/{id}/confirm-note",
             post(edits::confirm_note),
         )
+        .route(
+            "/presentations/{id}/sections/{section_key}/regenerate",
+            post(review::regenerate),
+        )
+        .route(
+            "/presentations/{id}/sections/{section_key}/release",
+            post(review::release),
+        )
         .route("/jobs/{id}", get(presentations::job))
         .route_layer(from_fn_with_state(state.clone(), security::require_session));
 
@@ -51,6 +60,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/session", get(auth::session))
+        .route("/session/unlock", post(auth::unlock))
         .route("/visit", post(auth::visit))
         .route("/setup", post(auth::setup))
         .route("/auth/login", post(auth::login))

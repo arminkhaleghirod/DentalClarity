@@ -9,7 +9,7 @@ use dc_knowledge::entries::Topic;
 const PIN: &str = "480913";
 
 /// A demo visitor with a finished presentation of Daniel's plan.
-async fn demo_presentation() -> (Router, SqlitePool, AppState, Client, String) {
+pub(super) async fn demo_presentation() -> (Router, SqlitePool, AppState, Client, String) {
     let (app, db, state) = app_with(Mode::Demo, scripted(1, &[], None)).await;
     let mut client = visitor_of(&app).await;
     let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
@@ -17,7 +17,7 @@ async fn demo_presentation() -> (Router, SqlitePool, AppState, Client, String) {
     (app, db, state, client, created.presentation_id)
 }
 
-async fn start_present(client: &mut Client, id: &str) -> Response {
+pub(super) async fn start_present(client: &mut Client, id: &str) -> Response {
     client
         .send(
             Method::POST,
@@ -27,17 +27,17 @@ async fn start_present(client: &mut Client, id: &str) -> Response {
         .await
 }
 
-async fn content(client: &mut Client) -> Response {
+pub(super) async fn content(client: &mut Client) -> Response {
     client.send(Method::GET, "/api/present/content", None).await
 }
 
-async fn exit(client: &mut Client, body: serde_json::Value) -> Response {
+pub(super) async fn exit(client: &mut Client, body: serde_json::Value) -> Response {
     client
         .send(Method::POST, "/api/present/exit", Some(body))
         .await
 }
 
-async fn view(client: &mut Client, id: &str) -> PresentationView {
+pub(super) async fn view(client: &mut Client, id: &str) -> PresentationView {
     json_body(
         client
             .send(Method::GET, &format!("/api/staff/presentations/{id}"), None)
@@ -46,7 +46,7 @@ async fn view(client: &mut Client, id: &str) -> PresentationView {
     .await
 }
 
-async fn put_block(client: &mut Client, id: &str, body: serde_json::Value) -> Response {
+pub(super) async fn put_block(client: &mut Client, id: &str, body: serde_json::Value) -> Response {
     client
         .send(
             Method::PUT,
@@ -56,7 +56,7 @@ async fn put_block(client: &mut Client, id: &str, body: serde_json::Value) -> Re
         .await
 }
 
-async fn post_block(
+pub(super) async fn post_block(
     client: &mut Client,
     id: &str,
     action: &str,
@@ -72,7 +72,7 @@ async fn post_block(
         .await
 }
 
-async fn audit_count(db: &SqlitePool, action: &str) -> i64 {
+pub(super) async fn audit_count(db: &SqlitePool, action: &str) -> i64 {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE action = ?")
         .bind(action)
         .fetch_one(db)

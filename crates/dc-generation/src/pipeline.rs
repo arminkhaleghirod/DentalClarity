@@ -183,21 +183,16 @@ pub async fn section(
     };
 
     // S1: a procedure with no knowledge entry is never improvised.
-    if let SectionKind::Procedure(reference) = kind {
-        let category = sheet.procedure(reference).map(|p| p.category);
-        if category == Some(ProcedureCategory::Unsupported)
-            || category.and_then(|c| kb.entry(c)).is_none()
-        {
-            result.state = SectionState::NeedsReview;
-            result
-                .reasons
-                .push("No reviewed educational content exists for this procedure yet.".into());
-            progress.report(Event::SectionDone {
-                key,
-                state: result.state,
-            });
-            return result;
-        }
+    if !has_knowledge(kind, sheet, kb) {
+        result.state = SectionState::NeedsReview;
+        result
+            .reasons
+            .push("No reviewed educational content exists for this procedure yet.".into());
+        progress.report(Event::SectionDone {
+            key,
+            state: result.state,
+        });
+        return result;
     }
 
     let section_prompt = prompt::build(kind, sheet, kb, level);
@@ -413,18 +408,63 @@ pub async fn section(
     result
 }
 
+/// Whether a section can be written at all. A procedure whose code maps to
+/// no knowledge entry is never improvised (S1); every other kind can.
+pub fn has_knowledge(kind: &SectionKind, sheet: &FactSheet, kb: &KnowledgeBase) -> bool {
+    let SectionKind::Procedure(reference) = kind else {
+        return true;
+    };
+    let category = sheet.procedure(reference).map(|p| p.category);
+    category != Some(ProcedureCategory::Unsupported) && category.and_then(|c| kb.entry(c)).is_some()
+}
+
+/// Runs the deterministic validators (S5) again over a stored section
+/// output, with the citations the section's prompt allows. Used before staff
+/// release a held section, so a release never skips a blocking issue.
+pub fn check_output(
+    kind: &SectionKind,
+    output: &Value,
+    sheet: &FactSheet,
+    kb: &KnowledgeBase,
+    level: ReadingLevel,
+) -> Vec<Issue> {
+    let section_prompt = prompt::build(kind, sheet, kb, level);
+    let cx = Context {
+        sheet,
+        kb_ids: section_prompt.kb_ids,
+        note_ids: section_prompt.note_ids,
+        level,
+    };
+    match validate_value(kind, output.clone(), &cx) {
+        Ok((_, issues)) => issues,
+        Err(issue) => vec![issue],
+    }
+}
+
 fn parse_and_validate(
     kind: &SectionKind,
     raw: &str,
     cx: &Context,
 ) -> Result<(Value, Vec<Issue>), Issue> {
-    let bad = |e: serde_json::Error| Issue {
+    let value: Value = serde_json::from_str(raw).map_err(schema_issue)?;
+    validate_value(kind, value, cx)
+}
+
+fn schema_issue(e: serde_json::Error) -> Issue {
+    Issue {
         code: "V1",
         path: "/".into(),
         severity: IssueSeverity::Block,
         detail: format!("the reply is not valid JSON for this schema: {e}"),
-    };
-    let value: Value = serde_json::from_str(raw).map_err(bad)?;
+    }
+}
+
+fn validate_value(
+    kind: &SectionKind,
+    value: Value,
+    cx: &Context,
+) -> Result<(Value, Vec<Issue>), Issue> {
+    let bad = schema_issue;
     let issues = match kind {
         SectionKind::AtAGlance => validate::check_at_a_glance(
             &serde_json::from_value::<AtAGlanceOut>(value.clone()).map_err(bad)?,
@@ -824,6 +864,62 @@ mod tests {
         .await;
         assert_eq!(result.state, SectionState::NeedsReview);
         assert_eq!(result.attempts, 0);
+    }
+
+    #[test]
+    fn stored_output_is_checked_again_with_its_citations() {
+        let kb = kb_with_entry();
+        let sheet = FactSheet::build(&daniel(), &kb);
+        let kind = SectionKind::Procedure("p1".into());
+        let good: Value = serde_json::from_str(&good_procedure()).unwrap();
+        let issues = check_output(&kind, &good, &sheet, &kb, ReadingLevel::Standard);
+        assert!(!validate::has_blocking(&issues), "{issues:?}");
+
+        let bad: Value = serde_json::from_str(&good_procedure().replace(
+            "It can let you keep your natural tooth.",
+            "Success is guaranteed.",
+        ))
+        .unwrap();
+        let issues = check_output(&kind, &bad, &sheet, &kb, ReadingLevel::Standard);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "V11" && i.path == "/benefits/0")
+        );
+        let unreadable = check_output(&kind, &json!({}), &sheet, &kb, ReadingLevel::Standard);
+        assert!(validate::has_blocking(&unreadable));
+    }
+
+    #[test]
+    fn knowledge_decides_whether_a_section_can_be_written() {
+        let kb = kb_with_entry();
+        let sheet = FactSheet::build(&daniel(), &kb);
+        assert!(has_knowledge(
+            &SectionKind::Procedure("p1".into()),
+            &sheet,
+            &kb
+        ));
+        // p3 is a crown; the test knowledge base only has the root canal entry.
+        assert!(!has_knowledge(
+            &SectionKind::Procedure("p3".into()),
+            &sheet,
+            &kb
+        ));
+        assert!(has_knowledge(&SectionKind::Journey, &sheet, &kb));
+    }
+
+    #[test]
+    fn section_keys_round_trip() {
+        for kind in [
+            SectionKind::AtAGlance,
+            SectionKind::Journey,
+            SectionKind::Procedure("p3".into()),
+            SectionKind::NextSteps,
+        ] {
+            assert_eq!(SectionKind::from_key(&kind.key()), Some(kind));
+        }
+        assert_eq!(SectionKind::from_key("procedure:"), None);
+        assert_eq!(SectionKind::from_key("costs"), None);
     }
 
     #[test]

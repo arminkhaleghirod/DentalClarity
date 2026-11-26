@@ -743,6 +743,7 @@ dependencies = [
  "dc-knowledge",
  "dc-pms",
  "dotenvy",
+ "futures",
  "getrandom 0.3.4",
  "hex",
  "rust-embed",

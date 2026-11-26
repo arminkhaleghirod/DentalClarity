@@ -61,16 +61,13 @@ pub async fn start(
         return Err(not_found("presentation"));
     }
     let version = presentable_version(&state, &session, &id).await?;
-    let token = sessions::start_present(&state.db, &session, &id, version).await?;
+    // The lock and its audit event commit together. Nothing after this
+    // point may fail the request, or the browser would be left locked
+    // without the present cookie it needs to exit.
+    let token =
+        sessions::start_present(&state.db, &session, &id, version, actor(session.kind)).await?;
     let quota = crate::narration::quota(&state, &owner_scope(&state, &session), ip);
     prewarm_narration(&state, &id, version, quota).await;
-    audit::record(
-        &state.db,
-        actor(session.kind),
-        "present_started",
-        &format!("presentation {id} version {version}"),
-    )
-    .await?;
     Ok((
         [(header::SET_COOKIE, present_cookie(&state.http, &token))],
         Json(StartPresentResponse {

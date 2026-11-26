@@ -40,6 +40,24 @@ pub struct SessionInfo {
     /// Token to send in the `X-DC-CSRF` header on state-changing requests.
     /// Present only when the browser holds a session.
     pub csrf_token: Option<String>,
+    /// With `state: Locked`: the present session that locked this session
+    /// has ended (it expired, or the patient screen was closed without an
+    /// exit), so there is nothing left to exit. Unlock with
+    /// `POST /api/session/unlock`: in demo mode without a password, in
+    /// clinical mode with the staff password.
+    #[serde(default)]
+    pub present_ended: bool,
+}
+
+/// `POST /api/session/unlock`: unlocks a session whose present session has
+/// ended. Clinical mode needs the staff password; the PIN is not accepted,
+/// because without a present session there is no per-lock PIN allowance.
+/// Demo mode sends no password. Returns `SessionInfo` with a new CSRF token
+/// and sets a new session cookie.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockSessionRequest {
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

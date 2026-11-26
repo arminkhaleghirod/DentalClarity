@@ -1,10 +1,14 @@
 //! Generation jobs: a Tokio task per job, at most [`MAX_CONCURRENT_JOBS`]
 //! running at once, with state and live progress persisted in `jobs`.
 //!
-//! Restart recovery is a simplification of docs/ARCHITECTURE.md section 5:
-//! jobs left `queued` or `running` are re-run from the start, not resumed
-//! per stage. Section rows are written only when the whole job finishes, so a
-//! re-run never mixes old and new sections.
+//! A job writes either the whole presentation or, when `jobs.section_key` is
+//! set, one section again with the same facts. Each section result is saved
+//! to `job_section_results` as soon as it finishes. A job left `queued` or
+//! `running` when the server stopped runs again at startup and skips the
+//! sections it already finished, so their model calls are not paid twice.
+//! A section that was in flight starts over. When every section is done, the
+//! results replace the presentation's rows in one transaction, so readers
+//! never see a mix of old and new sections from one job.
 
 use crate::AppState;
 use anyhow::{Context, Result, anyhow};
@@ -13,10 +17,11 @@ use dc_core::ToothRef;
 use dc_core::content::ReadingLevel;
 use dc_core::presentation::{JobState, SectionProgress, SectionStage};
 use dc_generation::facts::FactSheet;
-use dc_generation::pipeline::sections_for;
+use dc_generation::pipeline::{PARALLEL_SECTIONS, section, sections_for};
 use dc_generation::prompt::SectionKind;
-use dc_generation::{Event, Progress, SectionState, generate};
+use dc_generation::{Event, Progress, SectionResult, SectionState};
 use dc_knowledge::KnowledgeBase;
+use futures::StreamExt;
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -78,6 +83,15 @@ pub fn parse_job_state(s: &str) -> JobState {
         "succeeded" => JobState::Succeeded,
         "needs_review" => JobState::NeedsReview,
         _ => JobState::Failed,
+    }
+}
+
+/// The progress stage shown for a stored section state.
+pub fn stage_for_state(state: &str) -> SectionStage {
+    match state {
+        "passed" => SectionStage::Passed,
+        "needs_review" => SectionStage::NeedsReview,
+        _ => SectionStage::Failed,
     }
 }
 
@@ -195,23 +209,18 @@ pub fn spawn(state: &AppState, job_id: String) {
     });
 }
 
-/// Re-runs jobs that were queued or running when the server stopped.
+/// Runs again the jobs that were queued or running when the server stopped.
+/// Sections they already finished are kept and skipped (see [`run`]).
 pub async fn resume_pending(state: &AppState) -> Result<usize> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT j.id, p.snapshot_json FROM jobs j JOIN presentations p ON p.id = j.presentation_id
-         WHERE j.state IN ('queued', 'running') ORDER BY j.created_at",
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM jobs WHERE state IN ('queued', 'running') ORDER BY created_at",
     )
     .fetch_all(&state.db)
     .await?;
-    for (job_id, snapshot_json) in &rows {
-        let progress = serde_json::from_str::<PlanSnapshot>(snapshot_json)
-            .map(|s| initial_progress(&s, &state.kb))
-            .unwrap_or_default();
+    for (job_id,) in &rows {
         sqlx::query(
-            "UPDATE jobs SET state = 'queued', started_at = NULL, error = NULL, progress_json = ?
-             WHERE id = ?",
+            "UPDATE jobs SET state = 'queued', started_at = NULL, error = NULL WHERE id = ?",
         )
-        .bind(serde_json::to_string(&progress)?)
         .bind(job_id)
         .execute(&state.db)
         .await?;
@@ -233,19 +242,56 @@ async fn fail(db: &SqlitePool, job_id: &str, message: &str) -> Result<()> {
     .bind(job_id)
     .execute(db)
     .await?;
+    sqlx::query("DELETE FROM job_section_results WHERE job_id = ?")
+        .bind(job_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Saves one finished section of a job, so a restart does not write it again.
+async fn save_result(
+    db: &SqlitePool,
+    job_id: &str,
+    position: usize,
+    s: &SectionResult,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO job_section_results (job_id, key, position, state, output_json,
+             reasons_json, needs_note_confirmation, writer_model, prompt_version, attempts,
+             attempt_log_json, input_tokens, output_tokens, cost_usd, elapsed_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(job_id)
+    .bind(&s.key)
+    .bind(position as i64)
+    .bind(section_state_str(s.state))
+    .bind(s.output.as_ref().map(|v| v.to_string()))
+    .bind(serde_json::to_string(&s.reasons)?)
+    .bind(s.needs_note_confirmation)
+    .bind(&s.writer_model)
+    .bind(&s.prompt_version)
+    .bind(i64::from(s.attempts))
+    .bind(serde_json::to_string(&s.attempt_log)?)
+    .bind(i64::from(s.usage.input_tokens))
+    .bind(i64::from(s.usage.output_tokens))
+    .bind(crate::generation::usage_cost(&s.usage))
+    .bind(s.elapsed_ms as i64)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
 async fn run(state: &AppState, job_id: &str) -> Result<()> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as(
-        "SELECT p.id, p.snapshot_json, p.reading_level, j.progress_json
+    let row: Option<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT p.id, p.snapshot_json, p.reading_level, j.progress_json, j.section_key
          FROM jobs j JOIN presentations p ON p.id = j.presentation_id WHERE j.id = ?",
     )
     .bind(job_id)
     .fetch_optional(&state.db)
     .await?;
     // The presentation was purged while the job waited.
-    let Some((presentation_id, snapshot_json, level, progress_json)) = row else {
+    let Some((presentation_id, snapshot_json, level, progress_json, section_key)) = row else {
         return Ok(());
     };
 
@@ -269,10 +315,52 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
         serde_json::from_str(&snapshot_json).context("reading the stored snapshot")?;
     let level: ReadingLevel = serde_json::from_value(serde_json::Value::String(level))
         .map_err(|e| anyhow!("stored reading level: {e}"))?;
-    let sections: Vec<SectionProgress> = serde_json::from_str(&progress_json)
+    let sheet = FactSheet::build(&snapshot, &state.kb);
+
+    // The sections this job writes, with their position in the presentation.
+    let targets: Vec<(usize, SectionKind)> = sections_for(&sheet)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, kind)| section_key.as_deref().is_none_or(|key| kind.key() == key))
+        .collect();
+    if targets.is_empty() {
+        fail(
+            &state.db,
+            job_id,
+            "That section is no longer part of this plan.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let finished: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, state FROM job_section_results WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_all(&state.db)
+            .await?;
+
+    let mut sections: Vec<SectionProgress> = serde_json::from_str(&progress_json)
         .ok()
         .filter(|s: &Vec<SectionProgress>| !s.is_empty())
         .unwrap_or_else(|| initial_progress(&snapshot, &state.kb));
+    for s in &mut sections {
+        if let Some((_, stored)) = finished.iter().find(|(key, _)| *key == s.key) {
+            s.stage = stage_for_state(stored);
+        } else if targets.iter().any(|(_, kind)| kind.key() == s.key) {
+            s.stage = SectionStage::Queued;
+        }
+    }
+    let remaining: Vec<(usize, SectionKind)> = targets
+        .into_iter()
+        .filter(|(_, kind)| !finished.iter().any(|(key, _)| *key == kind.key()))
+        .collect();
+    if !finished.is_empty() {
+        tracing::info!(
+            job = %job_id,
+            skipped = finished.len(),
+            remaining = remaining.len(),
+            "resuming generation job"
+        );
+    }
 
     let tracker = Arc::new(Tracker {
         sections: Mutex::new(sections),
@@ -302,25 +390,90 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
         })
     };
 
-    let generated = generate(
-        &snapshot,
-        &state.kb,
-        &generation.models,
-        level,
-        tracker.as_ref(),
-    )
-    .await;
+    // Sections run in parallel, as in `dc_generation::generate`, and each is
+    // saved the moment it finishes.
+    let saved: Vec<Result<()>> = futures::stream::iter(remaining)
+        .map(|(position, kind)| {
+            let sheet = &sheet;
+            let models = &generation.models;
+            let progress: &dyn Progress = tracker.as_ref();
+            async move {
+                let result = section(&kind, sheet, &state.kb, models, level, progress).await;
+                save_result(&state.db, job_id, position, &result).await
+            }
+        })
+        .buffer_unordered(PARALLEL_SECTIONS)
+        .collect()
+        .await;
 
     tracker.done.store(true, Ordering::Release);
     tracker.changed.notify_one();
     let _ = writer.await;
+    for result in saved {
+        result.context("saving a section result")?;
+    }
 
-    let passed = generated
-        .sections
-        .iter()
-        .filter(|s| s.state == SectionState::Passed)
-        .count();
-    let (final_state, error) = if passed == generated.sections.len() {
+    let finished_at = now_ms();
+    let mut tx = state.db.begin().await?;
+    match &section_key {
+        None => {
+            sqlx::query("DELETE FROM presentation_sections WHERE presentation_id = ?")
+                .bind(&presentation_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        Some(key) => {
+            sqlx::query("DELETE FROM presentation_sections WHERE presentation_id = ? AND key = ?")
+                .bind(&presentation_id)
+                .bind(key)
+                .execute(&mut *tx)
+                .await?;
+            // A confirmation covers the note-derived text staff read, not
+            // whatever the section says now. Staff edits stay: the facts are
+            // the same, so they carry forward (AI_PIPELINE, staff-edit conflicts).
+            sqlx::query(
+                "DELETE FROM note_confirmations WHERE presentation_id = ? AND section_key = ?",
+            )
+            .bind(&presentation_id)
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    sqlx::query(
+        "INSERT INTO presentation_sections (presentation_id, key, position, state, output_json,
+             reasons_json, needs_note_confirmation, writer_model, prompt_version, attempts,
+             attempt_log_json, input_tokens, output_tokens, cost_usd, elapsed_ms)
+         SELECT ?, key, position, state, output_json, reasons_json, needs_note_confirmation,
+             writer_model, prompt_version, attempts, attempt_log_json, input_tokens,
+             output_tokens, cost_usd, elapsed_ms
+         FROM job_section_results WHERE job_id = ?",
+    )
+    .bind(&presentation_id)
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?;
+    let (job_cost,): (f64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM job_section_results WHERE job_id = ?",
+    )
+    .bind(job_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM job_section_results WHERE job_id = ?")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // The job's state describes the whole presentation, also after a
+    // single-section job, because lists and the editor read it that way.
+    let (total, passed): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(state = 'passed'), 0) FROM presentation_sections
+         WHERE presentation_id = ?",
+    )
+    .bind(&presentation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let (final_state, error) = if passed == total {
         (JobState::Succeeded, None)
     } else if passed > 0 {
         (JobState::NeedsReview, None)
@@ -330,46 +483,14 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
             Some("No section passed the checks. Try again later, or review the plan details."),
         )
     };
-
-    let finished = now_ms();
-    let mut tx = state.db.begin().await?;
-    sqlx::query("DELETE FROM presentation_sections WHERE presentation_id = ?")
-        .bind(&presentation_id)
-        .execute(&mut *tx)
-        .await?;
-    for (position, s) in generated.sections.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO presentation_sections (presentation_id, key, position, state, output_json,
-                 reasons_json, needs_note_confirmation, writer_model, prompt_version, attempts,
-                 attempt_log_json, input_tokens, output_tokens, cost_usd, elapsed_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&presentation_id)
-        .bind(&s.key)
-        .bind(position as i64)
-        .bind(section_state_str(s.state))
-        .bind(s.output.as_ref().map(|v| v.to_string()))
-        .bind(serde_json::to_string(&s.reasons)?)
-        .bind(s.needs_note_confirmation)
-        .bind(&s.writer_model)
-        .bind(&s.prompt_version)
-        .bind(i64::from(s.attempts))
-        .bind(serde_json::to_string(&s.attempt_log)?)
-        .bind(i64::from(s.usage.input_tokens))
-        .bind(i64::from(s.usage.output_tokens))
-        .bind(crate::generation::usage_cost(&s.usage))
-        .bind(s.elapsed_ms as i64)
-        .execute(&mut *tx)
-        .await?;
-    }
     sqlx::query(
         "UPDATE jobs SET state = ?, error = ?, finished_at = ?, elapsed_ms = ?, progress_json = ?
          WHERE id = ?",
     )
     .bind(job_state_str(final_state))
     .bind(error)
-    .bind(finished)
-    .bind(finished - started)
+    .bind(finished_at)
+    .bind(finished_at - started)
     .bind(tracker.snapshot_json())
     .bind(job_id)
     .execute(&mut *tx)
@@ -378,10 +499,60 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
     tracing::info!(
         job = %job_id,
         state = job_state_str(final_state),
-        elapsed_ms = finished - started,
-        cost_usd = generated.total_cost_usd(),
+        elapsed_ms = finished_at - started,
+        cost_usd = job_cost,
         "generation job finished"
     );
+    Ok(())
+}
+
+/// Brings the newest job of a presentation in line with its stored sections
+/// after staff changed a section's state (a release): each section's stage
+/// in `progress_json`, and the job state, which lists and the editor read as
+/// the presentation's state. A job still running is left alone.
+pub async fn refresh_latest_job(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    presentation_id: &str,
+) -> Result<()> {
+    let job: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, state, progress_json FROM jobs WHERE presentation_id = ?
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(presentation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((job_id, job_state, progress_json)) = job else {
+        return Ok(());
+    };
+    if !parse_job_state(&job_state).is_finished() {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, state FROM presentation_sections WHERE presentation_id = ?")
+            .bind(presentation_id)
+            .fetch_all(&mut **tx)
+            .await?;
+    let mut progress: Vec<SectionProgress> =
+        serde_json::from_str(&progress_json).unwrap_or_default();
+    for s in &mut progress {
+        if let Some((_, stored)) = rows.iter().find(|(key, _)| *key == s.key) {
+            s.stage = stage_for_state(stored);
+        }
+    }
+    let passed = rows.iter().filter(|(_, state)| state == "passed").count();
+    let state = if passed == rows.len() {
+        JobState::Succeeded
+    } else if passed > 0 {
+        JobState::NeedsReview
+    } else {
+        JobState::Failed
+    };
+    sqlx::query("UPDATE jobs SET state = ?, progress_json = ? WHERE id = ?")
+        .bind(job_state_str(state))
+        .bind(serde_json::to_string(&progress)?)
+        .bind(&job_id)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -397,6 +568,9 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
         "DELETE FROM note_confirmations WHERE presentation_id IN
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+        "DELETE FROM job_section_results WHERE job_id IN
+             (SELECT j.id FROM jobs j JOIN presentations p ON p.id = j.presentation_id
+              WHERE p.owner_scope <> 'staff' AND p.created_at <= ?)",
     ] {
         sqlx::query(statement)
             .bind(cutoff)

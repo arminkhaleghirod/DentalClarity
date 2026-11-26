@@ -77,10 +77,10 @@ Acceptance:
 
 Progress:
 - Done: server wiring. `POST /api/staff/presentations` takes a plan snapshot, stores the presentation and a queued job, and starts it; `GET /api/staff/jobs/{id}` reports per-section progress while the job runs; `GET /api/staff/presentations` and `GET /api/staff/presentations/{id}` return the summary list and the full view with locked facts from the snapshot.
-- Done: jobs in SQLite (migration 0003), at most 2 running at once, re-run from the start after a restart. Final state is succeeded when every section passed, needs review when at least one passed, and failed when none did.
+- Done: jobs in SQLite (migration 0003), at most 2 running at once, resumed after a restart without writing finished sections again (migration 0007). Final state is succeeded when every section passed, needs review when at least one passed, and failed when none did.
 - Done: demo controls. Presentations are scoped to the visitor session and purged after 24 hours; 3 new generations per hour per visitor, 10 per day per client address, 1 running job per visitor (all `429` with `Retry-After`); the monthly budget guard with the 80% soft stop.
 - Done: demo mode builds OpenRouter models from `OPENROUTER_API_KEY`, with `DC_TEXT_MODEL` as an override. Clinical mode answers `503 provider_not_configured` until M9.
-- Open: per-stage resume, a visible queue position, the `ai_calls` table, the dated price table, and the timing benchmark.
+- Open: resume within a section (per stage), a visible queue position, the `ai_calls` table, the dated price table, and the timing benchmark.
 
 ## M5 Editor, Present mode and narration
 
@@ -92,6 +92,7 @@ Acceptance:
 
 Progress:
 - Done (server): Present mode. `POST /api/staff/presentations/{id}/present` locks the staff or visitor session and sets the present cookie; `GET /api/present/content` returns the patient view of the bound version; `GET /api/present/audio/{key}` serves narration for sentences of that version only; `POST /api/present/exit` unlocks with a rotated session token (PIN in clinical mode, password after 5 wrong PINs, nothing in demo mode). Migration 0004.
+- Done (server): a lock whose present session expired is lifted with `POST /api/session/unlock` (no password in demo mode, the staff password in clinical mode); `GET /api/session` reports it with `present_ended`, and staff routes answer `423 locked_present_ended`. Held sections can be written again one at a time (`.../sections/{key}/regenerate`) or released after the deterministic checks pass on the current text (`.../sections/{key}/release`). Migration 0007.
 - Done (server): the patient view shows ready sections only, staff text where it exists, and a note-derived block only after staff confirm it; until then the reason shows the knowledge base's common reasons and the objective is left out. Placeholders are filled locally and every sentence carries its audio key.
 - Done (server): staff edits (`PUT .../blocks`), revert (`POST .../blocks/revert`) and note confirmation (`POST .../confirm-note`), with the original text kept, the deterministic validators run as warnings, the demo edit limits, and audit events.
 - Narration: OpenRouter `/audio/speech` adapter (PCM wrapped as WAV), `audio_clips` cache under `artifacts/audio`, one upstream call per key, 400-character limit, spend counted in the monthly budget, optional pre-warm; clinical mode answers 503 until M9.

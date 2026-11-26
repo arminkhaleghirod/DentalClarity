@@ -3,11 +3,13 @@
 //! `security::require_session`, so writes need the CSRF token.
 //!
 //! Edited text is checked by the same deterministic validators as model
-//! output, but only as warnings: staff text is never blocked.
+//! output, as warnings: saving staff text is never blocked. Releasing a held
+//! section (`review::release`) is, while a blocking finding remains.
 
 use super::present::actor;
 use super::presentations::{
     MAX_ID_CHARS, StaffChanges, not_found, owner_scope, parse_level, section_rows, section_view,
+    stored_output,
 };
 use crate::http::{Failure, JsonBody};
 use crate::security::CurrentSession;
@@ -25,7 +27,8 @@ use dc_core::present::{
 use dc_core::presentation::{BlockSource, SectionView, TextBlock};
 use dc_generation::facts::FactSheet;
 use dc_generation::schema::{NextStepsOut, Sentence};
-use dc_generation::validate::{Context, check_next_steps};
+use dc_generation::validate::{Context, Issue, check_next_steps};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -45,6 +48,8 @@ struct Target {
     level: ReadingLevel,
     /// The section as generated, without staff changes.
     generated: SectionView,
+    /// The stored model output, citations included, for the release check.
+    output: Option<Value>,
 }
 
 impl Target {
@@ -91,12 +96,13 @@ async fn target(
     }
     let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
     let sheet = FactSheet::build(&snapshot, &state.kb);
-    let generated = section_rows(state, id)
+    let row = section_rows(state, id)
         .await?
         .into_iter()
         .find(|r| r.0 == section_key)
-        .map(|r| section_view(r, &sheet))
         .ok_or_else(block_not_found)?;
+    let output = stored_output(&row);
+    let generated = section_view(row, &sheet);
     if !generated.blocks.iter().any(|b| b.field == field) {
         return Err(block_not_found());
     }
@@ -105,6 +111,7 @@ async fn target(
         sheet,
         level: parse_level(&level),
         generated,
+        output,
     })
 }
 
@@ -118,6 +125,13 @@ async fn changed_section(
     StaffChanges::load(state, id, target.version)
         .await?
         .apply(&mut section);
+    super::review::annotate(
+        state,
+        &mut section,
+        target.output.as_ref(),
+        &target.sheet,
+        target.level,
+    );
     Ok(section)
 }
 
@@ -165,10 +179,15 @@ pub fn clean_sentences(sentences: &[String]) -> Result<Vec<String>, Failure> {
     Ok(cleaned)
 }
 
-/// Runs the deterministic validators over staff sentences as warnings.
-/// Staff text has no citations, so the schema and citation checks (V1, V3,
-/// V4) are skipped; everything else is reported per sentence.
-pub fn edit_warnings(sentences: &[String], sheet: &FactSheet, level: ReadingLevel) -> Vec<String> {
+/// Runs the deterministic validators over staff sentences, one finding per
+/// sentence with the sentence's index. Staff text has no citations, so the
+/// citation checks (V3, V4) and the per-block sentence counts are skipped;
+/// everything else, the length of each sentence included, is reported.
+pub fn edit_issues(
+    sentences: &[String],
+    sheet: &FactSheet,
+    level: ReadingLevel,
+) -> Vec<(usize, Issue)> {
     let out = NextStepsOut {
         outlook: sentences
             .iter()
@@ -188,11 +207,20 @@ pub fn edit_warnings(sentences: &[String], sheet: &FactSheet, level: ReadingLeve
     };
     check_next_steps(&out, &cx)
         .into_iter()
-        .filter(|i| !matches!(i.code, "V1" | "V3" | "V4"))
+        .filter(|i| !matches!(i.code, "V3" | "V4"))
         .filter_map(|i| {
             let n: usize = i.path.strip_prefix("/outlook/")?.parse().ok()?;
-            Some(format!("Sentence {}: {} ({})", n + 1, i.detail, i.code))
+            Some((n, i))
         })
+        .collect()
+}
+
+/// [`edit_issues`] as warnings for the editor. Saving staff text is never
+/// blocked; releasing a held section is, while any of these is blocking.
+pub fn edit_warnings(sentences: &[String], sheet: &FactSheet, level: ReadingLevel) -> Vec<String> {
+    edit_issues(sentences, sheet, level)
+        .into_iter()
+        .map(|(n, i)| format!("Sentence {}: {} ({})", n + 1, i.detail, i.code))
         .collect()
 }
 

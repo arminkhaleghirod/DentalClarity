@@ -73,6 +73,21 @@ pub struct JobStatus {
     pub elapsed_ms: u64,
     /// Staff-readable reason when the whole job failed.
     pub error: Option<String>,
+    /// The one section a regeneration job rewrites; `None` for a job that
+    /// writes the whole presentation. `sections` always lists every section,
+    /// with the stages of the sections this job does not touch as they are.
+    #[serde(default)]
+    pub section_key: Option<String>,
+}
+
+/// `POST /api/staff/presentations/:id/sections/:section_key/regenerate`.
+/// Poll `GET /api/staff/jobs/:job_id` for progress, as after creating a
+/// presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegenerateSectionResponse {
+    pub presentation_id: String,
+    pub job_id: String,
+    pub section_key: String,
 }
 
 /// Where a block of content came from. Mirrors `provenance::Provenance` for display.
@@ -124,6 +139,21 @@ pub struct SectionView {
     pub questions: Vec<String>,
     /// Procedure ref for procedure sections, e.g. `p3`.
     pub procedure_ref: Option<String>,
+    /// The section can be written again with
+    /// `POST .../sections/:key/regenerate`. False for a procedure with no
+    /// knowledge entry, which is never improvised.
+    #[serde(default)]
+    pub can_regenerate: bool,
+    /// A held section (`NeedsReview`) that staff may release to patients
+    /// with `POST .../sections/:key/release`: it has output, and every
+    /// block, with staff edits applied, passes the deterministic checks.
+    #[serde(default)]
+    pub can_release: bool,
+    /// For a held section with output, the blocking findings of the
+    /// deterministic checks on the current text. Release stays refused
+    /// until this is empty.
+    #[serde(default)]
+    pub release_blockers: Vec<String>,
 }
 
 /// A locked fact row, rendered from the plan snapshot, never from a model.

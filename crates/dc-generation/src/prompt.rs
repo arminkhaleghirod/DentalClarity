@@ -47,6 +47,19 @@ impl SectionKind {
         }
     }
 
+    /// The kind a stable key names: the inverse of [`SectionKind::key`].
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "at_a_glance" => Some(SectionKind::AtAGlance),
+            "journey" => Some(SectionKind::Journey),
+            "next_steps" => Some(SectionKind::NextSteps),
+            other => other
+                .strip_prefix("procedure:")
+                .filter(|r| !r.is_empty())
+                .map(|r| SectionKind::Procedure(r.to_owned())),
+        }
+    }
+
     pub fn schema(&self) -> Value {
         match self {
             SectionKind::AtAGlance => schema::at_a_glance_schema(),

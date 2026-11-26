@@ -34,7 +34,7 @@ pub async fn dashboard(
         "SELECT p.patient_key, p.plan_key, p.id, j.state
          FROM presentations p JOIN jobs j ON j.presentation_id = p.id
          WHERE p.owner_scope = ?
-         ORDER BY p.created_at DESC, p.rowid DESC",
+         ORDER BY p.created_at DESC, p.rowid DESC, j.created_at DESC",
     )
     .bind(&owner)
     .fetch_all(&state.db)

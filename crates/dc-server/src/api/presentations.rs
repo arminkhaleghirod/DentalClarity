@@ -103,20 +103,7 @@ pub async fn create(
     JsonBody(request): JsonBody<CreatePresentationRequest>,
 ) -> Result<Json<CreatePresentationResponse>, Failure> {
     let Some(generation) = state.generation.clone() else {
-        let message = match state.mode {
-            Mode::Clinical => {
-                "Generating presentations in clinical mode needs the AWS Bedrock connection, \
-                 which is not available in this version yet."
-            }
-            Mode::Demo => {
-                "The demo AI provider is not configured on this server. Set OPENROUTER_API_KEY and restart."
-            }
-        };
-        return Err(Failure::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "provider_not_configured",
-            message,
-        ));
+        return Err(provider_not_configured(&state));
     };
 
     let language = request.language.trim();
@@ -163,10 +150,7 @@ pub async fn create(
         .unwrap_or_else(|| snapshot.patient.first_name.clone());
 
     let owner = owner_scope(&state, &session);
-    let client_key = match state.mode {
-        Mode::Demo => hex::encode(Sha256::digest(crate::limits::ip_key(ip).as_bytes())),
-        Mode::Clinical => String::new(),
-    };
+    let client_key = client_key(&state, ip);
 
     let _guard = state.jobs.create_lock.lock().await;
     let now = crate::sessions::now();
@@ -174,11 +158,7 @@ pub async fn create(
         check_demo_limits(&state, &owner, &client_key, now).await?;
     }
     if !generation.budget.allows_new_generation().await? {
-        return Err(Failure::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "budget_reached",
-            "Demo AI budget reached for this month. The prepared example cases still work.",
-        ));
+        return Err(budget_reached());
     }
 
     let presentation_id = jobs::new_id();
@@ -204,13 +184,14 @@ pub async fn create(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO jobs (id, presentation_id, state, created_at, progress_json)
-         VALUES (?, ?, 'queued', ?, ?)",
+        "INSERT INTO jobs (id, presentation_id, state, created_at, progress_json, client_key)
+         VALUES (?, ?, 'queued', ?, ?, ?)",
     )
     .bind(&job_id)
     .bind(&presentation_id)
     .bind(jobs::now_ms())
     .bind(serde_json::to_string(&progress).map_err(Failure::internal)?)
+    .bind(&client_key)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -223,12 +204,41 @@ pub async fn create(
     }))
 }
 
-async fn check_demo_limits(
-    state: &AppState,
-    owner: &str,
-    client_key: &str,
-    now: i64,
-) -> Result<(), Failure> {
+pub(super) fn provider_not_configured(state: &AppState) -> Failure {
+    let message = match state.mode {
+        Mode::Clinical => {
+            "Generating presentations in clinical mode needs the AWS Bedrock connection, \
+             which is not available in this version yet."
+        }
+        Mode::Demo => {
+            "The demo AI provider is not configured on this server. Set OPENROUTER_API_KEY and restart."
+        }
+    };
+    Failure::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "provider_not_configured",
+        message,
+    )
+}
+
+pub(super) fn budget_reached() -> Failure {
+    Failure::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "budget_reached",
+        "Demo AI budget reached for this month. The prepared example cases still work.",
+    )
+}
+
+/// The address hash used for demo per-address limits; empty in clinical mode.
+pub(super) fn client_key(state: &AppState, ip: std::net::IpAddr) -> String {
+    match state.mode {
+        Mode::Demo => hex::encode(Sha256::digest(crate::limits::ip_key(ip).as_bytes())),
+        Mode::Clinical => String::new(),
+    }
+}
+
+/// One generation job at a time per demo visitor, whole or single-section.
+pub(super) async fn check_no_running_job(state: &AppState, owner: &str) -> Result<(), Failure> {
     let (running,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM jobs j JOIN presentations p ON p.id = j.presentation_id
          WHERE p.owner_scope = ? AND j.state IN ('queued', 'running')",
@@ -246,6 +256,16 @@ async fn check_demo_limits(
             )
         });
     }
+    Ok(())
+}
+
+async fn check_demo_limits(
+    state: &AppState,
+    owner: &str,
+    client_key: &str,
+    now: i64,
+) -> Result<(), Failure> {
+    check_no_running_job(state, owner).await?;
 
     let hour = 60 * 60;
     let recent: Vec<(i64,)> = sqlx::query_as(
@@ -322,12 +342,14 @@ type JobRow = (
     Option<i64>,
     i64,
     String,
+    Option<String>,
 );
 
 /// The newest job of a presentation, if it is in scope.
 async fn job_row(state: &AppState, owner: &str, job_id: &str) -> Result<Option<JobRow>, Failure> {
     Ok(sqlx::query_as(
-        "SELECT j.id, j.presentation_id, j.state, j.error, j.started_at, j.elapsed_ms, j.progress_json
+        "SELECT j.id, j.presentation_id, j.state, j.error, j.started_at, j.elapsed_ms, j.progress_json,
+             j.section_key
          FROM jobs j JOIN presentations p ON p.id = j.presentation_id
          WHERE j.id = ? AND p.owner_scope = ?",
     )
@@ -338,7 +360,8 @@ async fn job_row(state: &AppState, owner: &str, job_id: &str) -> Result<Option<J
 }
 
 fn job_status(row: JobRow) -> JobStatus {
-    let (job_id, presentation_id, state, error, started_at, elapsed_ms, progress) = row;
+    let (job_id, presentation_id, state, error, started_at, elapsed_ms, progress, section_key) =
+        row;
     let state = jobs::parse_job_state(&state);
     let elapsed_ms = match (state, started_at) {
         (JobState::Running, Some(started)) => jobs::now_ms() - started,
@@ -351,6 +374,7 @@ fn job_status(row: JobRow) -> JobStatus {
         sections: serde_json::from_str(&progress).unwrap_or_default(),
         elapsed_ms: u64::try_from(elapsed_ms).unwrap_or(0),
         error,
+        section_key,
     }
 }
 
@@ -570,19 +594,30 @@ pub async fn view(
         return Err(not_found("presentation"));
     };
     let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
-    let job: Option<(String, String, i64)> = sqlx::query_as(
-        "SELECT id, state, elapsed_ms FROM jobs WHERE presentation_id = ?
+    // The newest job, and the newest whole-presentation job, whose time is
+    // the generation time shown to staff.
+    let job: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, state, section_key FROM jobs WHERE presentation_id = ?
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (job_id, job_state, generation_ms) = job
-        .map(|(id, s, ms)| (id, jobs::parse_job_state(&s), ms))
-        .unwrap_or((String::new(), JobState::Failed, 0));
+    let (generation_ms,): (i64,) = sqlx::query_as(
+        "SELECT COALESCE((SELECT elapsed_ms FROM jobs WHERE presentation_id = ?
+             AND section_key IS NULL ORDER BY created_at DESC LIMIT 1), 0)",
+    )
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
+    let (job_id, job_state, section_job) = job
+        .map(|(id, s, key)| (id, jobs::parse_job_state(&s), key.is_some()))
+        .unwrap_or((String::new(), JobState::Failed, false));
 
     let sheet = FactSheet::build(&snapshot, &state.kb);
-    let rows = if job_state.is_finished() {
+    let level = parse_level(&level);
+    // While one section is written again, the others stay readable.
+    let rows = if job_state.is_finished() || section_job {
         section_rows(&state, &id).await?
     } else {
         Vec::new()
@@ -593,8 +628,10 @@ pub async fn view(
     let sections = rows
         .into_iter()
         .map(|r| {
+            let output = stored_output(&r);
             let mut section = section_view(r, &sheet);
             changes.apply(&mut section);
+            super::review::annotate(&state, &mut section, output.as_ref(), &sheet, level);
             section
         })
         .collect();
@@ -609,7 +646,7 @@ pub async fn view(
         plan_name: snapshot.plan_name.clone(),
         provider_display_name: snapshot.provider_display_name.clone(),
         language,
-        reading_level: parse_level(&level),
+        reading_level: level,
         created_at,
         job_id,
         job_state,
@@ -623,7 +660,14 @@ pub async fn view(
     }))
 }
 
-/// One stored section as generated, before staff edits are applied.
+/// The stored model output of a section row, citations included.
+pub(super) fn stored_output(row: &SectionRow) -> Option<Value> {
+    row.2.as_deref().and_then(|o| serde_json::from_str(o).ok())
+}
+
+/// One stored section as generated, before staff edits are applied. The
+/// staff actions (`can_regenerate`, `can_release`) are filled in by
+/// `review::annotate`.
 pub(super) fn section_view(row: SectionRow, sheet: &FactSheet) -> SectionView {
     let (key, state, output, reasons, needs_confirmation, _, _) = row;
     let kind = match key.as_str() {
@@ -655,6 +699,9 @@ pub(super) fn section_view(row: SectionRow, sheet: &FactSheet) -> SectionView {
         blocks,
         questions,
         procedure_ref,
+        can_regenerate: false,
+        can_release: false,
+        release_blockers: Vec::new(),
     }
 }
 
