@@ -533,6 +533,7 @@
 /* Play control */
 
 .p-play {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 10px;
