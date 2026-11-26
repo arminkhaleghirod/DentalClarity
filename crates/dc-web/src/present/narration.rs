@@ -496,6 +496,18 @@ impl Narrator {
         rejected.forget();
     }
 
+    /// Pauses when the page is hidden, for example when the browser tab
+    /// changes, so narration never plays to an empty room. The patient
+    /// resumes with the same button.
+    pub fn pause_when_hidden(&self) {
+        if matches!(
+            self.status.get_untracked(),
+            Status::Playing | Status::Loading
+        ) {
+            self.pause();
+        }
+    }
+
     fn pause(&self) {
         if let Some(audio) = self.audio.get_value() {
             call(&audio, "pause");
@@ -522,11 +534,11 @@ impl Narrator {
     fn fail(&self, failure: &api::Failure) {
         let id = self.active.get_untracked().unwrap_or_default();
         self.stop();
+        if failure.session_ended() {
+            self.session_ended.set(true);
+            return;
+        }
         let text = match (failure.status, failure.code.as_str()) {
-            (401, _) => {
-                self.session_ended.set(true);
-                return;
-            }
             (429, "narration_quota") => QUOTA,
             (429, _) => BUSY,
             (503, _) | (_, "narration_unavailable") => {

@@ -2,7 +2,9 @@
 //! editable text blocks, the checks panel, and the Present button.
 
 use crate::api;
-use crate::format::{language_name, money_view, timestamp, tooth_label};
+use crate::format::{
+    CONTENT_LANGUAGES, content_language, language_name, money_view, timestamp, tooth_label,
+};
 use crate::motion::{SkeletonCard, view_transition};
 use crate::patients::patient_href;
 use crate::progress::GenerationProgress;
@@ -101,11 +103,13 @@ fn can_present(p: &PresentationView) -> bool {
 }
 
 /// Sends the browser to Present mode with a full page load, so no staff
-/// state stays in memory.
+/// state stays in memory. The editor's history entry is replaced.
 fn load_page(path: &str) -> Result<(), String> {
+    // Replace, not assign: while Present runs, this page shows the staff
+    // lock screen, so Back from Present must not lead here.
     window()
         .location()
-        .assign(path)
+        .replace(path)
         .map_err(|_| "The browser could not open Present mode.".to_owned())
 }
 
@@ -1009,9 +1013,18 @@ fn level_name(level: ReadingLevel) -> &'static str {
 
 fn details(p: &PresentationView) -> AnyView {
     let seconds = format!("{:.1} s", p.generation_ms as f64 / 1000.0);
+    // Name the language the text is in, which is what the patient sees. A
+    // different requested language is noted after it.
+    let content = language_name(&content_language(&p.language, &CONTENT_LANGUAGES));
+    let requested = language_name(&p.language);
+    let language = if content == requested {
+        content
+    } else {
+        format!("{content} ({requested} requested)")
+    };
     view! {
         <dl class="detail-list">
-            <dt>"Language"</dt><dd>{language_name(&p.language)}</dd>
+            <dt>"Language"</dt><dd>{language}</dd>
             <dt>"Reading level"</dt><dd>{level_name(p.reading_level)}</dd>
             {p.provider_display_name.clone().map(|d| view! { <dt>"Provider"</dt><dd>{d}</dd> })}
             <dt>"Writer"</dt><dd class="mono">{p.writer_model.clone()}</dd>

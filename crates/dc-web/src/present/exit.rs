@@ -10,14 +10,18 @@ use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-/// Only same-origin paths are followed.
+/// The shortest staff password the server accepts at setup.
+const MIN_PASSWORD_LEN: usize = 12;
+
+/// Only same-origin paths are followed. The Present entry in the history is
+/// replaced, so Back from the staff view does not return to it.
 fn go_to_staff(path: &str) -> Result<(), String> {
     if !path.starts_with('/') || path.starts_with("//") || path.starts_with("/\\") {
         return Err("The server sent an unexpected address.".into());
     }
     window()
         .location()
-        .assign(path)
+        .replace(path)
         .map_err(|_| "The browser could not open the staff view.".to_owned())
 }
 
@@ -119,8 +123,10 @@ fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
         let value = secret.get_untracked();
         let is_locked = locked.get_untracked();
         let body = if is_locked {
-            if value.is_empty() {
-                error.set(Some("Enter the staff password.".into()));
+            if value.chars().count() < MIN_PASSWORD_LEN {
+                error.set(Some(format!(
+                    "The staff password has at least {MIN_PASSWORD_LEN} characters."
+                )));
                 return;
             }
             ExitBody {
@@ -154,7 +160,7 @@ fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
                     return;
                 }
                 Err(failure) => {
-                    if failure.code == "pin_locked" {
+                    if failure.pin_disabled() {
                         locked.set(true);
                     }
                     error.set(Some(failure.message));
@@ -183,10 +189,18 @@ fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
         }
     };
 
+    // Escape cancels, like the Cancel button, unless a check is under way.
+    let on_escape = move |ev: KeyboardEvent| {
+        if ev.key() == "Escape" && !busy.get_untracked() {
+            ev.prevent_default();
+            close.run(());
+        }
+    };
+
     view! {
         <div class="p-modal-backdrop" class:is-closing=move || closing.get()>
             <div class="p-modal" role="dialog" aria-modal="true" aria-labelledby="p-exit-title"
-                aria-describedby="p-exit-desc">
+                aria-describedby="p-exit-desc" on:keydown=on_escape>
                 <div class="p-modal-eyebrow">"For staff"</div>
                 <h2 id="p-exit-title" class="p-modal-title">
                     {move || if locked.get() { "Enter the staff password" } else { "Enter the staff PIN" }}
@@ -202,6 +216,7 @@ fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
                         node_ref=input
                         inputmode=move || if locked.get() { "text" } else { "numeric" }
                         maxlength=move || (!locked.get()).then_some("8")
+                        minlength=move || locked.get().then(|| MIN_PASSWORD_LEN.to_string())
                         prop:value=move || secret.get()
                         on:input=move |ev| secret.set(event_target_value(&ev))
                         on:keydown=wrap_back

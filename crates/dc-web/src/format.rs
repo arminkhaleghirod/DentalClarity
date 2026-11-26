@@ -37,17 +37,39 @@ pub const PRESENTATION_LANGUAGES: [(&str, &str); 10] = [
     ("pt", "Português · Portuguese"),
 ];
 
-/// The offered language matching a patient's recorded preference, else English.
+/// Languages content is written in today. This mirrors the server's
+/// `available_languages`, which is English only until translations land (M7).
+pub const CONTENT_LANGUAGES: [&str; 1] = ["en"];
+
+fn base_tag(tag: &str) -> String {
+    tag.split('-').next().unwrap_or(tag).to_ascii_lowercase()
+}
+
+/// The language to preselect on the create screen: the patient's recorded
+/// preference when content exists in it, else English. Preselecting a
+/// language with no content would promise the patient something they will
+/// not see.
 pub fn default_presentation_language(preferred: Option<&str>) -> &'static str {
-    let base = preferred
-        .and_then(|tag| tag.split('-').next())
-        .unwrap_or("en")
-        .to_ascii_lowercase();
-    PRESENTATION_LANGUAGES
+    let base = preferred.map(base_tag).unwrap_or_default();
+    CONTENT_LANGUAGES
         .iter()
-        .map(|(tag, _)| *tag)
+        .copied()
         .find(|tag| *tag == base)
         .unwrap_or("en")
+}
+
+/// The language a presentation's text is actually in. `requested` is the
+/// tag chosen at creation; when no content exists in it, the text is in
+/// the first language that has content.
+pub fn content_language<S: AsRef<str>>(requested: &str, available: &[S]) -> String {
+    let base = base_tag(requested);
+    available
+        .iter()
+        .map(AsRef::as_ref)
+        .find(|tag| base_tag(tag) == base)
+        .or_else(|| available.first().map(AsRef::as_ref))
+        .unwrap_or("en")
+        .to_owned()
 }
 
 /// A money cell; missing amounts say so instead of showing a number.
@@ -104,4 +126,24 @@ pub fn timestamp(value: &str) -> String {
     }
     let day = String::from(date.to_locale_date_string("en-US", &day_options));
     format!("{day} {time}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_defaults_to_a_language_with_content() {
+        assert_eq!(default_presentation_language(Some("vi")), "en");
+        assert_eq!(default_presentation_language(Some("en-US")), "en");
+        assert_eq!(default_presentation_language(None), "en");
+    }
+
+    #[test]
+    fn content_language_falls_back_to_what_exists() {
+        assert_eq!(content_language("vi", &["en"]), "en");
+        assert_eq!(content_language("en-US", &["en"]), "en");
+        assert_eq!(content_language("es", &["en", "es"]), "es");
+        assert_eq!(content_language("vi", &[] as &[&str]), "en");
+    }
 }

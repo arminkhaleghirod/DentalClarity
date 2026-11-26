@@ -18,9 +18,16 @@ pub struct Failure {
 }
 
 impl Failure {
-    /// The present session is missing or expired.
+    /// The present session is missing or expired (`present_ended`), or the
+    /// staff session behind it was signed out (`signed_out`). Other 401s,
+    /// such as a wrong PIN or password, leave the presentation running.
     pub fn session_ended(&self) -> bool {
-        self.status == 401
+        matches!(self.code.as_str(), "present_ended" | "signed_out")
+    }
+
+    /// Too many wrong PINs: only the staff password unlocks now.
+    pub fn pin_disabled(&self) -> bool {
+        self.code == "pin_disabled"
     }
 }
 

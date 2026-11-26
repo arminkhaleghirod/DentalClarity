@@ -11,6 +11,7 @@ mod icons;
 mod motion;
 mod pages;
 mod patients;
+mod poll;
 mod present;
 mod presentations;
 mod progress;

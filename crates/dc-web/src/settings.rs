@@ -122,7 +122,9 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
     view! {
         <section class="card settings-card reveal" aria-labelledby="branding-title">
             <h2 id="branding-title" class="card-title">"Practice and branding"</h2>
-            <form class="form settings-form" on:submit=on_submit>
+            // Any edit after a save makes "Saved." stale. Input events from
+            // every field bubble up to the form.
+            <form class="form settings-form" on:submit=on_submit on:input=move |_| saved.set(false)>
                 <label class="field">
                     "Practice name"
                     <input

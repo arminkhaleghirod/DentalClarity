@@ -59,10 +59,11 @@ pub(super) fn procedure_line(p: &ProcedureFactView) -> String {
 
 pub(super) fn not_tied_label(p: &ProcedureFactView) -> String {
     let area = p.tooth.trim();
-    if area.is_empty() {
-        "Not tied to one tooth".into()
-    } else {
-        area.to_owned()
+    let mut chars = area.chars();
+    match chars.next() {
+        None => "Not tied to one tooth".into(),
+        // Areas arrive lower case ("upper right"); this label starts a line.
+        Some(first) => first.to_uppercase().chain(chars).collect(),
     }
 }
 

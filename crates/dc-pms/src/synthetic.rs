@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use dc_core::money::{Amount, Money};
 use dc_core::plan::{ClinicalNote, PatientContext, PatientKey, PlanKey, PlannedProcedure};
 use dc_core::procedure::{ProcedureCode, ProcedureStatus};
+use dc_core::tooth::Quadrant;
 use dc_core::{PlanSnapshot, ToothRef};
 use serde::Deserialize;
 use std::path::Path;
@@ -53,6 +54,10 @@ struct ProcedureFixture {
     description: String,
     #[serde(default)]
     tooth: String,
+    /// `UR`, `UL`, `LL` or `LR` for a procedure done by quadrant. Open
+    /// Dental keeps this apart from the tooth number, so the fixture does too.
+    #[serde(default)]
+    quadrant: String,
     #[serde(default)]
     surfaces: String,
     phase: Option<u8>,
@@ -61,6 +66,31 @@ struct ProcedureFixture {
     insurance_est: Option<i64>,
     patient_est: Option<i64>,
     note: Option<String>,
+}
+
+impl ProcedureFixture {
+    /// Where the procedure is: a tooth, a quadrant, or nowhere specific.
+    fn location(&self) -> std::result::Result<ToothRef, String> {
+        let quadrant = self.quadrant.trim();
+        if quadrant.is_empty() {
+            return self.tooth.parse().map_err(|e| format!("{e}"));
+        }
+        if !self.tooth.trim().is_empty() {
+            return Err("set a tooth or a quadrant, not both".into());
+        }
+        let quadrant = match quadrant.to_ascii_uppercase().as_str() {
+            "UR" => Quadrant::UpperRight,
+            "UL" => Quadrant::UpperLeft,
+            "LL" => Quadrant::LowerLeft,
+            "LR" => Quadrant::LowerRight,
+            _ => {
+                return Err(format!(
+                    "quadrant must be UR, UL, LL or LR, got {quadrant:?}"
+                ));
+            }
+        };
+        Ok(ToothRef::Quadrant(quadrant))
+    }
 }
 
 /// In-memory connector over a fixture file.
@@ -81,7 +111,7 @@ impl SyntheticConnector {
         for patient in &fixture.patients {
             for plan in &patient.plans {
                 for p in &plan.procedures {
-                    p.tooth.parse::<ToothRef>().map_err(|e| {
+                    p.location().map_err(|e| {
                         PmsError::Load(format!("plan {} procedure {}: {e}", plan.key, p.id))
                     })?;
                 }
@@ -124,7 +154,7 @@ impl SyntheticConnector {
                 code: ProcedureCode::new(&p.code),
                 pms_description: p.description.clone(),
                 // Validated in `from_toml`.
-                tooth: p.tooth.parse().unwrap_or(ToothRef::None),
+                tooth: p.location().unwrap_or(ToothRef::None),
                 surfaces: p.surfaces.clone(),
                 phase: p.phase,
                 status: ProcedureStatus::Planned,
@@ -276,5 +306,65 @@ mod tests {
             tooth = "40"
         "#;
         assert!(SyntheticConnector::from_toml(bad).is_err());
+    }
+
+    fn one_procedure(fields: &str) -> String {
+        format!(
+            r#"
+            [practice]
+            name = "X"
+            [[patients]]
+            key = "1"
+            first_name = "A"
+            last_name = "B"
+            [[patients.plans]]
+            key = "p"
+            name = "Active"
+            [[patients.plans.procedures]]
+            id = "1"
+            code = "D4341"
+            description = "Deep cleaning"
+            {fields}
+        "#
+        )
+    }
+
+    #[tokio::test]
+    async fn reads_quadrants() {
+        let c = SyntheticConnector::from_toml(&one_procedure(r#"quadrant = "lr""#)).unwrap();
+        let snap = c.plan_snapshot(&PlanKey("p".into())).await.unwrap();
+        assert_eq!(
+            snap.procedures[0].tooth,
+            ToothRef::Quadrant(Quadrant::LowerRight)
+        );
+    }
+
+    #[test]
+    fn rejects_bad_quadrants() {
+        let both = "tooth = \"3\"\nquadrant = \"UR\"";
+        for fields in [r#"quadrant = "UX""#, both] {
+            assert!(SyntheticConnector::from_toml(&one_procedure(fields)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_procedures_name_their_quadrant() {
+        let snap = connector()
+            .plan_snapshot(&PlanKey("tp-10655-1".into()))
+            .await
+            .unwrap();
+        let areas: Vec<ToothRef> = snap
+            .procedures
+            .iter()
+            .filter(|p| p.code.as_str() == "D4341")
+            .map(|p| p.tooth)
+            .collect();
+        assert_eq!(
+            areas,
+            [
+                ToothRef::Quadrant(Quadrant::UpperRight),
+                ToothRef::Quadrant(Quadrant::LowerRight)
+            ]
+        );
     }
 }

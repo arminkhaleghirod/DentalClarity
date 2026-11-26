@@ -3,96 +3,18 @@
 use crate::api;
 use crate::format::language_name;
 use crate::motion::{SkeletonCards, SkeletonTable};
+use crate::poll::{Load, PolledRows};
 use crate::progress::presentation_href;
 use crate::session::use_session;
 use dc_core::api::{PatientRow, PresentationStatus};
-use leptos::leptos_dom::helpers::{IntervalHandle, set_interval_with_handle};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_router::components::A;
-use std::time::Duration;
-
-/// How often the dashboard re-reads rows while a presentation is generating.
-const POLL_EVERY: Duration = Duration::from_secs(3);
-
-/// What the dashboard body shows. Only a change of state rebuilds it; new
-/// rows update in place.
-#[derive(Clone, PartialEq)]
-enum Load {
-    Loading,
-    Failed(String),
-    Ready,
-}
-
-/// Dashboard data and the poller that refreshes it while any row is generating.
-#[derive(Clone, Copy)]
-struct DashState {
-    rows: RwSignal<Vec<PatientRow>>,
-    load: RwSignal<Load>,
-    in_flight: StoredValue<bool>,
-    poller: StoredValue<Option<IntervalHandle>>,
-}
-
-impl DashState {
-    fn stop_polling(self) {
-        if let Some(handle) = self.poller.try_update_value(Option::take).flatten() {
-            handle.clear();
-        }
-    }
-
-    fn fetch(self) {
-        if self.in_flight.try_get_value() != Some(false) {
-            return;
-        }
-        self.in_flight.set_value(true);
-        spawn_local(async move {
-            let result = api::dashboard().await;
-            // The page may have been left while the request ran.
-            if self.in_flight.try_set_value(false).is_some() {
-                return;
-            }
-            match result {
-                Ok(fresh) => {
-                    let generating = fresh
-                        .iter()
-                        .any(|r| r.status == PresentationStatus::Generating);
-                    if self.rows.with_untracked(|old| *old != fresh) {
-                        self.rows.set(fresh);
-                    }
-                    if self.load.get_untracked() != Load::Ready {
-                        self.load.set(Load::Ready);
-                    }
-                    if !generating {
-                        self.stop_polling();
-                    } else if self.poller.with_value(Option::is_none)
-                        && let Ok(handle) =
-                            set_interval_with_handle(move || self.fetch(), POLL_EVERY)
-                    {
-                        self.poller.set_value(Some(handle));
-                    }
-                }
-                // A failed poll keeps the rows already shown.
-                Err(failure) => {
-                    if self.load.get_untracked() != Load::Ready {
-                        self.load.set(Load::Failed(failure.message));
-                    }
-                }
-            }
-        });
-    }
-}
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
-    let state = DashState {
-        rows: RwSignal::new(Vec::new()),
-        load: RwSignal::new(Load::Loading),
-        in_flight: StoredValue::new(false),
-        poller: StoredValue::new(None),
-    };
-    state.fetch();
-    on_cleanup(move || state.stop_polling());
-    let DashState { rows, load, .. } = state;
+    let PolledRows { rows, load, .. } = PolledRows::start(api::dashboard, |row: &PatientRow| {
+        row.status == PresentationStatus::Generating
+    });
 
     let session = use_session();
     let practice = move || {

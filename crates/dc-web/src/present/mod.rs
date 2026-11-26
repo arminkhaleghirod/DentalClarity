@@ -354,7 +354,9 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
     let brand = view.brand.clone();
     let demo = view.demo;
     let languages = view.available_languages.clone();
-    let language = view.language.clone();
+    // `lang` must name the language the text is in, so screen readers and
+    // hyphenation follow the content rather than the requested language.
+    let language = crate::format::content_language(&view.language, &languages);
 
     document().set_title(&brand.name);
     if let Some(root) = document().document_element() {
@@ -377,6 +379,24 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
     provide_context(narrator);
     provide_context(nav);
     on_cleanup(move || narrator.stop());
+
+    // Audio keeps playing in a hidden tab; pause it there.
+    let doc: leptos::wasm_bindgen::JsValue = document().into();
+    let on_visibility = leptos::wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if document().hidden() {
+            narrator.pause_when_hidden();
+        }
+    })
+    .into_js_value();
+    let _ = js_sys::Reflect::set(&doc, &"onvisibilitychange".into(), &on_visibility);
+    on_cleanup(move || {
+        let doc: leptos::wasm_bindgen::JsValue = document().into();
+        let _ = js_sys::Reflect::set(
+            &doc,
+            &"onvisibilitychange".into(),
+            &leptos::wasm_bindgen::JsValue::NULL,
+        );
+    });
 
     let root = NodeRef::<html::Div>::new();
     let PracticeBrand {
