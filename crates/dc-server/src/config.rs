@@ -15,6 +15,11 @@ use std::path::PathBuf;
 /// | `DC_DATA_DIR`       | `./data`                              |
 /// | `DC_FIXTURE`        | `fixtures/synthetic/practice.toml`    |
 /// | `DC_KNOWLEDGE_DIR`  | `knowledge`                           |
+/// | `DC_TEXT_MODEL`     | app-managed default (demo only)       |
+/// | `DC_DEMO_MONTHLY_BUDGET_USD` | `25`                         |
+///
+/// `OPENROUTER_API_KEY` is read where the demo provider is built, and is
+/// deliberately not part of this `Debug` struct.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub mode: Mode,
@@ -23,6 +28,10 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub fixture: PathBuf,
     pub knowledge_dir: PathBuf,
+    /// Override of the demo text model id for writer and reviewer.
+    pub text_model: Option<String>,
+    /// Monthly cap on demo model spend in US dollars.
+    pub demo_monthly_budget_usd: f64,
 }
 
 /// Settings the request-handling code needs.
@@ -77,6 +86,16 @@ impl Config {
                 "clinical mode on the network needs HTTPS. Set DC_PUBLIC_ORIGIN to an https:// address served through a TLS proxy, or bind to 127.0.0.1 for use on this machine only."
             );
         }
+        let demo_monthly_budget_usd = match var("DC_DEMO_MONTHLY_BUDGET_USD") {
+            Some(v) => {
+                let value: f64 = v.trim().parse().context("DC_DEMO_MONTHLY_BUDGET_USD")?;
+                if !value.is_finite() || value < 0.0 {
+                    bail!("DC_DEMO_MONTHLY_BUDGET_USD must be a positive number");
+                }
+                value
+            }
+            None => 25.0,
+        };
         Ok(Self {
             mode,
             bind,
@@ -92,6 +111,8 @@ impl Config {
             knowledge_dir: var("DC_KNOWLEDGE_DIR")
                 .unwrap_or_else(|| "knowledge".into())
                 .into(),
+            text_model: var("DC_TEXT_MODEL").map(|m| m.trim().to_owned()),
+            demo_monthly_budget_usd,
         })
     }
 }

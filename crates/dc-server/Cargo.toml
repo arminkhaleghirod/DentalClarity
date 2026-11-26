@@ -14,10 +14,13 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std"] }
+async-trait.workspace = true
 axum.workspace = true
 base64 = "0.22"
 dotenvy = "0.15"
+dc-ai.workspace = true
 dc-core.workspace = true
+dc-generation.workspace = true
 dc-knowledge.workspace = true
 dc-pms.workspace = true
 getrandom = "0.3"

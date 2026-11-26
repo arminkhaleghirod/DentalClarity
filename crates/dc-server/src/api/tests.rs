@@ -1,6 +1,8 @@
 //! End-to-end tests of the API access rules, run against an in-memory database.
 
 use crate::config::HttpConfig;
+use crate::generation::Generation;
+use crate::jobs::Jobs;
 use crate::limits::Limits;
 use crate::{AppState, router, storage};
 use axum::Router;
@@ -8,12 +10,18 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
+use dc_ai::fake::FakeTextModel;
+use dc_ai::{Role, TextModel, TextRequest, TextResponse};
 use dc_core::Mode;
 use dc_core::api::{
     ApiError, HealthResponse, PatientDetail, PatientListItem, PatientRow, PracticeSettings,
     SessionInfo, SessionState,
 };
-use dc_knowledge::CodeMap;
+use dc_core::presentation::{
+    BlockSource, CreatePresentationResponse, JobState, JobStatus, PresentationSummary,
+    PresentationView, SectionStage, SectionVisibility,
+};
+use dc_knowledge::KnowledgeBase;
 use dc_pms::synthetic::SyntheticConnector;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -32,11 +40,26 @@ async fn app(mode: Mode) -> Router {
 }
 
 async fn app_with_db(mode: Mode) -> (Router, SqlitePool) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (app, db, _) = app_with(mode, |_| None).await;
+    (app, db)
+}
+
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The app with the repository's knowledge base and, optionally, a
+/// generation setup built on the test database.
+async fn app_with(
+    mode: Mode,
+    generation: impl FnOnce(&SqlitePool) -> Option<Generation>,
+) -> (Router, SqlitePool, AppState) {
+    let root = repo_root();
     let pms =
         SyntheticConnector::from_path(&root.join("fixtures/synthetic/practice.toml")).unwrap();
     let db = storage::open_in_memory().await.unwrap();
-    let app = router(AppState {
+    let kb = KnowledgeBase::load(&root.join("knowledge")).unwrap();
+    let state = AppState {
         mode,
         http: Arc::new(HttpConfig {
             public_origin: ORIGIN.into(),
@@ -46,11 +69,14 @@ async fn app_with_db(mode: Mode) -> (Router, SqlitePool) {
         db: db.clone(),
         default_practice_name: pms.practice_name().to_owned(),
         pms: Arc::new(pms),
-        codes: Arc::new(CodeMap::from_path(&root.join("knowledge/codes.toml")).unwrap()),
+        codes: Arc::new(kb.codes.clone()),
+        kb: Arc::new(kb),
+        generation: generation(&db).map(Arc::new),
+        jobs: Arc::new(Jobs::default()),
         limits: Arc::new(Limits::default()),
         setup_code: Arc::new(std::sync::Mutex::new(Some(SETUP_CODE.into()))),
-    });
-    (app, db)
+    };
+    (router(state.clone()), db, state)
 }
 
 /// A browser-like client that keeps the session cookie and CSRF token.
@@ -541,4 +567,549 @@ async fn settings_update_needs_csrf() {
         .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(error_code(response).await, "bad_csrf");
+}
+
+// Presentations and generation jobs ------------------------------------------
+
+/// Routes each writer call to a scripted `FakeTextModel` for its section, so
+/// replies stay deterministic while sections run in parallel. The section is
+/// read from the task in the first user message.
+struct SectionRouter {
+    by_section: std::collections::HashMap<String, FakeTextModel>,
+    /// Calls wait here when set, so a test can watch a job while it runs.
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+fn section_of(request: &TextRequest) -> String {
+    let task = request
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| m.content.rsplit_once("<task>"))
+        .map(|(_, task)| task)
+        .unwrap_or_default();
+    if let Some(rest) = task.strip_prefix("Write the explanation for procedure ") {
+        let reference: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        format!("procedure:{reference}")
+    } else if task.contains("at a glance") {
+        "at_a_glance".into()
+    } else if task.contains("treatment journey") {
+        "journey".into()
+    } else {
+        "next_steps".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl TextModel for SectionRouter {
+    fn provider(&self) -> &'static str {
+        "fake"
+    }
+
+    async fn generate(&self, request: TextRequest) -> dc_ai::Result<TextResponse> {
+        if let Some(gate) = &self.gate {
+            gate.acquire().await.unwrap().forget();
+        }
+        let key = section_of(&request);
+        self.by_section
+            .get(&key)
+            .unwrap_or_else(|| panic!("no script for {key}"))
+            .generate(request)
+            .await
+    }
+}
+
+fn sentence(text: &str, cite: &str) -> serde_json::Value {
+    json!({ "text": text, "cites": [cite] })
+}
+
+fn questions() -> serde_json::Value {
+    json!([
+        { "text": "What should I expect afterwards?", "cites": [] },
+        { "text": "How should I care for this area?", "cites": [] }
+    ])
+}
+
+/// A reply for one section of Daniel Okafor's plan that passes every check.
+fn good_reply(key: &str) -> String {
+    match key {
+        "at_a_glance" => json!({
+            "summary": [
+                sentence("This plan cares for several of your teeth.", "fact:ph1"),
+                sentence("Each part of the plan is explained in its own section.", "fact:ph2")
+            ],
+            "objective": []
+        }),
+        "journey" => json!({
+            "phases": [
+                { "phase_ref": "ph1", "summary": [sentence("This phase covers the treatments listed for it.", "fact:ph1")] },
+                { "phase_ref": "ph2", "summary": [sentence("This phase covers the treatments listed for it.", "fact:ph2")] }
+            ],
+            "dependencies": []
+        }),
+        "next_steps" => json!({
+            "outlook": [sentence("The plan aims to keep your teeth healthy and comfortable.", "fact:ph1")],
+            "next_steps": [sentence("You can talk with your dental team about any part of the plan.", "fact:ph2")],
+            "questions": questions()
+        }),
+        procedure => {
+            let r = procedure.trim_start_matches("procedure:");
+            let fact = format!("fact:{r}");
+            let why = if r == "p1" {
+                json!({ "kind": "documented", "sentences": [sentence("Your dentist found decay that reached the nerve of this tooth.", "note:p1")] })
+            } else {
+                json!({ "kind": "common_reasons", "sentences": [sentence("Common reasons for this treatment include keeping teeth healthy.", &fact)] })
+            };
+            json!({
+                "procedure_ref": r,
+                "what_it_is": [sentence("This treatment cares for the affected area.", &fact)],
+                "why": why,
+                "what_happens": [sentence("Your dental team explains each step as it happens.", &fact)],
+                "recovery": [sentence("Many people feel comfortable afterwards.", &fact)],
+                "benefits": [sentence("It can help keep your mouth healthy.", &fact)],
+                "if_delayed": [sentence("Problems in a tooth can sometimes grow if they are left alone.", &fact)],
+                "questions": questions()
+            })
+        }
+    }
+    .to_string()
+}
+
+const DANIEL_SECTIONS: [&str; 9] = [
+    "at_a_glance",
+    "journey",
+    "procedure:p1",
+    "procedure:p2",
+    "procedure:p3",
+    "procedure:p4",
+    "procedure:p5",
+    "procedure:p6",
+    "next_steps",
+];
+
+/// Scripted models for `runs` generations of Daniel's plan. Sections listed
+/// in `failing` get a reply that always fails the checks (a guarantee).
+fn scripted(
+    runs: usize,
+    failing: &[&str],
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+) -> impl FnOnce(&SqlitePool) -> Option<Generation> {
+    let failing: Vec<String> = failing.iter().map(|s| s.to_string()).collect();
+    move |db: &SqlitePool| {
+        let by_section = DANIEL_SECTIONS
+            .iter()
+            .map(|key| {
+                let reply = if failing.iter().any(|f| f == key) {
+                    good_reply(key).replace(
+                        "It can help keep your mouth healthy.",
+                        "Success is guaranteed.",
+                    )
+                } else {
+                    good_reply(key)
+                };
+                // One reply per attempt: a failing section uses all three.
+                (
+                    key.to_string(),
+                    FakeTextModel::with_responses(vec![reply; runs * 3]),
+                )
+            })
+            .collect();
+        let pass = json!({ "verdict": "pass", "issues": [] }).to_string();
+        let reviewer = FakeTextModel::with_responses(vec![pass; runs * DANIEL_SECTIONS.len()]);
+        Some(Generation::new(
+            db.clone(),
+            Some(25.0),
+            Arc::new(SectionRouter { by_section, gate }),
+            "fake-writer".into(),
+            Arc::new(reviewer),
+            "fake-reviewer".into(),
+            None,
+        ))
+    }
+}
+
+async fn visitor_of(app: &Router) -> Client {
+    let mut client = Client::new(app.clone());
+    client.send(Method::POST, "/api/visit", None).await;
+    client.session().await;
+    client
+}
+
+fn daniel_request() -> serde_json::Value {
+    json!({ "patient_key": "10482", "plan_key": "tp-10482-1", "language": "en", "reading_level": "standard" })
+}
+
+async fn create(client: &mut Client) -> Response {
+    client
+        .send(
+            Method::POST,
+            "/api/staff/presentations",
+            Some(daniel_request()),
+        )
+        .await
+}
+
+async fn wait_for_job(client: &mut Client, job_id: &str) -> JobStatus {
+    for _ in 0..500 {
+        let status: JobStatus = json_body(
+            client
+                .send(Method::GET, &format!("/api/staff/jobs/{job_id}"), None)
+                .await,
+        )
+        .await;
+        if status.state.is_finished() {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("job {job_id} did not finish");
+}
+
+#[tokio::test]
+async fn generated_presentation_has_sections_facts_and_states() {
+    let (app, db, _) = app_with(Mode::Demo, scripted(1, &["procedure:p6"], None)).await;
+    let mut client = visitor_of(&app).await;
+    let response = create(&mut client).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let created: CreatePresentationResponse = json_body(response).await;
+
+    let status = wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(status.state, JobState::NeedsReview, "{:?}", status.error);
+    assert_eq!(status.presentation_id, created.presentation_id);
+    let labels: Vec<&str> = status.sections.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels[0], "At a glance");
+    assert_eq!(labels[1], "Treatment journey");
+    assert_eq!(labels[2], "Root canal · #30");
+    assert_eq!(labels[7], "Cleaning");
+    assert_eq!(labels[8], "What happens next");
+    assert_eq!(status.sections[7].stage, SectionStage::Failed);
+    assert!(
+        status.sections[..7]
+            .iter()
+            .all(|s| s.stage == SectionStage::Passed)
+    );
+
+    let view: PresentationView = json_body(
+        client
+            .send(
+                Method::GET,
+                &format!("/api/staff/presentations/{}", created.presentation_id),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(view.job_state, JobState::NeedsReview);
+    assert_eq!(view.patient_display_name, "Daniel Okafor");
+    assert_eq!(view.patient_first_name, "Daniel");
+    assert_eq!(view.writer_model, "fake-writer");
+    assert!(view.prompt_version.starts_with("writer.section@v1+"));
+    assert_eq!(view.procedures.len(), 6);
+    assert_eq!(view.procedures[0].tooth, "30");
+    assert_eq!(view.procedures[3].phase, 2);
+    assert_eq!(
+        view.total_patient_estimate.map(|m| m.cents()),
+        Some(136_900)
+    );
+    assert_eq!(view.sections.len(), 9);
+
+    let root_canal = &view.sections[2];
+    assert_eq!(root_canal.visibility, SectionVisibility::Ready);
+    assert_eq!(root_canal.procedure_ref.as_deref(), Some("p1"));
+    let fields: Vec<&str> = root_canal.blocks.iter().map(|b| b.field.as_str()).collect();
+    assert_eq!(
+        fields,
+        [
+            "what_it_is",
+            "why",
+            "what_happens",
+            "recovery",
+            "benefits",
+            "if_delayed"
+        ]
+    );
+    let why = &root_canal.blocks[1];
+    assert_eq!(why.heading, "Why your dentist recommended it");
+    assert_eq!(why.source, BlockSource::ClinicalNote);
+    assert!(why.needs_confirmation);
+    assert_eq!(root_canal.questions.len(), 2);
+
+    let buildup_why = &view.sections[3].blocks[1];
+    assert_eq!(buildup_why.source, BlockSource::Generated);
+    assert!(!buildup_why.needs_confirmation);
+
+    let cleaning = &view.sections[7];
+    assert_eq!(cleaning.visibility, SectionVisibility::Failed);
+    assert!(cleaning.blocks.is_empty());
+    assert!(cleaning.reasons.iter().any(|r| r.contains("V11")));
+
+    assert_eq!(view.sections[1].blocks[1].heading, "Phase 2");
+    // No model text ever carries money; costs come from the snapshot.
+    let json = serde_json::to_string(&view.sections).unwrap();
+    assert!(!json.contains('$'));
+
+    let list: Vec<PresentationSummary> = json_body(
+        client
+            .send(Method::GET, "/api/staff/presentations", None)
+            .await,
+    )
+    .await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].sections_ready, 8);
+    assert_eq!(list[0].sections_total, 9);
+    assert_eq!(list[0].plan_name, "Active");
+
+    let (calls,): (i64,) = sqlx::query_as("SELECT calls FROM ai_usage")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    // 9 writer calls, 2 repairs for the failing section, 8 reviews.
+    assert_eq!(calls, 19);
+}
+
+#[tokio::test]
+async fn all_sections_passing_means_succeeded() {
+    let (app, _, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    let status = wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(status.state, JobState::Succeeded);
+}
+
+#[tokio::test]
+async fn progress_is_visible_while_the_job_runs() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (app, _, _) = app_with(Mode::Demo, scripted(1, &[], Some(gate.clone()))).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+
+    let mut seen_writing = false;
+    for _ in 0..300 {
+        let status: JobStatus = json_body(
+            client
+                .send(
+                    Method::GET,
+                    &format!("/api/staff/jobs/{}", created.job_id),
+                    None,
+                )
+                .await,
+        )
+        .await;
+        if status.state == JobState::Running
+            && status
+                .sections
+                .iter()
+                .any(|s| s.stage == SectionStage::Writing)
+        {
+            seen_writing = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(seen_writing);
+
+    // One job per visitor at a time.
+    let second = create(&mut client).await;
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(second.headers().get(header::RETRY_AFTER).is_some());
+    assert_eq!(error_code(second).await, "generation_in_progress");
+
+    gate.add_permits(1000);
+    assert_eq!(
+        wait_for_job(&mut client, &created.job_id).await.state,
+        JobState::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn visitors_only_see_their_own_presentations() {
+    let (app, _, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut alice = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut alice).await).await;
+    wait_for_job(&mut alice, &created.job_id).await;
+
+    let mut bob = visitor_of(&app).await;
+    let view = bob
+        .send(
+            Method::GET,
+            &format!("/api/staff/presentations/{}", created.presentation_id),
+            None,
+        )
+        .await;
+    assert_eq!(view.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(view).await, "presentation_not_found");
+    let job = bob
+        .send(
+            Method::GET,
+            &format!("/api/staff/jobs/{}", created.job_id),
+            None,
+        )
+        .await;
+    assert_eq!(job.status(), StatusCode::NOT_FOUND);
+    let list: Vec<PresentationSummary> = json_body(
+        bob.send(Method::GET, "/api/staff/presentations", None)
+            .await,
+    )
+    .await;
+    assert!(list.is_empty());
+    let unknown = alice
+        .send(Method::GET, "/api/staff/presentations/does-not-exist", None)
+        .await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn creating_a_presentation_needs_csrf() {
+    let (app, _, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    client.csrf = None;
+    let response = create(&mut client).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error_code(response).await, "bad_csrf");
+}
+
+#[tokio::test]
+async fn clinical_mode_has_no_provider_yet() {
+    let mut client = Client::new(app(Mode::Clinical).await);
+    set_up(&mut client).await;
+    let response = create(&mut client).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(response).await, "provider_not_configured");
+}
+
+#[tokio::test]
+async fn create_validates_the_request() {
+    let (app, _, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    for (body, status, code) in [
+        (
+            json!({ "patient_key": "10482", "plan_key": "tp-10482-1", "language": "english!", "reading_level": "standard" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_language",
+        ),
+        (
+            json!({ "patient_key": "99999", "plan_key": "tp-10482-1", "language": "en", "reading_level": "standard" }),
+            StatusCode::NOT_FOUND,
+            "patient_not_found",
+        ),
+        (
+            // A real plan of another patient.
+            json!({ "patient_key": "10482", "plan_key": "tp-10517-1", "language": "en", "reading_level": "standard" }),
+            StatusCode::NOT_FOUND,
+            "plan_not_found",
+        ),
+    ] {
+        let response = client
+            .send(Method::POST, "/api/staff/presentations", Some(body))
+            .await;
+        assert_eq!(response.status(), status);
+        assert_eq!(error_code(response).await, code);
+    }
+    let list: Vec<PresentationSummary> = json_body(
+        client
+            .send(Method::GET, "/api/staff/presentations", None)
+            .await,
+    )
+    .await;
+    assert!(list.is_empty());
+}
+
+#[tokio::test]
+async fn visitors_get_three_generations_per_hour() {
+    let (app, _, _) = app_with(Mode::Demo, scripted(3, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    for _ in 0..3 {
+        let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+        wait_for_job(&mut client, &created.job_id).await;
+    }
+    let fourth = create(&mut client).await;
+    assert_eq!(fourth.status(), StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = fourth.headers()[header::RETRY_AFTER]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=3600).contains(&wait));
+    assert_eq!(error_code(fourth).await, "rate_limited");
+    let list: Vec<PresentationSummary> = json_body(
+        client
+            .send(Method::GET, "/api/staff/presentations", None)
+            .await,
+    )
+    .await;
+    assert_eq!(list.len(), 3);
+}
+
+#[tokio::test]
+async fn new_generations_stop_at_80_percent_of_the_budget() {
+    let (app, db, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    sqlx::query(
+        "INSERT INTO ai_usage (month, cost_usd, calls) VALUES (strftime('%Y-%m', 'now'), 20.0, 1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let mut client = visitor_of(&app).await;
+    let response = create(&mut client).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(response).await, "budget_reached");
+}
+
+#[tokio::test]
+async fn interrupted_jobs_run_again_from_the_start() {
+    let (app, db, state) = app_with(Mode::Demo, scripted(2, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+
+    // Simulate a stop in the middle of the job.
+    sqlx::query("UPDATE jobs SET state = 'running'")
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM presentation_sections")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(crate::jobs::resume_pending(&state).await.unwrap(), 1);
+    let status = wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(status.state, JobState::Succeeded);
+    let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM presentation_sections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 9);
+}
+
+#[tokio::test]
+async fn demo_data_is_purged_after_a_day() {
+    let (app, db, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(crate::jobs::purge_demo_data(&db).await.unwrap(), 0);
+    sqlx::query("UPDATE presentations SET created_at = created_at - 86400")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(crate::jobs::purge_demo_data(&db).await.unwrap(), 1);
+    for table in ["presentations", "presentation_sections", "jobs"] {
+        let (n,): (i64,) = sqlx::query_as(match table {
+            "presentations" => "SELECT COUNT(*) FROM presentations",
+            "jobs" => "SELECT COUNT(*) FROM jobs",
+            _ => "SELECT COUNT(*) FROM presentation_sections",
+        })
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    let (spend_rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ai_usage")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(spend_rows, 1);
 }

@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use dc_core::Mode;
-use dc_knowledge::CodeMap;
+use dc_knowledge::KnowledgeBase;
 use dc_pms::synthetic::SyntheticConnector;
 use dc_server::config::Config;
+use dc_server::generation::Generation;
+use dc_server::jobs::{self, Jobs};
 use dc_server::limits::Limits;
 use dc_server::{AppState, router, sessions, settings, storage};
 use std::net::SocketAddr;
@@ -27,7 +29,14 @@ async fn main() -> Result<()> {
     // synthetic practice. Clinical mode with synthetic data is a training setup.
     let pms =
         SyntheticConnector::from_path(&config.fixture).context("loading synthetic practice")?;
-    let codes = CodeMap::from_path(&config.knowledge_dir.join("codes.toml"))?;
+    let kb = KnowledgeBase::load(&config.knowledge_dir).context("loading the knowledge base")?;
+    tracing::info!(entries = kb.entries().count(), "knowledge base loaded");
+    let generation = Generation::from_env(
+        config.mode,
+        &db,
+        config.text_model.as_deref(),
+        config.demo_monthly_budget_usd,
+    )?;
 
     // Sessions from one mode never carry into the other.
     let mode = config.mode.to_string();
@@ -64,17 +73,34 @@ async fn main() -> Result<()> {
         db: db.clone(),
         default_practice_name: pms.practice_name().to_owned(),
         pms: Arc::new(pms),
-        codes: Arc::new(codes),
+        codes: Arc::new(kb.codes.clone()),
+        kb: Arc::new(kb),
+        generation: generation.map(Arc::new),
+        jobs: Arc::new(Jobs::default()),
         limits: Arc::new(Limits::default()),
         setup_code: Arc::new(std::sync::Mutex::new(setup_code)),
     };
 
+    // Jobs interrupted by a stop are re-run from the start.
+    let resumed = jobs::resume_pending(&state).await?;
+    if resumed > 0 {
+        tracing::info!(resumed, "re-running interrupted generation jobs");
+    }
+
+    let demo = config.mode == Mode::Demo;
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(600));
         loop {
             tick.tick().await;
             if let Err(err) = sessions::purge_expired(&db).await {
                 tracing::warn!(%err, "session purge failed");
+            }
+            if demo {
+                match jobs::purge_demo_data(&db).await {
+                    Ok(0) => {}
+                    Ok(removed) => tracing::info!(removed, "purged demo presentations"),
+                    Err(err) => tracing::warn!(%err, "demo data purge failed"),
+                }
             }
         }
     });

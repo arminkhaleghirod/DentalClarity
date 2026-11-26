@@ -2,6 +2,7 @@
 //! authorization matrix in docs/SECURITY.md.
 
 mod auth;
+mod presentations;
 mod staff;
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,12 @@ pub fn routes(state: &AppState) -> Router<AppState> {
             "/settings",
             get(staff::get_settings).put(staff::put_settings),
         )
+        .route(
+            "/presentations",
+            get(presentations::list).post(presentations::create),
+        )
+        .route("/presentations/{id}", get(presentations::view))
+        .route("/jobs/{id}", get(presentations::job))
         .route_layer(from_fn_with_state(state.clone(), security::require_session));
 
     Router::new()

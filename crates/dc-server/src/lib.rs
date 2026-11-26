@@ -5,7 +5,9 @@ pub mod assets;
 pub mod audit;
 pub mod config;
 pub mod credentials;
+pub mod generation;
 pub mod http;
+pub mod jobs;
 pub mod limits;
 pub mod security;
 pub mod sessions;
@@ -16,8 +18,10 @@ use axum::Router;
 use axum::middleware::from_fn_with_state;
 use config::HttpConfig;
 use dc_core::Mode;
-use dc_knowledge::CodeMap;
+use dc_knowledge::{CodeMap, KnowledgeBase};
 use dc_pms::PmsConnector;
+use generation::Generation;
+use jobs::Jobs;
 use limits::Limits;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -29,7 +33,15 @@ pub struct AppState {
     pub http: Arc<HttpConfig>,
     pub db: SqlitePool,
     pub pms: Arc<dyn PmsConnector>,
+    /// Code map for names and categories. The same map as `kb.codes`.
     pub codes: Arc<CodeMap>,
+    /// Code map plus the educational entries used by the generation pipeline.
+    pub kb: Arc<KnowledgeBase>,
+    /// Models for the generation pipeline. `None` when no provider is
+    /// configured: clinical mode until M9, or demo mode without an API key.
+    pub generation: Option<Arc<Generation>>,
+    /// Generation job slots and the create lock.
+    pub jobs: Arc<Jobs>,
     pub limits: Arc<Limits>,
     /// Shown before a practice name is configured in settings.
     pub default_practice_name: String,
