@@ -16,6 +16,7 @@ pub mod content;
 pub mod mode;
 pub mod money;
 pub mod plan;
+pub mod present;
 pub mod presentation;
 pub mod procedure;
 pub mod provenance;
