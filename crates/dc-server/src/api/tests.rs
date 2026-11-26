@@ -806,7 +806,7 @@ async fn generated_presentation_has_sections_facts_and_states() {
     assert_eq!(view.patient_display_name, "Daniel Okafor");
     assert_eq!(view.patient_first_name, "Daniel");
     assert_eq!(view.writer_model, "fake-writer");
-    assert!(view.prompt_version.starts_with("writer.section@v1+"));
+    assert_eq!(view.prompt_version, dc_generation::prompt::writer_version());
     assert_eq!(view.procedures.len(), 6);
     assert_eq!(view.procedures[0].tooth, "30");
     assert_eq!(view.procedures[3].phase, 2);
