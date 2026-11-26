@@ -1,0 +1,62 @@
+id = "filling_composite"
+version = 1
+title = "Tooth-colored filling"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_fillings"
+publisher = "Cleveland Clinic"
+title = "Dental Fillings: Types, Materials & What They're For"
+url = "https://my.clevelandclinic.org/health/treatments/17002-dental-fillings"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_cavities"
+publisher = "Cleveland Clinic"
+title = "Cavities (Tooth Decay): Symptoms, Causes & Treatment"
+url = "https://my.clevelandclinic.org/health/diseases/10946-cavities"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A tooth-colored filling repairs a tooth that has been damaged, most often by a cavity. It is made of composite resin, a material that can be matched to the shade of your natural teeth. Because it is tooth-colored, it tends to blend in with the rest of your smile."
+sources = ["cc_fillings", "cc_cavities"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for a tooth-colored filling include repairing a cavity and fixing small chips or cracks. Fillings are usually used when decay has gone past the earliest stage but has not reached the inner part of the tooth."
+sources = ["cc_fillings", "cc_cavities"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually numbs the area first. The decayed or damaged part of the tooth is removed, and the composite material is placed in the space. A special light hardens the material, and the filling is shaped and polished. Your dentist then checks your bite to make sure it feels right."
+sources = ["cc_fillings"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Many people notice mild sensitivity or sore gums for a short while, and this usually fades on its own. It helps to wait until the numbness wears off before eating so you do not bite your cheek. If your bite feels off or the tooth stays painful, let your dental team know, since a small adjustment may help."
+sources = ["cc_fillings"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A filling stops the damaged area from getting worse and restores the shape of the tooth. This helps you chew comfortably again. A tooth-colored filling also tends to look natural."
+sources = ["cc_fillings"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If a cavity is not repaired, it may slowly grow larger and deeper. Decay that reaches the inner part of the tooth may need more involved care than a filling. Many cavities do not hurt at first, so the timing is something to talk over with your dental team."
+sources = ["cc_fillings", "cc_cavities"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Which tooth is getting the filling, and how large is the area? What should I expect to feel after the numbness wears off? How can I help this filling last?"
+sources = ["cc_fillings"]

@@ -1,0 +1,69 @@
+id = "sealant"
+version = 1
+title = "Sealant"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "mh_sealants"
+publisher = "American Dental Association (MouthHealthy)"
+title = "Sealants"
+url = "https://www.mouthhealthy.org/all-topics-a-z/sealants"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cdc_sealants"
+publisher = "Centers for Disease Control and Prevention"
+title = "Dental Sealant Facts"
+url = "https://www.cdc.gov/oral-health/data-research/facts-stats/fast-facts-dental-sealants.html"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "nhs_childrens_teeth"
+publisher = "NHS"
+title = "Children's teeth"
+url = "https://www.nhs.uk/live-well/healthy-teeth-and-gums/taking-care-of-childrens-teeth/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A sealant is a thin protective coating, usually made of a plastic material, that bonds to the chewing surfaces of back teeth. These surfaces have deep grooves where food and bacteria can collect. The sealant covers those grooves and acts like a shield for the tooth."
+sources = ["mh_sealants", "nhs_childrens_teeth"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for sealants include protecting back teeth soon after they come in, which often happens in childhood and the early teen years. Most cavities in children form on these back teeth. Adults can benefit from sealants too."
+sources = ["mh_sealants", "cdc_sealants", "nhs_childrens_teeth"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The tooth is cleaned and dried. A mild gel is placed on the chewing surface to help the sealant bond, then rinsed off, and the tooth is dried again. The sealant is painted into the grooves and hardened with a special light. Many people find the process quick and easy."
+sources = ["mh_sealants"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "There is usually no recovery time, and most people go back to their day right away. Your dental team checks sealants at regular visits and can repair or replace them when needed."
+sources = ["mh_sealants"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Sealants help keep food and cavity-causing bacteria out of the deep grooves of back teeth. This often lowers the chance of cavities in those teeth. Sealants add protection on top of brushing and flossing and do not replace them."
+sources = ["mh_sealants", "cdc_sealants"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Without sealants, the deep grooves of back teeth stay open to food and bacteria, and cavities may be more likely to form there over time. Brushing and flossing still help protect these teeth. Whether and when to place sealants is a choice you can make with your dental team."
+sources = ["mh_sealants", "cdc_sealants"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Which teeth would get sealants? How will you check the sealants at future visits? Is there anything I should avoid right after they are placed?"
+sources = ["mh_sealants"]

@@ -1,0 +1,62 @@
+id = "night_guard"
+version = 1
+title = "Night guard"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_bruxism"
+publisher = "Cleveland Clinic"
+title = "Bruxism (Teeth Grinding): Symptoms, Causes & Treatment"
+url = "https://my.clevelandclinic.org/health/diseases/10955-teeth-grinding-bruxism"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "nhs_teeth_grinding"
+publisher = "NHS"
+title = "Teeth grinding (bruxism)"
+url = "https://www.nhs.uk/conditions/teeth-grinding/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A night guard is a custom-made appliance that fits over your upper or lower teeth. It is usually worn while you sleep to protect your teeth from grinding and clenching. Dentists may also call it an occlusal guard or a splint."
+sources = ["cc_bruxism", "nhs_teeth_grinding"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include grinding or clenching the teeth during sleep, signs of wear or chipping on the teeth, and sore jaw muscles or morning headaches that may be linked to grinding. Many people who grind at night do not know it until a dentist or a partner notices."
+sources = ["cc_bruxism", "nhs_teeth_grinding"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dental team records the shape of your teeth, usually with impressions or a scan. The guard is then made to fit your bite. When it is ready, your team checks the fit, makes any needed adjustments, and shows you how to wear it and keep it clean."
+sources = ["cc_bruxism", "nhs_teeth_grinding"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "No healing is needed, though sleeping with a guard may feel unusual at first. Many people get used to it as they keep wearing it, and wearing it regularly usually helps it work best. Let your team know if the guard feels too tight, rubs your gums, or leaves your jaw sore."
+sources = ["cc_bruxism"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A night guard is meant to protect your teeth from the wear, chips and cracks that grinding can cause. For some people, it can also ease strain on the jaw muscles and joints."
+sources = ["cc_bruxism", "nhs_teeth_grinding"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Grinding often happens without a person noticing it. Over time, frequent grinding can wear teeth down, break teeth or fillings, make teeth more sensitive, and strain the jaw. Not everyone who grinds needs treatment, and you can decide with your dental team what makes sense for you."
+sources = ["cc_bruxism", "nhs_teeth_grinding"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Will the guard fit over my upper or lower teeth? How should I clean and store it? What should I do if it feels tight or my jaw feels sore? How will we know if the guard is helping?"
+sources = ["cc_bruxism", "nhs_teeth_grinding"]

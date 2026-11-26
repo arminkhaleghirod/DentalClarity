@@ -1,0 +1,62 @@
+id = "denture_complete"
+version = 1
+title = "Full denture"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_dentures"
+publisher = "Cleveland Clinic"
+title = "What Are Dentures? Types, Care & Benefits"
+url = "https://my.clevelandclinic.org/health/treatments/10900-dentures"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "nhs_dentures"
+publisher = "NHS"
+title = "Dentures (false teeth)"
+url = "https://www.nhs.uk/tests-and-treatments/dentures/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A complete denture, often called a full denture, is a removable set of replacement teeth for a whole upper or lower jaw. It rests on the gums and is supported by the bone underneath. Dentures are usually made of a sturdy acrylic or resin base with tooth-colored teeth."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include replacing all the teeth in a jaw after they have been lost or removed, and helping a person chew, speak and smile more comfortably. Many people also find that a denture helps them feel more confident about their appearance."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dental team examines your mouth and may take X-rays to check the jawbone. They take impressions or a scan so a lab can make a model and build the denture. You then try the denture, and your team checks the fit and adjusts any spots that press too hard. Some people get a denture right after teeth are removed, and it usually needs extra adjusting as the gums heal."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Getting used to a new denture takes practice, and small adjustments are common early on. Starting with softer foods and practicing putting the denture in and taking it out often helps. Sore spots can happen at first, so tell your team if the denture rubs, pinches or feels loose. Your team may suggest taking it out at night to rest your gums."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A complete denture is meant to help you chew a wider range of foods, speak more clearly and feel more confident in your smile. Better chewing can also make it easier to eat a healthy, balanced diet."
+sources = ["cc_dentures"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Living without teeth can make chewing and speaking harder, which may limit the foods you enjoy. Over time, the jawbone where teeth are missing often shrinks, which can change the shape of the face. There is no single right timing, and you can make this decision with your dental team."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How should I clean my denture and my gums each day? Should I take the denture out at night? What should I do if it rubs or feels loose? How often should the fit be checked?"
+sources = ["cc_dentures", "nhs_dentures"]

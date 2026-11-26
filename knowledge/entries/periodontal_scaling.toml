@@ -1,0 +1,62 @@
+id = "periodontal_scaling"
+version = 1
+title = "Deep cleaning and gum maintenance"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_srp"
+publisher = "Cleveland Clinic"
+title = "Tooth Scaling and Root Planing"
+url = "https://my.clevelandclinic.org/health/treatments/23983-tooth-scaling-and-root-planing"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aap_nonsurgical"
+publisher = "American Academy of Periodontology"
+title = "Non-Surgical Treatments"
+url = "https://www.perio.org/for-patients/periodontal-treatments-and-procedures/non-surgical-treatments/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "Scaling and root planing, often called a deep cleaning, cleans below the gumline. Scaling removes plaque and tartar from the teeth and from the pockets between the teeth and gums. Root planing smooths the tooth roots so plaque has a harder time sticking to them. Gum maintenance visits are the ongoing cleanings that follow, to help keep gum disease under control."
+sources = ["cc_srp", "aap_nonsurgical"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for a deep cleaning include gum disease, which can show up as swollen or bleeding gums and pockets forming around the teeth. It is often the first treatment for gum disease and does not involve surgery. Maintenance visits are common afterward, because many people need ongoing care to keep their gums healthy."
+sources = ["cc_srp", "aap_nonsurgical"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "For a deep cleaning, your gums are usually numbed so you stay comfortable. Your dentist or hygienist uses hand tools or a vibrating instrument to remove buildup above and below the gumline, then smooths the root surfaces. The mouth may be treated in parts rather than all at once. Maintenance visits focus on cleaning above and below the gums to keep them healthy over time."
+sources = ["cc_srp", "aap_nonsurgical"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Many people have tender gums and a little bleeding for a short while after a deep cleaning. Teeth may feel sensitive to hot and cold, and this usually eases as the gums heal. As swollen gums settle down, they may shrink a bit, so teeth can look slightly longer. Most people go back to their usual activities the same day."
+sources = ["cc_srp"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A deep cleaning aims to remove the bacteria and buildup that drive gum disease so the gums can heal. This can help lower the chance of gum recession and tooth loss, and many people notice fresher breath. Regular maintenance visits help keep those gains over time."
+sources = ["cc_srp", "aap_nonsurgical"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Gum disease often develops slowly and may not hurt. If treatment is put off, bacteria can keep building up below the gums, and the disease may become more advanced over time. You and your dental team can talk through the timing that makes sense for you."
+sources = ["cc_srp"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How deep are the pockets around my teeth, and what do those measurements mean? What can I do at home to help my gums heal? How often will I need maintenance visits after this? How will we know if my gums are getting better?"
+sources = ["cc_srp", "aap_nonsurgical"]

@@ -1,0 +1,69 @@
+id = "surgical_extraction"
+version = 1
+title = "Surgical tooth removal"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "aaoms_simple_vs_surgical"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Tooth Extraction: Simple vs. Surgical Tooth Removal"
+url = "https://myoms.org/what-we-do/extractions-and-dentoalveolar-surgery/simple-vs-surgical-extraction/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aaoms_aftercare"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Proper Oral Care After Dentoalveolar Surgery"
+url = "https://myoms.org/what-we-do/extractions-and-dentoalveolar-surgery/proper-oral-care-after-dentoalveolar-surgery/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_tooth_extraction"
+publisher = "Cleveland Clinic"
+title = "Tooth Extraction: Surgery & Healing"
+url = "https://my.clevelandclinic.org/health/treatments/22120-tooth-extraction"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A surgical extraction is a way of removing a tooth that cannot simply be lifted out in one piece. The tooth may be broken, very fragile, or not fully showing above the gums. To reach it, the dentist or oral surgeon may need to open the gum or remove a small amount of bone."
+sources = ["aaoms_simple_vs_surgical", "cc_tooth_extraction"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include wisdom teeth or other teeth that are stuck under the gum or bone, teeth that have broken near the gum line, and teeth weakened by severe decay. The shape and length of the roots, the bone around the tooth, and some health conditions can also make a surgical approach the better fit."
+sources = ["aaoms_simple_vs_surgical"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed, and some offices also offer sedation to help you relax. If gum covers the tooth, a small opening is made in it, and sometimes a little bone is removed so the tooth can be reached. The tooth may be taken out in sections. Stitches are often placed to help the area heal."
+sources = ["aaoms_simple_vs_surgical", "cc_tooth_extraction"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Follow the aftercare instructions your dental team gives you, as they are meant to protect the healing area. Some swelling, tenderness and oozing are common at first, and cold packs, rest and soft foods often help. Brush gently, and avoid straws, smoking and forceful spitting so the blood clot can stay in place. Call the practice if bleeding does not stop, if pain gets worse instead of better, or if you notice a fever."
+sources = ["aaoms_aftercare", "cc_tooth_extraction"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A surgical extraction is meant to remove a problem tooth safely when a simple extraction is not possible. Taking the tooth out can ease pain, remove a source of infection, and help protect the gums and bone around it."
+sources = ["aaoms_simple_vs_surgical", "cc_tooth_extraction"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "A tooth that is broken, stuck or badly decayed usually does not get better on its own. Over time, it may cause pain or lead to infection in the gums or bone nearby. Your dental team can explain what they see and help you weigh the timing, and the decision is yours to make with them."
+sources = ["cc_tooth_extraction"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Will I only be numbed, or is sedation an option for me? Will I need stitches, and will they need to be taken out? How should I care for the area while it heals? What signs mean I should call the office?"
+sources = ["aaoms_simple_vs_surgical", "aaoms_aftercare"]

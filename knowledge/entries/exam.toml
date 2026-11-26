@@ -1,0 +1,62 @@
+id = "exam"
+version = 1
+title = "Dental exam"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "nhs_checkups"
+publisher = "NHS"
+title = "Dental check-ups"
+url = "https://www.nhs.uk/live-well/healthy-teeth-and-gums/dental-check-ups/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_cleanings"
+publisher = "Cleveland Clinic"
+title = "Dental Cleanings: How Often Do You Need Them?"
+url = "https://my.clevelandclinic.org/health/treatments/11187-dental-check-up"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A dental exam is a visit where your dentist looks closely at your teeth, your gums and the rest of your mouth. It may be a routine checkup or a fuller look when you are new to a dental office. The goal is to see how healthy your mouth is and to spot changes early."
+sources = ["nhs_checkups"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for an exam include routine checkups, starting care at a new dental office, or a new concern such as sensitivity or sore gums. Regular exams help dental teams find small problems before they grow. How often people come in usually depends on their own oral health."
+sources = ["nhs_checkups"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually asks about your general health and any changes in your mouth since your last visit. They then check your teeth, gums and the soft parts of your mouth. X-rays may be taken if your dentist needs to see areas that are hidden from view. Many dentists also share tips on brushing, cleaning between teeth, diet and habits like smoking."
+sources = ["nhs_checkups", "cc_cleanings"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "There is usually nothing to recover from after an exam. Most people go back to their normal day right away. If your dentist found something to keep an eye on, they usually explain what comes next."
+sources = ["nhs_checkups"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "An exam gives you and your dentist a clear picture of your oral health. Finding problems early often means they are simpler to treat or even prevent. It is also a good time to get advice that fits your own mouth and habits."
+sources = ["nhs_checkups"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If exams are put off, small problems such as early decay or gum changes may go unnoticed and slowly grow. Some of these problems do not cause pain until they are further along. How often to come in is something you can decide together with your dental team."
+sources = ["nhs_checkups"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "What did you see in my mouth today, and is anything worth watching? How often do you suggest I come in for an exam? Is there anything I could change in my care at home?"
+sources = ["nhs_checkups"]

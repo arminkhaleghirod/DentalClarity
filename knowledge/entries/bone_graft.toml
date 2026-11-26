@@ -1,0 +1,69 @@
+id = "bone_graft"
+version = 1
+title = "Bone graft"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "aaoms_bone_grafts"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Bone Grafting and Membranes"
+url = "https://myoms.org/what-we-do/extractions-and-dentoalveolar-surgery/bone-grafts/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aaoms_preserving_bone"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Preserving Bone for Dental Implants and Oral Health"
+url = "https://myoms.org/what-we-do/extractions-and-dentoalveolar-surgery/preserving-bone-for-dental-implants-and-oral-health/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_tooth_extraction"
+publisher = "Cleveland Clinic"
+title = "Tooth Extraction: Surgery & Healing"
+url = "https://my.clevelandclinic.org/health/treatments/22120-tooth-extraction"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A dental bone graft adds bone or a bone-like material to the jaw where bone is missing or thin. The graft may come from your own body, from a carefully screened donor source, or from a man-made material. It acts like a framework that your own bone can grow into as it heals. Placing a graft in the socket when a tooth is removed is often called socket preservation."
+sources = ["aaoms_bone_grafts", "aaoms_preserving_bone"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include keeping the jawbone in shape after a tooth is removed, rebuilding a ridge of bone that has shrunk after tooth loss, and making sure there is enough bone to hold a future dental implant. Natural teeth help keep the bone around them active, so when a tooth is gone, that bone can slowly shrink."
+sources = ["aaoms_bone_grafts", "aaoms_preserving_bone"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed, and some offices also offer sedation. If a tooth is being removed, the graft material may be placed in the empty socket right after the tooth comes out. For a ridge graft, the gum is gently opened, the graft is placed, and a thin protective layer called a membrane may be added over it. The gum is then closed, often with stitches."
+sources = ["aaoms_bone_grafts", "cc_tooth_extraction"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Follow the aftercare instructions your dental team gives you so the graft can heal without being disturbed. Some swelling and tenderness are common at first. Healing differs from person to person, and your team will usually check how the graft is doing at follow-up visits. Call the practice if bleeding does not stop, if pain gets worse, or if you notice a fever or pus."
+sources = ["aaoms_bone_grafts", "cc_tooth_extraction"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A bone graft is meant to keep or rebuild enough healthy bone in the jaw. This can give a future implant a stable base and help keep the natural shape of your gums and face. It can also make later tooth replacement more predictable."
+sources = ["aaoms_bone_grafts", "aaoms_preserving_bone"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "After a tooth is lost, the bone in that area often shrinks gradually. Over time, nearby teeth may drift, and the area can start to look sunken. Less bone can also make later treatment, such as an implant, harder to carry out. You and your dental team can talk about what timing makes sense for you."
+sources = ["aaoms_preserving_bone"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "What kind of graft material will be used, and where does it come from? Will a membrane be placed over the graft? What should I avoid doing while it heals? How does this graft fit into the rest of my treatment plan?"
+sources = ["aaoms_bone_grafts"]

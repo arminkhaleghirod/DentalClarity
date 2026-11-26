@@ -1,0 +1,69 @@
+id = "implant"
+version = 1
+title = "Dental implant"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_dental_implants"
+publisher = "Cleveland Clinic"
+title = "Dental Implants: Types, Purpose & Benefits"
+url = "https://my.clevelandclinic.org/health/treatments/10903-dental-implants"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aaoms_implant_surgery"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Dental Implant Surgery"
+url = "https://myoms.org/what-we-do/dental-implant-surgery/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aaoms_preserving_bone"
+publisher = "American Association of Oral and Maxillofacial Surgeons"
+title = "Preserving Bone for Dental Implants and Oral Health"
+url = "https://myoms.org/what-we-do/extractions-and-dentoalveolar-surgery/preserving-bone-for-dental-implants-and-oral-health/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A dental implant is a small post, usually made of titanium, that is placed in the jawbone to act like the root of a missing tooth. Once it has joined with the bone, it can hold a crown, a bridge or a denture. This part of the plan is the post itself, which sits below the gum."
+sources = ["cc_dental_implants", "aaoms_implant_surgery"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include replacing one or more missing teeth, making chewing and speaking easier, and giving a denture or other replacement teeth a steady anchor. An implant also gives the jawbone something to support, which can help limit bone loss where a tooth is missing."
+sources = ["cc_dental_implants", "aaoms_implant_surgery"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed, and some offices also offer sedation. The surgeon opens the gum, prepares a carefully sized space in the bone, and places the post. The gum is then closed, often with stitches. For a front tooth, a temporary tooth is sometimes placed while the implant heals."
+sources = ["cc_dental_implants"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Some swelling and tenderness are common at first, and they usually ease as the area heals. Follow your dental team's aftercare instructions and keep the area clean as they direct. During the healing period, the bone slowly grows tightly around the post, which is what makes it stable. Call the practice if the implant feels loose or if you notice bleeding that does not stop, pus, fever or growing swelling."
+sources = ["cc_dental_implants", "aaoms_implant_surgery"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "An implant is meant to give a replacement tooth a strong, stable foundation. Many people find that teeth held by implants look and feel much like natural teeth. An implant usually does not require reshaping the healthy teeth next to it, and with good care and regular checkups it is often a long-lasting option."
+sources = ["cc_dental_implants", "aaoms_implant_surgery"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Where a tooth is missing, the bone often shrinks gradually, and nearby teeth may drift toward the gap. Over time, these changes can make an implant harder to place and may mean extra bone is needed first. There is no single right timing, and you can decide with your dental team what works for you."
+sources = ["aaoms_preserving_bone", "cc_dental_implants"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Is there enough bone for this implant, or might I need a bone graft first? What should I expect while the implant heals into the bone? Will I have a temporary tooth during healing? How should I clean around the implant once it is in place?"
+sources = ["cc_dental_implants"]

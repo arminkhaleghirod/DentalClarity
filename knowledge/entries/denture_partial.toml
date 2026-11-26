@@ -1,0 +1,62 @@
+id = "denture_partial"
+version = 1
+title = "Partial denture"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_dentures"
+publisher = "Cleveland Clinic"
+title = "What Are Dentures? Types, Care & Benefits"
+url = "https://my.clevelandclinic.org/health/treatments/10900-dentures"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "nhs_dentures"
+publisher = "NHS"
+title = "Dentures (false teeth)"
+url = "https://www.nhs.uk/tests-and-treatments/dentures/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A partial denture is a removable appliance that replaces some missing teeth when there are still natural teeth in the same jaw. The replacement teeth sit on a base, and small clasps hook onto nearby natural teeth to help hold it steady. You can take it out to clean it."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include filling gaps where several teeth are missing, making chewing and speaking easier, and improving the look of a smile. A partial denture is often used when the remaining natural teeth can help support it."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dental team examines your mouth and takes impressions or a scan of your teeth and gums. A lab uses these to make a partial denture shaped to fit around your natural teeth. When it is ready, your team checks how it sits and how your teeth come together, and adjusts any spots that press too hard."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "A new partial denture can feel strange at first, and small adjustments are common early on. Starting with softer foods and practicing putting it in and taking it out often helps. Tell your team if it rubs, pinches, clicks or feels loose. Clean the denture and your natural teeth each day, as your team shows you."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A partial denture is meant to fill gaps so you can chew and speak more easily and smile with more confidence. It uses your remaining teeth for support and can be taken out for cleaning."
+sources = ["cc_dentures"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "When gaps are left open, chewing and speaking can be harder, and some people avoid certain foods. Over time, the jawbone where teeth are missing often shrinks. You and your dental team can decide on the timing that fits your needs."
+sources = ["cc_dentures", "nhs_dentures"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How do I put in and take out my partial denture safely? How should I clean it and the teeth it clasps onto? Should I take it out at night? What should I do if it rubs or feels loose?"
+sources = ["cc_dentures", "nhs_dentures"]

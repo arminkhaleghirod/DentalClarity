@@ -1,0 +1,62 @@
+id = "root_canal"
+version = 1
+title = "Root canal treatment"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "aae_what_is_rct"
+publisher = "American Association of Endodontists"
+title = "What is a Root Canal?"
+url = "https://www.aae.org/patients/root-canal-treatment/what-is-a-root-canal/"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_root_canal"
+publisher = "Cleveland Clinic"
+title = "Root Canal: Procedure & Recovery"
+url = "https://my.clevelandclinic.org/health/treatments/21759-root-canal"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A root canal is a treatment that cleans out the soft inner part of a tooth, called the pulp, when it has become inflamed or infected. The pulp holds the nerves and blood vessels inside the tooth. After the inside is cleaned, it is filled and sealed so the tooth can stay in your mouth."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include deep decay that reaches the pulp, a crack or chip in the tooth, or an injury that harms the pulp even when no damage can be seen. Teeth that have been repaired many times can also develop pulp problems. Some people notice lingering sensitivity to hot or cold, pain when chewing, or tender gums near the tooth, while others notice very little."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dental team numbs the area first so you can stay comfortable. They make a small opening in the tooth, remove the damaged pulp, and clean and disinfect the space inside. The space is then filled with a rubbery material and sealed. Many people find the experience feels a lot like getting a filling."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Many people feel some soreness or tenderness around the tooth afterward, and this usually fades on its own. It helps to wait until the numbness wears off before eating, and your dental team may suggest not biting hard on that tooth until it is fully restored. If pain gets worse or keeps throbbing, or you notice swelling, call your dental practice."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A root canal is meant to clear out infection and let you keep your natural tooth. Keeping your own tooth usually lets you chew and bite normally and keeps your smile looking natural. The treated tooth is often covered with a crown or filling afterward to protect it."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Inflamed or infected pulp usually does not heal on its own. Over time, it can cause pain or lead to a pocket of infection called an abscess, and the infection can affect the bone around the tooth. If the damage grows, the tooth may become harder to save. When to go ahead is a decision you can make together with your dental team."
+sources = ["aae_what_is_rct", "cc_root_canal"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Will this tooth need a crown or other restoration afterward? What should I expect to feel once the numbness wears off? Is there anything I should avoid chewing until the tooth is fully restored? What signs mean I should call the office?"
+sources = ["aae_what_is_rct", "cc_root_canal"]

@@ -1,0 +1,62 @@
+id = "crown"
+version = 1
+title = "Crown"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_crowns"
+publisher = "Cleveland Clinic"
+title = "Dental Crowns: What Are They, Types, Procedure & Care"
+url = "https://my.clevelandclinic.org/health/treatments/10923-dental-crowns"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "mh_crowns"
+publisher = "American Dental Association (MouthHealthy)"
+title = "Crowns"
+url = "https://www.mouthhealthy.org/all-topics-a-z/crowns"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A crown is a tooth-shaped cap that fits over the whole visible part of a tooth. It restores the tooth's shape, size and strength, and it can also improve how the tooth looks. Crowns can be made from materials such as metal, porcelain, ceramic or resin."
+sources = ["cc_crowns", "mh_crowns"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for a crown include protecting a weak or cracked tooth, restoring a broken or worn tooth, and covering a tooth with a large filling when little natural tooth is left. Crowns are also used to cover a tooth after root canal treatment, to hold a bridge in place or to cover a dental implant."
+sources = ["cc_crowns", "mh_crowns"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually numbs the area first. Some of the outer tooth is removed to make room for the crown, and missing parts may be built up with filling material. An impression or digital scan is taken so the crown can be made to fit, and you may wear a temporary crown while the final one is made. The final crown is checked for fit, shape and color and then cemented in place."
+sources = ["cc_crowns"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Many people notice some sensitivity to hot and cold or mild gum soreness after getting a crown, and this usually fades. Most people go back to their normal activities right away. It helps to go easy on very hard or sticky foods, especially while a temporary crown is in place."
+sources = ["cc_crowns"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A crown protects a damaged tooth from breaking further and helps it work normally when you chew. It can also make the tooth look more natural. With good daily care and regular checkups, crowns often last a long time."
+sources = ["cc_crowns", "mh_crowns"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If a weak or cracked tooth is left uncovered, it may chip or break further over time, and decay may spread. A larger break can sometimes mean more involved treatment later. Many people take time to think it over, and the decision is yours to make with your dental team."
+sources = ["cc_crowns", "mh_crowns"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "What material do you suggest for my crown, and why? Will I have a temporary crown, and how should I care for it? How can I help my crown last? What should I do if my crown ever feels loose?"
+sources = ["cc_crowns"]

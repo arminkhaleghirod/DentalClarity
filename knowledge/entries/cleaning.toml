@@ -1,0 +1,55 @@
+id = "cleaning"
+version = 1
+title = "Dental cleaning"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_cleanings"
+publisher = "Cleveland Clinic"
+title = "Dental Cleanings: How Often Do You Need Them?"
+url = "https://my.clevelandclinic.org/health/treatments/11187-dental-check-up"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A dental cleaning is a visit where a dentist or dental hygienist removes plaque and tartar from your teeth. Tartar is plaque that has hardened, and brushing and flossing at home cannot remove it. A cleaning is a key part of routine care that helps prevent problems."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for a cleaning include routine preventive care and removing buildup that daily brushing misses. Regular cleanings help lower the chance of cavities and gum disease. Some people come in more often, such as those prone to gum problems or cavities."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your hygienist or dentist uses small hand tools or a vibrating instrument to remove plaque and tartar from your teeth. Then your teeth are polished with a soft rubber cup and a gritty paste. Your dental team may also suggest extras such as fluoride, sealants or X-rays."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Most people feel fine after a cleaning and go right back to their day. Some notice mild gum soreness or sensitive teeth afterward, and this usually fades on its own."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Cleanings help keep your teeth and gums healthy by removing buildup that can lead to cavities and gum disease. Many people also notice fresher breath. Keeping up with cleanings can help you avoid bigger dental problems later."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If cleanings are put off, tartar can keep building up on the teeth and along the gums. Over time, this may raise the chance of gum disease and cavities. Your dental team can help you choose a schedule that fits your needs."
+sources = ["cc_cleanings"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How are my gums looking today? Are there spots I tend to miss when I brush or floss? How often do you suggest I come in for cleanings?"
+sources = ["cc_cleanings"]

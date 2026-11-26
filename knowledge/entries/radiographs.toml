@@ -1,0 +1,55 @@
+id = "radiographs"
+version = 1
+title = "Dental X-rays"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_xrays"
+publisher = "Cleveland Clinic"
+title = "Dental X-rays: What You Should Know"
+url = "https://my.clevelandclinic.org/health/diagnostics/11199-dental-x-rays"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "Dental X-rays are pictures of your teeth and jaws. They show parts of your mouth that your dentist cannot see during a regular exam, such as tooth roots and the bone around them. Some X-rays show just a few teeth up close, while others give a wider view of your whole mouth."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for X-rays include checking for cavities between teeth or under old fillings, looking at the bone that supports the teeth, and checking on teeth that have not come in. X-rays also help dentists plan treatment and follow healing after some procedures."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "You may be given a lead apron or a collar to cover your chest and neck. A small sensor or film is placed inside or outside your mouth, and you hold still while the picture is taken. The process is usually simple and does not hurt."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "No recovery is needed after dental X-rays. You can go back to your usual activities right away."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "X-rays help your dentist find problems that are hard or impossible to see, often at an early stage when treatment tends to be simpler. Dental X-rays use a very low amount of radiation. Dentists aim to take them only when they are needed."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Without X-rays, some problems, such as decay between teeth or changes in the bone, may stay hidden until they are larger. You can ask your dental team which X-rays they suggest and why. The choice is yours to make together with them."
+sources = ["cc_xrays"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "What are these X-rays meant to show? How often do you usually take X-rays for someone like me? What do you do to keep radiation low? Should I tell you if I am pregnant or might be?"
+sources = ["cc_xrays"]

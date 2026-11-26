@@ -1,0 +1,62 @@
+id = "bridge"
+version = 1
+title = "Dental bridge"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_dental_bridges"
+publisher = "Cleveland Clinic"
+title = "Dental Bridges: Types & Who Needs Them"
+url = "https://my.clevelandclinic.org/health/treatments/10921-dental-bridges"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "cc_dental_crowns"
+publisher = "Cleveland Clinic"
+title = "Dental Crowns: Types, Procedure & Care"
+url = "https://my.clevelandclinic.org/health/treatments/10923-dental-crowns"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A dental bridge replaces one or more missing teeth by joining a replacement tooth to supports on each side of the gap. The replacement tooth is called a pontic. It is usually held in place by crowns on the neighboring teeth, which are called abutments, and sometimes by implants instead. Your plan may list the replacement tooth and the supporting crowns as separate parts of the same bridge."
+sources = ["cc_dental_bridges"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include filling a gap left by a missing tooth, making chewing and speaking easier, and improving the look of a smile. A bridge can also help keep nearby teeth from drifting into the empty space."
+sources = ["cc_dental_bridges"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dental team numbs the area and reshapes the supporting teeth so crowns can fit over them. This removes some of the outer enamel of those teeth, which does not grow back. Impressions or a scan are taken so a lab can make the bridge, and you often wear a temporary bridge in the meantime. When the final bridge is ready, it is checked for fit and cemented in place."
+sources = ["cc_dental_bridges", "cc_dental_crowns"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "The supporting teeth and gums may feel sensitive or tender at first, and this usually settles. The bridge may also feel unfamiliar when you bite and speak until you get used to it. Clean under the bridge each day with floss threaders or small brushes, as your team shows you. Call the practice if the bridge feels loose or cracked, or if chewing hurts."
+sources = ["cc_dental_bridges"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A bridge is meant to fill the gap with natural-looking teeth and help you chew and speak more comfortably. It is cemented in place, so you do not take it out to clean it. It also helps keep your other teeth from shifting."
+sources = ["cc_dental_bridges"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "When a gap is left open, nearby teeth can slowly shift or tilt into the space, which may change how your teeth fit together. Over time, these changes can make the gap harder to restore. You can decide on the timing together with your dental team."
+sources = ["cc_dental_bridges"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "What material will my bridge be made of? How do I clean under the replacement tooth? What can I do to keep the supporting teeth healthy? What signs mean the bridge should be checked?"
+sources = ["cc_dental_bridges", "cc_dental_crowns"]

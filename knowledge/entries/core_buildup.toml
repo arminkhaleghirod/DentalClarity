@@ -1,0 +1,69 @@
+id = "core_buildup"
+version = 1
+title = "Build-up"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_crowns"
+publisher = "Cleveland Clinic"
+title = "Dental Crowns: What Are They, Types, Procedure & Care"
+url = "https://my.clevelandclinic.org/health/treatments/10923-dental-crowns"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "mh_crowns"
+publisher = "American Dental Association (MouthHealthy)"
+title = "Crowns"
+url = "https://www.mouthhealthy.org/all-topics-a-z/crowns"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "nih_ijd_endo_restoration"
+publisher = "National Library of Medicine (PubMed Central), International Journal of Dentistry"
+title = "Restoration of Endodontically Treated Teeth: Review and Treatment Recommendations"
+url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC2837471/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A build-up, also called a core buildup, replaces missing parts of a tooth with filling material. It gives the tooth a solid shape again so a crown has enough to hold onto. A build-up is usually done as part of getting a crown rather than on its own."
+sources = ["cc_crowns", "nih_ijd_endo_restoration"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons for a build-up include a tooth that has lost a lot of its structure to a large cavity, a break or a large old filling. Build-ups are also common on teeth that have had root canal treatment. In these cases, there may not be enough natural tooth left to support a crown by itself."
+sources = ["mh_crowns", "nih_ijd_endo_restoration"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually numbs the area first. Any decay or loose old filling material is removed, and the tooth is cleaned. Filling material is then placed and shaped to rebuild the center, or core, of the tooth. This is often done at the same appointment where the tooth is prepared for a crown."
+sources = ["cc_crowns"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Recovery is usually much like recovery from a filling or a crown. Some people notice mild sensitivity or sore gums for a short while, and this usually fades. Because a crown or temporary crown usually covers the build-up, most of the care afterward focuses on the crown."
+sources = ["cc_crowns"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A build-up gives a weakened tooth a stronger and more even base. This helps the crown fit well and stay in place. Together, the build-up and crown aim to protect the tooth and help you chew normally."
+sources = ["cc_crowns", "mh_crowns"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "A tooth that has lost a lot of structure can be fragile. If the build-up and crown are put off, weak areas may chip or crack over time, and decay may spread. The timing is your decision, made together with your dental team."
+sources = ["mh_crowns", "nih_ijd_endo_restoration"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How much of my tooth is missing, and why does it need a build-up? Will the build-up be done at the same appointment as the crown? What material will you use to rebuild the tooth?"
+sources = ["cc_crowns"]

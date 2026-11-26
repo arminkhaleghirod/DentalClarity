@@ -1,0 +1,62 @@
+id = "pulpotomy"
+version = 1
+title = "Baby tooth nerve treatment (pulpotomy)"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-26"
+
+[[sources]]
+id = "cc_pulpotomy"
+publisher = "Cleveland Clinic"
+title = "Pulpotomy: Procedure & Recovery"
+url = "https://my.clevelandclinic.org/health/procedures/pulpotomy"
+accessed = "2026-11-26"
+
+[[sources]]
+id = "aapd_vital_pulp_therapy"
+publisher = "American Academy of Pediatric Dentistry"
+title = "Use of Vital Pulp Therapies in Primary Teeth 2024"
+url = "https://www.aapd.org/research/oral-health-policies--recommendations/vital_pulp_therapies_in_primary_teeth_with_deep_caries_lesions/"
+accessed = "2026-11-26"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A pulpotomy is a treatment for a baby tooth when the soft inner part, called the pulp, has become inflamed. The dentist removes the unhealthy pulp from the top part of the tooth and leaves the pulp in the roots in place. It is sometimes called baby tooth nerve treatment."
+sources = ["cc_pulpotomy", "aapd_vital_pulp_therapy"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Common reasons include a deep cavity that reaches the pulp, often in a back tooth, or an injury such as a crack that lets germs get inside. It is usually considered when the pulp deeper in the tooth still looks healthy. Some children with this problem feel tooth pain, while others do not."
+sources = ["cc_pulpotomy", "aapd_vital_pulp_therapy"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The dental team numbs the area so your child can stay comfortable, and some offices also offer ways to help children relax. A thin cover may be placed around the tooth to keep it clean and dry. The dentist opens the tooth, removes the unhealthy pulp from the top, places a healing material inside, and seals it. The tooth is then restored, often with a crown, to protect it."
+sources = ["cc_pulpotomy", "aapd_vital_pulp_therapy"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Your child's mouth may stay numb after the visit, so watch that they do not bite their lip, cheek or tongue. If your child was given medicine to help them relax, your dental team may suggest a quiet day of rest. Call the practice if your child has severe pain, swelling in the face or jaw, or a fever."
+sources = ["cc_pulpotomy"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A pulpotomy is meant to ease pain and keep infection from spreading. It also helps your child keep the baby tooth until it falls out on its own. Baby teeth help children chew and speak, and they hold space for the adult teeth that come in later."
+sources = ["cc_pulpotomy"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "A cavity that reaches the pulp usually does not get better by itself. Over time, the pulp can become infected, which may cause pain or swelling and can make the baby tooth harder to save. Because baby teeth hold space for adult teeth, losing one early can affect that space. You and your child's dental team can talk through the timing that works for your family."
+sources = ["cc_pulpotomy", "aapd_vital_pulp_therapy"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Will my child's tooth need a crown after this treatment? How can I help my child feel calm before and during the visit? What should my child eat or avoid while their mouth is numb? What signs mean I should call the office?"
+sources = ["cc_pulpotomy"]

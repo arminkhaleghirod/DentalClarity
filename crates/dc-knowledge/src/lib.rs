@@ -1,9 +1,15 @@
 //! The curated knowledge base.
 //!
+//! See `knowledge/README.md` for the entry format and writing rules.
+//!
 //! Lookup is deterministic: a procedure code maps to one category through
 //! `knowledge/codes.toml`, and each category has a reviewed entry. There is no
 //! embedding search. Codes that are not mapped return
 //! [`ProcedureCategory::Unsupported`] so the pipeline can send them to review.
+
+pub mod entries;
+
+pub use entries::{Entry, KnowledgeBase, Passage, ReviewStatus, Source, Topic};
 
 use dc_core::ProcedureCode;
 use dc_core::procedure::ProcedureCategory;
