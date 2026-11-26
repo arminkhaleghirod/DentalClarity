@@ -45,6 +45,8 @@ cargo run -p dc-server
 
 Open http://127.0.0.1:8080. Configuration comes from environment variables; see [`.env.example`](.env.example).
 
+Demo mode needs no sign-in. To try clinical mode on your own machine, start the server with `DC_MODE=clinical`. On first start it prints a one-time setup code in the console; enter it on the setup screen to create the shared staff account.
+
 For frontend work, run `cargo run -p dc-server` and `trunk serve` in `crates/dc-web`, then open http://127.0.0.1:8081. Trunk rebuilds on save and forwards API calls to the server.
 
 Run the tests with `cargo test`.

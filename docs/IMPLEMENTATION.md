@@ -5,7 +5,7 @@ Milestones run from 2026-11-26 to the submission deadline on 2027-02-15. Dates a
 | Milestone | Scope | Target |
 |---|---|---|
 | M0 | Foundations: workspace, planning docs, synthetic connector, dashboard | 2026-11-26 (done) |
-| M1 | Staff session, demo visitor isolation, security headers and CSP | 2026-12-03 |
+| M1 | Staff session, demo visitor isolation, security headers and CSP | 2026-11-26 (done) |
 | M2 | Open Dental connector and schema-matched synthetic MySQL | 2026-12-10 |
 | M3 | Knowledge base entries, patient directory, settings and setup wizard | 2026-12-14 |
 | M4 | Generation pipeline, validators, review pass, persistent jobs | 2026-12-22 |
@@ -27,14 +27,16 @@ Milestones run from 2026-11-26 to the submission deadline on 2027-02-15. Dates a
 - Server: health and dashboard endpoints, SQLite with migrations, embedded web app.
 - Web app: staff shell and dashboard matching the approved mockup.
 
-## M1 Staff session and request security
+## M1 Staff session and request security (done)
 
-Acceptance:
-- Shared staff account with Argon2id password hash. Login, logout and session expiry work. Sessions are server-side rows with opaque cookie tokens.
-- In demo mode each visitor gets an isolated session without logging in, and nothing one visitor creates is visible to another.
-- CSRF token required on every state-changing request.
-- Content Security Policy that works with the Trunk bundle (verify whether Trunk's inline loader needs a hash).
-- Rate limiting on login and on all `/api` routes.
+- Shared staff account with Argon2id password and PIN hashes. First-launch setup needs a one-time code printed in the server console.
+- Server-side sessions with opaque HttpOnly cookies; only SHA-256 hashes of tokens are stored. Staff sessions expire after 30 minutes idle or 12 hours; demo visitor sessions after 24 hours.
+- Demo visitors get an isolated session from `POST /api/visit` without signing in. A visitor session never opens the clinical workspace, and changing the mode ends all sessions.
+- Session-bound CSRF token in `X-DC-CSRF`, plus an Origin check on every state-changing request.
+- Per-address login limits and backoff, a capped limiter, IPv6 grouped by /64, and an audit event for failure surges.
+- Content Security Policy that allows Trunk's loader script by hash, with no `unsafe-inline`, plus the other security headers.
+- Clinical mode refuses to run on the network without HTTPS.
+- A security review of this milestone found nine issues; all are fixed and covered by tests.
 
 ## M2 Open Dental connector
 

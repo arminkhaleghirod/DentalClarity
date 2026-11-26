@@ -1,23 +1,38 @@
 use crate::api;
 use crate::format::language_name;
+use crate::session::use_session;
 use dc_core::api::{PatientRow, PresentationStatus};
 use leptos::prelude::*;
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
     let rows = LocalResource::new(api::dashboard);
+    let session = use_session();
+    let practice = move || {
+        session
+            .info
+            .get()
+            .and_then(Result::ok)
+            .map(|i| i.practice_name)
+            .unwrap_or_default()
+    };
+    let greeting = match js_sys::Date::new_0().get_hours() {
+        0..=11 => "Good morning",
+        12..=17 => "Good afternoon",
+        _ => "Good evening",
+    };
 
     view! {
         <header class="topbar">
-            <h1 class="page-title">"Today"</h1>
-            <span class="sync-pill">"Synthetic practice connected"</span>
+            <h1 class="page-title">{greeting}", "{practice}</h1>
+            <span class="sync-pill">"Practice records connected"</span>
         </header>
         <Suspense fallback=|| view! { <div class="notice">"Loading today's patients…"</div> }>
             {move || rows.get().map(|result| match result {
                 Ok(rows) => view! { <StatusCards rows=rows.clone() /> <PatientTable rows=rows /> }.into_any(),
                 Err(message) => view! {
                     <div class="notice error" role="alert">
-                        "Could not load today's patients. " {message}
+                        "Could not load today's patients. " {message.message}
                     </div>
                 }.into_any(),
             })}

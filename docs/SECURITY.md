@@ -45,12 +45,13 @@ Mode is fixed at startup and cannot change at runtime [C, ARCH 1].
 |---|---|---|
 | Data | synthetic only [C, D1] | real PMS via read-only SQL (no real PHI before the deadline [C, D3]) |
 | AI providers | OpenRouter for all [C, D1] | Bedrock and Polly; OpenRouter adapter cannot be constructed [C, D2] |
-| Staff auth | auto-created visitor session, no password | shared staff account with password |
+| Staff auth | visitor session created by `POST /api/visit`, no password | shared staff account with password |
 | Leave Present | no PIN [C, P8] | staff PIN [C, P8] |
 | TLS | terminated by the hosting platform | rustls in-process |
 | Secrets | env vars only | encrypted `secrets` table, DPAPI-wrapped key |
 | Limits | per-visitor rate limits, $25/month cap [C, D5] | practice-configured, login and PIN limits always on |
-| Setup wizard | disabled; config from env | first launch only, local or with a setup token |
+| Setup wizard | disabled; config from env | first launch only, with the one-time setup code printed to the server console |
+| Startup check | none | refuses to start unless `DC_PUBLIC_ORIGIN` is `https://` or the bind address is loopback |
 | Logging of prompt text | never in production builds | never |
 
 ## Authentication
@@ -70,32 +71,49 @@ Mode is fixed at startup and cannot change at runtime [C, ARCH 1].
 |---|---|---|
 | Token | 32 random bytes from the OS CSPRNG, base64url | same |
 | Stored as | SHA-256 of the token in `sessions` | SHA-256 in `present_sessions` |
-| Cookie | `__Host-dc_staff`; `Secure; HttpOnly; SameSite=Strict; Path=/` | `__Host-dc_present`; same flags |
+| Cookie | one session cookie shared with demo visitors (see below) | planned for M5 (`__Host-dc_present`, same flags) |
 | Idle timeout | 30 min | 60 min |
 | Absolute lifetime | 12 h | 4 h |
 | Rotation | new token at login and at unlock | new token per present session |
 | Bound to | the shared account | `(presentation_id, version_id)` and the staff session that created it |
 
-API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. In demo mode the platform terminates TLS, and the app trusts `X-Forwarded-Proto` only from the configured proxy address.
+Implemented in M1: staff and demo visitor sessions use one cookie, named `__Host-dc_session` over HTTPS and `dc_session` over plain HTTP (local development only). Flags are `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` over HTTPS. There is no `Max-Age`, because the server enforces lifetimes. A demo visitor session has a 24 h idle timeout and a 24 h absolute lifetime. The present session row and its cookie are still planned for M5, so the Present column above is the design, not the current behavior.
+
+- The cookie name and the `Secure` flag follow the scheme of `DC_PUBLIC_ORIGIN`. The app does not read `X-Forwarded-Proto`.
+- The session kind must match the mode: demo accepts only visitor sessions, clinical accepts only staff sessions.
+- The mode is stored in settings. When the server starts in a different mode than last time, all sessions are deleted.
+- `GET /api/session` is read-only. Demo visitor sessions are created by `POST /api/visit`, which is Origin-checked and limited to 30 new visitor sessions per minute per client address.
+
+API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. In demo mode the platform terminates TLS and the public origin is `https://`.
 
 ### CSRF
 
-- Double-submit token: a non-HttpOnly `dc_csrf` cookie, echoed in an `X-DC-CSRF` header on every state-changing request; compared in constant time [ARCH 5].
-- `SameSite=Strict` on session cookies.
-- `Origin` (or `Referer`) must match the configured host on every non-GET request.
+- Session-bound synchronizer token. The token is issued with the session, stored with the session row, and returned by `GET /api/session`, which only same-origin pages can read. There is no CSRF cookie. The client must send it in the `X-DC-CSRF` header on every state-changing staff request and on logout; the server compares it in constant time [ARCH 5].
+- `SameSite=Strict` on the session cookie.
+- `Origin` (or `Referer` as a fallback) must match the configured origin on every non-GET `/api` request, including login, setup and visit.
 - No state change on GET.
 
 ### Rate limits and lockout
 
 | Endpoint | Limit | On exceeding |
 |---|---|---|
-| `POST /api/auth/login` | 5 per minute per IP; 20 per minute global | `429` with `Retry-After` |
-| Login failures | after 5 failures from an IP, delay doubles from 1 s up to 5 min | per-IP backoff, not an account lockout (one shared account means a hard lockout would let any LAN device lock out the whole practice) |
+| `POST /api/auth/login` | 5 per minute per client address | `429` with `Retry-After` |
+| Login failures | after 5 failures from an address, delay doubles from 1 s up to 5 min; failures are forgotten after 15 min | per-address backoff, not an account lockout (one shared account means a hard lockout would let any LAN device lock out the whole practice). Wrong setup codes count toward the same backoff |
+| `POST /api/visit` (demo) | 30 new visitor sessions per minute per client address | `429` |
 | `POST /api/present/exit` (PIN) | 5 wrong PINs per present session | the PIN is disabled for that lock; unlocking then needs the full staff password |
-| Global failed login count | over 50 in 15 min | audit event and a banner on next staff login |
+| Global failed login count | over 50 failures in 15 min | one `login_failure_surge` audit event per 15 min; the banner on next staff login is Later (not implemented in M1) |
 | Other staff API | 300 per minute per session | `429` |
 
-All limits are in-memory token buckets keyed by IP and session, reset on restart. A restart-persisted counter is not needed for the prototype.
+A global login limit was dropped because a few devices could use it to block everyone. All limits are in memory, keyed by client address and session, and reset on restart. A restart-persisted counter is not needed for the prototype.
+
+- IPv6 clients are keyed by their /64 prefix.
+- Limiter maps are capped at 10,000 keys. When a map is full, expired entries are pruned and new keys are refused until entries expire.
+- Client address: `X-Forwarded-For` is read only when the direct peer equals `DC_TRUSTED_PROXY`, and then only the rightmost entry, which is the one the proxy appended. An unknown peer is treated as `0.0.0.0`, never as local.
+- Request bodies over 64 KiB are rejected. Malformed JSON gets an `ApiError` JSON body with code `bad_request`, without parser details.
+
+### Audit events written
+
+`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. The actor is the client address, `staff` or `server`. Events hold no patient data.
 
 ## Present-mode isolation
 
@@ -120,7 +138,9 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 |---|---|---|---|---|---|
 | `GET /` static bundle, fonts, illustrations | A | A | A | A | A |
 | `GET /healthz` (no details) | A | A | A | A | A |
-| `/api/setup/*` | first launch only, and only from localhost or with the one-time setup token | 403 after setup | 403 | 403 | disabled (404) |
+| `/api/setup/*` | needs the one-time setup code; 403 after setup | 403 | 403 | 403 | disabled (404) |
+| `GET /api/session` (read-only) | A | A | A | A | A |
+| `POST /api/visit` | 404 in clinical | 404 | 404 | 404 | A (demo only, Origin-checked, rate-limited) |
 | `POST /api/auth/login`, `logout` | A (login) | A (logout) | logout only | 403 | 404 |
 | `/api/staff/patients`, `plans` (read PMS) | 401 | A | 423 | 401 | A (synthetic, read-only) |
 | `/api/staff/presentations` create, edit, regenerate, history | 401 | A | 423 | 401 | A, own visitor scope only |
@@ -136,13 +156,16 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/present/analytics` (engagement events) | 401 | 401 | 401 | A, write only | A, write only |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
 
+First-launch setup works as follows. When no staff account exists, the server prints a one-time setup code to its console at startup and notes in the log that a code was issued. The code is 12 characters from an unambiguous alphabet (about 60 bits). Wrong codes count toward the same per-address backoff as logins and are audited as `setup_code_rejected`. The earlier restriction to localhost was removed, because a local TLS proxy would make every client look local; the code is the gate.
+
 Secrets are write-only through the API. The settings page shows "set" and the time it was last changed, never the value.
 
 ## Transport
 
 - Clinical mode serves HTTPS only, with rustls (TLS 1.2 and 1.3). Port 80, if enabled, only redirects. [P]
 - The service binds to a configured LAN interface address. The installer's firewall rule allows the LAN subnet only (M9).
-- HSTS is sent only when the certificate is trusted by the clients (option 1 or 2 below), so a self-signed setup does not lock clients out.
+- Clinical mode refuses to start unless `DC_PUBLIC_ORIGIN` is `https://` or the bind address is loopback.
+- HSTS is sent only when `DC_HSTS` is enabled and the origin is `https://`. Enable it only with a certificate that all clients trust (option 1 or 2 below), so a self-signed setup does not lock clients out.
 
 ### Certificate options
 
@@ -229,7 +252,8 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 - Generated, translated and Q&A text is rendered as text nodes only. Leptos `inner_html` is banned in `dc-web` by a clippy `disallowed_methods` rule, with one reviewed exception for our own static SVG assets.
 - Validator V15 rejects HTML, Markdown and URLs in model output. Reference links come only from KB entries, which allow `https` URLs only.
 - PDF: text goes to Typst through the JSON data model and is placed as content strings, never evaluated as Typst markup. Test fixtures include Typst control characters (`#`, `$`, `[`, `]`).
-- Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'` (exact Leptos/Trunk requirements TBD, verify in M1), plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a `Permissions-Policy` that disables camera, microphone and geolocation.
+- Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-<hash of each inline script in the embedded index.html>'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. Trunk loads the WASM through one inline module script, so the server computes its hash at startup from the embedded `index.html` and no `'unsafe-inline'` is needed.
+- Also sent: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`, `Cross-Origin-Opener-Policy: same-origin`, and `Cache-Control: no-store` on `/api`.
 
 ## Demo abuse controls
 
@@ -237,7 +261,8 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 
 | Control | Value |
 |---|---|
-| Visitor identity | random visitor id in a `__Host-` cookie on first visit, plus client IP from the trusted proxy |
+| Visitor identity | visitor session created by `POST /api/visit` (session cookie described under sessions and cookies), plus client address from the trusted proxy |
+| Session creation | 30 new visitor sessions per minute per client address |
 | Visitor isolation | presentations, edits, jobs and Q&A are scoped to the visitor id; the synthetic dataset is read-only and shared; visitor data is purged after 24 h |
 | New generations | 3 per hour per visitor, 10 per day per IP |
 | On-demand variants | 10 per hour per visitor |

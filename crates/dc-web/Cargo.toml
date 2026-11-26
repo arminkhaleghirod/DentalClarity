@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 console_error_panic_hook = "0.1"
 dc-core.workspace = true
+js-sys = "0.3"
 gloo-net = { version = "0.8", default-features = false, features = ["http", "json"] }
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = "0.8"
