@@ -19,11 +19,13 @@ use dc_core::presentation::{
     PresentationSummary, PresentationView, ProcedureFactView, SectionProgress, SectionStage,
     SectionView, SectionVisibility, TextBlock,
 };
+use dc_core::procedure::ProcedureCategory;
 use dc_core::{Mode, ToothRef};
 use dc_generation::facts::FactSheet;
 use dc_generation::schema::{
     AtAGlanceOut, JourneyOut, NextStepsOut, Para, ProcedureOut, Question, WhyKind,
 };
+use dc_knowledge::entries::category_id;
 use dc_pms::PmsError;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -536,6 +538,10 @@ pub(super) fn procedure_facts(
             fee: p.fee.known(),
             insurance_estimate: p.insurance_estimate.known(),
             patient_estimate: p.patient_estimate.known(),
+            category: match fact.category {
+                ProcedureCategory::Unsupported => None,
+                other => Some(category_id(other)).filter(|id| !id.is_empty()),
+            },
         })
         .collect()
 }

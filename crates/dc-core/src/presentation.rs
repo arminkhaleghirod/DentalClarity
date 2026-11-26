@@ -140,6 +140,9 @@ pub struct ProcedureFactView {
     pub fee: Option<Money>,
     pub insurance_estimate: Option<Money>,
     pub patient_estimate: Option<Money>,
+    /// Knowledge base category id, e.g. `root_canal`. `None` for unsupported codes.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// `GET /api/staff/presentations/:id`

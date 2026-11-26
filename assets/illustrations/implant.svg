@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" width="480" height="300" stroke-linejoin="round" stroke-linecap="round">
+<clipPath id="c"><rect width="480" height="300" rx="16"/></clipPath>
+<g clip-path="url(#c)">
+<rect width="480" height="300" fill="#f6f8fb"/>
+<path d="M0 190 C120 182 360 182 480 190 L480 300 L0 300 Z" fill="#ebe3d2"/>
+<circle cx="60" cy="230" r="5" fill="#dcd0b8"/>
+<circle cx="96" cy="262" r="5" fill="#dcd0b8"/>
+<circle cx="130" cy="214" r="5" fill="#dcd0b8"/>
+<circle cx="150" cy="276" r="5" fill="#dcd0b8"/>
+<circle cx="330" cy="222" r="5" fill="#dcd0b8"/>
+<circle cx="360" cy="266" r="5" fill="#dcd0b8"/>
+<circle cx="396" cy="236" r="5" fill="#dcd0b8"/>
+<circle cx="430" cy="274" r="5" fill="#dcd0b8"/>
+<circle cx="80" cy="284" r="5" fill="#dcd0b8"/>
+<circle cx="420" cy="206" r="5" fill="#dcd0b8"/>
+<circle cx="300" cy="286" r="5" fill="#dcd0b8"/>
+<circle cx="180" cy="288" r="5" fill="#dcd0b8"/>
+<path d="M0 190 C120 182 360 182 480 190" fill="none" stroke="#cdbfa2" stroke-width="3"/>
+<path d="M0 164 C120 152 360 152 480 164 L480 192 C360 184 120 184 0 192 Z" fill="#f3c9c4"/>
+<path d="M0 164 C120 152 360 152 480 164" fill="none" stroke="#d99d96" stroke-width="3"/>
+<path d="M222 176 L258 176 L256 250 C254 264 246 270 240 270 C234 270 226 264 224 250 Z" fill="#aab3bf" stroke="#3d4a5c" stroke-width="3"/>
+<path d="M222 188 L258 182" fill="none" stroke="#8792a1" stroke-width="2"/>
+<path d="M222 184 L216 188 L222 192 M258 178 L264 182 L258 186" fill="none" stroke="#3d4a5c" stroke-width="2"/>
+<path d="M222 201 L258 195" fill="none" stroke="#8792a1" stroke-width="2"/>
+<path d="M222 197 L216 201 L222 205 M258 191 L264 195 L258 199" fill="none" stroke="#3d4a5c" stroke-width="2"/>
+<path d="M222 214 L258 208" fill="none" stroke="#8792a1" stroke-width="2"/>
+<path d="M222 210 L216 214 L222 218 M258 204 L264 208 L258 212" fill="none" stroke="#3d4a5c" stroke-width="2"/>
+<path d="M222 227 L258 221" fill="none" stroke="#8792a1" stroke-width="2"/>
+<path d="M222 223 L216 227 L222 231 M258 217 L264 221 L258 225" fill="none" stroke="#3d4a5c" stroke-width="2"/>
+<path d="M222 240 L258 234" fill="none" stroke="#8792a1" stroke-width="2"/>
+<path d="M222 236 L216 240 L222 244 M258 230 L264 234 L258 238" fill="none" stroke="#3d4a5c" stroke-width="2"/>
+<path d="M226 176 L226 146 C226 138 232 134 240 134 C248 134 254 138 254 146 L254 176 Z" fill="#c7ced8" stroke="#3d4a5c" stroke-width="3"/>
+</g>
+</svg>

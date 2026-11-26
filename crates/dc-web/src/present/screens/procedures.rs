@@ -162,11 +162,170 @@ fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
                 </div>
                 <ReadingLevel current=level />
             </div>
-            <div class="p-illustration" role="img" aria-label="Illustration coming soon">
-                <span>"Illustration coming soon"</span>
-            </div>
+            <Illustration category=procedure.category.clone() />
             {body}
         </article>
+    }
+}
+
+/// Alt text for each illustration in `assets/illustrations`, by category id.
+const ILLUSTRATIONS: [(&str, &str); 22] = [
+    (
+        "exam",
+        "Drawing of two back teeth in the gum with a small dental mirror next to them",
+    ),
+    (
+        "radiographs",
+        "Drawing of an X-ray machine aimed at a tooth with a small sensor behind it",
+    ),
+    (
+        "cleaning",
+        "Drawing of a cleaning tool removing hard buildup from a tooth at the gum line",
+    ),
+    (
+        "periodontal_scaling",
+        "Drawing of a tooth cut in half where the gum has pulled away, with a tool cleaning buildup off the root below the gum line",
+    ),
+    (
+        "sealant",
+        "Drawing of a back tooth cut in half with a thin coating filling the grooves on its chewing surface",
+    ),
+    (
+        "fluoride",
+        "Drawing of a tooth with a thin protective varnish painted over its outer surface",
+    ),
+    (
+        "filling_composite",
+        "Drawing of a back tooth cut in half with a tooth-colored filling in a cavity on its chewing surface",
+    ),
+    (
+        "filling_amalgam",
+        "Drawing of a back tooth cut in half with a silver filling in a cavity on its chewing surface",
+    ),
+    (
+        "core_buildup",
+        "Drawing of a broken back tooth rebuilt with filling material, with a dotted outline where a crown will go",
+    ),
+    (
+        "post_and_core",
+        "Drawing of a tooth cut in half with a small post in the root canal holding a build-up, with a dotted outline where a crown will go",
+    ),
+    (
+        "crown",
+        "Drawing of a crown being lowered over a tooth that has been shaped to fit it",
+    ),
+    (
+        "root_canal",
+        "Drawing of a tooth cut in half showing the cleaned and filled root canals and a sealed top",
+    ),
+    (
+        "pulpotomy",
+        "Drawing of a baby back tooth cut in half with healing material in the top of the pulp and the root pulp left in place",
+    ),
+    (
+        "extraction",
+        "Drawing of a tooth lifted out of its socket in the gum and bone",
+    ),
+    (
+        "surgical_extraction",
+        "Drawing of a tilted tooth under the gum and bone, with an opening made above it to remove it",
+    ),
+    (
+        "bone_graft",
+        "Drawing of an empty tooth socket filled with bone graft granules and covered by a thin membrane",
+    ),
+    (
+        "implant",
+        "Drawing of a screw-shaped implant post set in the jawbone with a small cap above the gum",
+    ),
+    (
+        "implant_crown",
+        "Drawing of a crown attached on top of an implant post in the jawbone",
+    ),
+    (
+        "bridge",
+        "Drawing of a bridge with crowns on two teeth holding a replacement tooth over the gap between them",
+    ),
+    (
+        "denture_complete",
+        "Drawing of a full upper denture seen from below, a gum-colored base holding a full row of teeth",
+    ),
+    (
+        "denture_partial",
+        "Drawing of a partial denture seen from above, replacement teeth on gum-colored bases joined by a metal bar with clasps",
+    ),
+    (
+        "night_guard",
+        "Drawing of a clear guard fitted over the upper teeth, resting between the upper and lower teeth",
+    ),
+];
+
+const FALLBACK_ALT: &str = "Drawing of a tooth in the gum and jawbone";
+
+/// The illustration file and alt text for a category, or the neutral fallback.
+fn illustration_for(category: Option<&str>) -> (String, &'static str) {
+    category
+        .and_then(|c| ILLUSTRATIONS.iter().find(|(id, _)| *id == c))
+        .map_or_else(
+            || ("/illustrations/fallback.svg".to_owned(), FALLBACK_ALT),
+            |(id, alt)| (format!("/illustrations/{id}.svg"), *alt),
+        )
+}
+
+#[component]
+fn Illustration(category: Option<String>) -> impl IntoView {
+    let (src, alt) = illustration_for(category.as_deref());
+    view! {
+        <figure class="p-illustration">
+            <img class="p-illustration-img" src=src alt=alt width="480" height="300" />
+            <figcaption class="p-illustration-caption">"Educational drawing, not your X-ray."</figcaption>
+        </figure>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_category_uses_its_drawing() {
+        let (src, alt) = illustration_for(Some("root_canal"));
+        assert_eq!(src, "/illustrations/root_canal.svg");
+        assert!(alt.contains("root canals"));
+    }
+
+    #[test]
+    fn missing_or_unknown_category_falls_back() {
+        assert_eq!(illustration_for(None).0, "/illustrations/fallback.svg");
+        assert_eq!(
+            illustration_for(Some("unsupported")).0,
+            "/illustrations/fallback.svg"
+        );
+    }
+
+    #[test]
+    fn every_category_has_a_drawing_file() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/illustrations");
+        for (id, alt) in ILLUSTRATIONS {
+            assert!(dir.join(format!("{id}.svg")).is_file(), "missing {id}.svg");
+            assert!(!alt.is_empty());
+        }
+        assert!(dir.join("fallback.svg").is_file());
+    }
+
+    #[test]
+    fn every_mapped_category_has_alt_text() {
+        let codes =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knowledge/codes.toml");
+        let text = std::fs::read_to_string(codes).expect("codes.toml");
+        for part in text.split("category = \"").skip(1) {
+            let id = part.split('"').next().unwrap_or_default();
+            assert!(
+                ILLUSTRATIONS.iter().any(|(known, _)| *known == id),
+                "no illustration for {id}"
+            );
+        }
     }
 }
 
