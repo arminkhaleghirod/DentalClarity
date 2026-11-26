@@ -15,6 +15,7 @@ use dc_core::plan::{PatientKey, PlanSnapshot};
 use dc_core::{Mode, ToothRef};
 use dc_pms::PmsError;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 /// Longest search text accepted; anything after this is ignored.
 const MAX_QUERY_CHARS: usize = 100;
@@ -27,10 +28,10 @@ pub async fn dashboard(
     State(state): State<AppState>,
     crate::security::CurrentSession(session): crate::security::CurrentSession,
 ) -> Result<Json<Vec<PatientRow>>, Failure> {
-    // Latest presentation per patient in this caller's scope, newest first.
+    // Presentations in this caller's scope, newest first.
     let owner = super::presentations::owner_scope(&state, &session);
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT p.patient_key, p.id, j.state
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT p.patient_key, p.plan_key, p.id, j.state
          FROM presentations p JOIN jobs j ON j.presentation_id = p.id
          WHERE p.owner_scope = ?
          ORDER BY p.created_at DESC, p.rowid DESC",
@@ -38,13 +39,7 @@ pub async fn dashboard(
     .bind(&owner)
     .fetch_all(&state.db)
     .await?;
-    let mut latest: std::collections::HashMap<String, (String, PresentationStatus)> =
-        std::collections::HashMap::new();
-    for (patient_key, id, job_state) in rows {
-        latest
-            .entry(patient_key)
-            .or_insert_with(|| (id, status_for_job(&job_state)));
-    }
+    let latest = latest_per_plan(rows);
 
     let patients = state
         .pms
@@ -59,6 +54,7 @@ pub async fn dashboard(
             .await
             .map_err(Failure::internal)?;
         let Some(plan) = plans.first() else { continue };
+        let presentation = latest.get(&(patient.key.0.clone(), plan.key.0.clone()));
         let snapshot = state
             .pms
             .plan_snapshot(&plan.key)
@@ -75,14 +71,28 @@ pub async fn dashboard(
                 .preferred_language
                 .clone()
                 .unwrap_or_else(|| "en".into()),
-            status: latest
-                .get(&patient.key.0)
-                .map_or(PresentationStatus::NotStarted, |(_, status)| *status),
+            status: presentation.map_or(PresentationStatus::NotStarted, |(_, status)| *status),
             patient_estimate: snapshot.total_patient_estimate(),
-            presentation_id: latest.get(&patient.key.0).map(|(id, _)| id.clone()),
+            presentation_id: presentation.map(|(id, _)| id.clone()),
         });
     }
     Ok(Json(rows))
+}
+
+/// The newest presentation for each (patient key, plan key), from rows of
+/// `(patient_key, plan_key, presentation_id, job_state)` sorted newest first.
+/// A presentation of another plan must not show on the row of the plan the
+/// dashboard displays.
+fn latest_per_plan(
+    rows: Vec<(String, String, String, String)>,
+) -> HashMap<(String, String), (String, PresentationStatus)> {
+    let mut latest = HashMap::new();
+    for (patient_key, plan_key, id, job_state) in rows {
+        latest
+            .entry((patient_key, plan_key))
+            .or_insert_with(|| (id, status_for_job(&job_state)));
+    }
+    latest
 }
 
 /// Dashboard status for a job state. A failed job needs staff attention, so
@@ -317,4 +327,37 @@ fn validate_settings(request: &PracticeSettings) -> Result<PracticeSettings, Str
         brand_primary: primary.to_ascii_uppercase(),
         brand_highlight: highlight.to_ascii_uppercase(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_presentation_is_kept_per_plan() {
+        let row = |plan: &str, id: &str, job: &str| {
+            (
+                "7".to_owned(),
+                plan.to_owned(),
+                id.to_owned(),
+                job.to_owned(),
+            )
+        };
+        // Newest first: plan 2 was presented after plan 1.
+        let latest = latest_per_plan(vec![
+            row("2", "c", "running"),
+            row("1", "b", "succeeded"),
+            row("1", "a", "failed"),
+        ]);
+        let key = |plan: &str| ("7".to_owned(), plan.to_owned());
+        assert_eq!(
+            latest.get(&key("1")),
+            Some(&("b".to_owned(), PresentationStatus::Ready))
+        );
+        assert_eq!(
+            latest.get(&key("2")),
+            Some(&("c".to_owned(), PresentationStatus::Generating))
+        );
+        assert!(!latest.contains_key(&key("3")));
+    }
 }

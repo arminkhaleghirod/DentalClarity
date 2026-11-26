@@ -218,6 +218,11 @@ pub async fn section(
         },
     ];
 
+    // The last draft that passed validation, with whether its reviewer findings
+    // were safety findings and the reasons to show staff. A repair that cannot
+    // reach the writer falls back to it.
+    let mut validated: Option<(Value, bool, Vec<String>)> = None;
+
     for attempt in 0..=MAX_REPAIRS {
         result.attempts = attempt as u32 + 1;
         progress.report(Event::SectionStage {
@@ -237,8 +242,25 @@ pub async fn section(
         {
             Ok(reply) => reply,
             Err(err) => {
-                result.reasons = vec![format!("The writing model could not be reached ({err}).")];
-                result.state = SectionState::Failed;
+                let reason = format!("The writing model could not be reached ({err}).");
+                result
+                    .attempt_log
+                    .push(format!("attempt {}: {reason}", result.attempts));
+                match validated.take() {
+                    Some((value, holds, reasons)) => {
+                        result.state = if holds {
+                            SectionState::NeedsReview
+                        } else {
+                            SectionState::Passed
+                        };
+                        result.reasons = if holds { reasons } else { Vec::new() };
+                        result.output = Some(value);
+                    }
+                    None => {
+                        result.reasons = vec![reason];
+                        result.state = SectionState::Failed;
+                    }
+                }
                 break;
             }
         };
@@ -358,6 +380,7 @@ pub async fn section(
                         result.output = Some(value);
                         break;
                     }
+                    validated = Some((value, holds, result.reasons.clone()));
                     continue;
                 }
                 result.state = SectionState::NeedsReview;
@@ -472,7 +495,9 @@ async fn review(
     Ok(verdict)
 }
 
-/// One model call with up to three transport retries and jittered backoff.
+/// One model call with jittered backoff: up to three attempts for transport
+/// errors, but only two when the provider timed out or replied with something
+/// unusable, because those calls may be billed.
 async fn call(
     model: &Arc<dyn TextModel>,
     model_id: &str,
@@ -489,11 +514,16 @@ async fn call(
         reasoning,
     };
     let mut last = None;
+    let mut billed_failures = 0;
     for attempt in 0..3u32 {
         match model.generate(request.clone()).await {
             Ok(reply) => return Ok(reply),
             Err(err @ AiError::NotAllowed { .. }) => return Err(err),
+            Err(err @ AiError::BadResponse(_)) if billed_failures >= 1 => return Err(err),
             Err(err) => {
+                if matches!(err, AiError::BadResponse(_)) {
+                    billed_failures += 1;
+                }
                 tracing::warn!(%err, attempt, "model call failed; retrying");
                 last = Some(err);
                 let jitter = u64::from(std::process::id() % 250);
@@ -676,6 +706,104 @@ mod tests {
         .await;
         assert_eq!(result.state, SectionState::NeedsReview);
         assert!(result.reasons[0].contains("R5"));
+    }
+
+    /// Replies in order; an exhausted script fails as not allowed, which the
+    /// transport loop does not retry.
+    struct Scripted(Mutex<std::collections::VecDeque<String>>);
+
+    // This crate does not depend on async-trait, so the test models spell out
+    // the signature the macro generates.
+    type Reply<'a> = futures::future::BoxFuture<'a, dc_ai::Result<dc_ai::TextResponse>>;
+
+    impl TextModel for Scripted {
+        fn provider(&self) -> &'static str {
+            "scripted"
+        }
+        fn generate<'life0, 'async_trait>(&'life0 self, request: TextRequest) -> Reply<'async_trait>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            let next = self.0.lock().unwrap().pop_front();
+            Box::pin(async move {
+                match next {
+                    Some(content) => Ok(dc_ai::TextResponse {
+                        model: request.model,
+                        route: None,
+                        content,
+                        usage: Usage::default(),
+                        latency_ms: 0,
+                    }),
+                    None => Err(AiError::NotAllowed {
+                        provider: "scripted",
+                        mode: dc_core::Mode::Clinical,
+                    }),
+                }
+            })
+        }
+    }
+
+    async fn run_with_failing_repair(reviewer: String) -> SectionResult {
+        let kb = kb_with_entry();
+        let sheet = FactSheet::build(&daniel(), &kb);
+        let m = Models {
+            writer: Arc::new(Scripted(Mutex::new([good_procedure()].into()))),
+            writer_model: "writer".into(),
+            reviewer: Arc::new(FakeTextModel::with_responses([reviewer])),
+            reviewer_model: "reviewer".into(),
+            reasoning: None,
+        };
+        section(
+            &SectionKind::Procedure("p1".into()),
+            &sheet,
+            &kb,
+            &m,
+            ReadingLevel::Standard,
+            &|_: Event| {},
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn writer_error_during_repair_keeps_the_validated_draft() {
+        let safety = json!({"verdict": "revise", "issues": [{"path": "/benefits/0", "category": "R5", "severity": "major", "explanation": "Overstates the outcome."}]}).to_string();
+        let result = run_with_failing_repair(safety).await;
+        assert_eq!(result.state, SectionState::NeedsReview);
+        assert!(result.output.is_some());
+        assert!(result.reasons[0].contains("R5"), "{:?}", result.reasons);
+
+        let style = json!({"verdict": "revise", "issues": [{"path": "/what_it_is/0", "category": "R6", "severity": "major", "explanation": "Unexplained abbreviation."}]}).to_string();
+        let result = run_with_failing_repair(style).await;
+        assert_eq!(result.state, SectionState::Passed);
+        assert!(result.output.is_some());
+        assert!(result.reasons.is_empty());
+    }
+
+    /// Fails with a billed error every time and counts the calls.
+    struct TimingOut(std::sync::atomic::AtomicU32);
+
+    impl TextModel for TimingOut {
+        fn provider(&self) -> &'static str {
+            "timing-out"
+        }
+        fn generate<'life0, 'async_trait>(&'life0 self, _: TextRequest) -> Reply<'async_trait>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Err(AiError::BadResponse("no reply within 120 s".into())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timeout_is_retried_once() {
+        let counter = Arc::new(TimingOut(Default::default()));
+        let model: Arc<dyn TextModel> = counter.clone();
+        let result = call(&model, "m", vec![], json!({}), None).await;
+        assert!(matches!(result, Err(AiError::BadResponse(_))));
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

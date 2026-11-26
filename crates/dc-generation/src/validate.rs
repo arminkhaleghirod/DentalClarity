@@ -483,9 +483,14 @@ fn sentence_count(text: &str) -> usize {
 }
 
 /// Teeth written as `#30`, `tooth 30`, `teeth 14 and 19` or `tooth K`.
+///
+/// The letters I and A read as English words ("the tooth I had treated"), so
+/// they count only as `#I`, `tooth #A` or after "baby tooth".
 pub fn tooth_mentions(text: &str) -> Vec<ToothRef> {
     let mut found = Vec::new();
     let mut after_tooth_word = false;
+    let mut after_baby_tooth = false;
+    let mut previous = String::new();
     for token in text.split_whitespace() {
         let cleaned = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '#');
         let lower = cleaned.to_lowercase();
@@ -498,17 +503,21 @@ pub fn tooth_mentions(text: &str) -> Vec<ToothRef> {
             after_tooth_word = false;
         } else if lower == "tooth" || lower == "teeth" {
             after_tooth_word = true;
+            after_baby_tooth = previous == "baby";
         } else if after_tooth_word {
             if lower == "and" || lower == "or" {
                 continue;
             }
             let is_number = cleaned.chars().all(|c| c.is_ascii_digit()) && !cleaned.is_empty();
-            let is_letter = cleaned.len() == 1 && cleaned.chars().all(|c| c.is_ascii_uppercase());
+            let is_letter = cleaned.len() == 1
+                && cleaned.chars().all(|c| c.is_ascii_uppercase())
+                && (after_baby_tooth || !matches!(cleaned, "I" | "A"));
             match cleaned.parse::<ToothRef>() {
                 Ok(t) if t.is_single_tooth() && (is_number || is_letter) => found.push(t),
                 _ => after_tooth_word = false,
             }
         }
+        previous = lower;
     }
     found
 }
@@ -537,16 +546,6 @@ const NUMBER_WORDS: &[&str] = &[
     "several",
     "a couple of",
     "single",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-    "10",
 ];
 const TIME_UNITS: &[&str] = &[
     "visit",
@@ -602,29 +601,52 @@ pub fn find_timing(lower: &str) -> Option<String> {
     }
     let words: Vec<&str> = lower
         .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-'))
         .filter(|w| !w.is_empty())
         .collect();
+    let is_unit =
+        |w: &str| TIME_UNITS.contains(&w.trim_end_matches(|c: char| !c.is_alphanumeric()));
     for i in 0..words.len() {
         for n in NUMBER_WORDS {
             let n_words: Vec<&str> = n.split(' ').collect();
             let end = i + n_words.len();
-            if end < words.len() && words[i..end] == n_words[..] {
-                let unit = words[end].trim_end_matches(|c: char| !c.is_alphanumeric());
-                if TIME_UNITS.contains(&unit) {
-                    return Some(format!("{n} {unit}"));
-                }
+            if end < words.len() && words[i..end] == n_words[..] && is_unit(words[end]) {
+                return Some(format!("{n} {}", words[end]));
             }
         }
-        // "30-minute", "2-3 weeks"
         let w = words[i];
-        if w.chars().next().is_some_and(|c| c.is_ascii_digit())
-            && let Some(unit) = w.split('-').next_back()
-            && TIME_UNITS.contains(&unit)
+        // "90 minutes", "2-3 weeks"
+        if is_count(w) && words.get(i + 1).is_some_and(|u| is_unit(u)) {
+            return Some(format!("{w} {}", words[i + 1]));
+        }
+        // "2 to 3 weeks", "one or two visits"
+        if (is_count(w) || NUMBER_WORDS.contains(&w))
+            && words.get(i + 1).is_some_and(|c| *c == "to" || *c == "or")
+            && words
+                .get(i + 2)
+                .is_some_and(|m| is_count(m) || NUMBER_WORDS.contains(m))
+            && words.get(i + 3).is_some_and(|u| is_unit(u))
+        {
+            return Some(words[i..=i + 3].join(" "));
+        }
+        // "30-minute", "2-3-week"
+        if let Some((count, unit)) = w.rsplit_once('-')
+            && is_count(count)
+            && is_unit(unit)
         {
             return Some(w.to_owned());
         }
     }
     None
+}
+
+/// A digit string or a digit range such as `2-3`.
+fn is_count(w: &str) -> bool {
+    let all_digits = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit());
+    match w.split_once('-') {
+        Some((a, b)) => all_digits(a) && all_digits(b),
+        None => all_digits(w),
+    }
 }
 
 pub fn find_money(text: &str) -> Option<String> {
@@ -776,9 +798,42 @@ mod tests {
     }
 
     #[test]
+    fn pronoun_i_and_article_a_are_not_teeth() {
+        assert!(tooth_mentions("How should I care for the tooth I had treated?").is_empty());
+        assert!(tooth_mentions("Is this tooth A concern?").is_empty());
+        assert_eq!(
+            tooth_mentions("The baby tooth I is loose."),
+            vec![ToothRef::Primary('I')]
+        );
+        assert_eq!(
+            tooth_mentions("Tooth #A is loose."),
+            vec![ToothRef::Primary('A')]
+        );
+        assert_eq!(
+            tooth_mentions("Teeth K and L are next."),
+            vec![ToothRef::Primary('K'), ToothRef::Primary('L')]
+        );
+    }
+
+    #[test]
     fn blocks_timing_money_and_risky_language() {
         assert_eq!(one("This takes two visits.", &["fact:p1"]), vec!["V7"]);
         assert_eq!(one("Recovery takes 3 days.", &["fact:p1"]), vec!["V7"]);
+        for timing in [
+            "The visit lasts about 90 minutes.",
+            "Avoid chewing for 24 hours.",
+            "Call within 48 hours if it hurts.",
+            "The crown is checked after 12 months.",
+            "Healing takes 2-3 weeks.",
+            "Healing takes 2 to 3 weeks.",
+            "Plan for one or two visits.",
+            "It is a 30-minute visit.",
+            "Expect a 2-3-week wait.",
+        ] {
+            assert_eq!(one(timing, &["fact:p1"]), vec!["V7"], "{timing}");
+        }
+        assert!(one("Tooth 30 gets a crown.", &["fact:p1"]).is_empty());
+        assert!(one("Tooth #30 is on the lower right.", &["fact:p1"]).is_empty());
         assert_eq!(one("It costs $460.", &["fact:p1"]), vec!["V8"]);
         assert_eq!(
             one("You have decay in this tooth.", &["fact:p1"]),

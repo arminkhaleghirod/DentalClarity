@@ -12,6 +12,11 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+/// Per-call timeout for calls without hidden reasoning.
+pub const TIMEOUT: Duration = Duration::from_secs(45);
+/// Per-call timeout for calls with hidden reasoning, which can think for a
+/// minute or more before the reply starts.
+pub const REASONING_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct OpenRouter {
     client: reqwest::Client,
@@ -20,6 +25,8 @@ pub struct OpenRouter {
     routing: serde_json::Value,
     /// Sampling seed sent with every request, when set. The app leaves it unset.
     seed: Option<u64>,
+    /// Replaces both default timeouts when set.
+    timeout: Option<Duration>,
 }
 
 /// Provider routing sent with every text request.
@@ -53,9 +60,8 @@ impl std::fmt::Debug for OpenRouter {
 impl OpenRouter {
     pub fn new(policy: ProviderPolicy, api_key: String) -> Result<Self> {
         policy.check_openrouter()?;
+        // The timeout is set per request; see [`OpenRouter::timeout_for`].
         let client = reqwest::Client::builder()
-            // Calls normally finish well inside this; a stuck call is retried.
-            .timeout(Duration::from_secs(45))
             .build()
             .map_err(|e| AiError::Request(e.to_string()))?;
         Ok(Self {
@@ -64,6 +70,7 @@ impl OpenRouter {
             api_key,
             routing: default_routing(crate::defaults::DEMO_PROVIDER_ORDER),
             seed: None,
+            timeout: None,
         })
     }
 
@@ -75,14 +82,21 @@ impl OpenRouter {
         self
     }
 
-    /// Replaces the per-request timeout (45 seconds by default). Used by
-    /// ClarityEval for single calls that write much more than one section.
+    /// Replaces the per-request timeout ([`TIMEOUT`], or [`REASONING_TIMEOUT`]
+    /// for reasoning calls). Used by ClarityEval for single calls that write
+    /// much more than one section.
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self> {
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| AiError::Request(e.to_string()))?;
+        self.timeout = Some(timeout);
         Ok(self)
+    }
+
+    /// The timeout for one request.
+    pub fn timeout_for(&self, request: &TextRequest) -> Duration {
+        self.timeout.unwrap_or(if request.reasoning.is_some() {
+            REASONING_TIMEOUT
+        } else {
+            TIMEOUT
+        })
     }
 
     /// Replaces the provider routing policy.
@@ -151,15 +165,26 @@ impl TextModel for OpenRouter {
             });
         }
 
+        let timeout = self.timeout_for(&request);
+        // A timed-out call may still be billed, so it is reported as a
+        // response that came back unusable, not as a failed request.
+        let timed_out = || AiError::BadResponse(format!("no reply within {} s", timeout.as_secs()));
         let started = Instant::now();
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
+            .timeout(timeout)
             .json(&body)
             .send()
             .await
-            .map_err(|e| AiError::Request(e.without_url().to_string()))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    timed_out()
+                } else {
+                    AiError::Request(e.without_url().to_string())
+                }
+            })?;
 
         let status = response.status();
         if status.as_u16() == 429 || status.as_u16() == 402 {
@@ -169,10 +194,13 @@ impl TextModel for OpenRouter {
             return Err(AiError::Request(format!("HTTP {status}")));
         }
 
-        let parsed: ChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AiError::BadResponse(e.to_string()))?;
+        let parsed: ChatResponse = response.json().await.map_err(|e| {
+            if e.is_timeout() {
+                timed_out()
+            } else {
+                AiError::BadResponse(e.without_url().to_string())
+            }
+        })?;
         let content = parsed
             .choices
             .into_iter()
@@ -204,6 +232,24 @@ mod tests {
     fn cannot_be_built_in_clinical_mode() {
         let result = OpenRouter::new(ProviderPolicy::for_mode(Mode::Clinical), "key".into());
         assert!(matches!(result, Err(AiError::NotAllowed { .. })));
+    }
+
+    #[test]
+    fn reasoning_calls_get_a_longer_timeout() {
+        let adapter = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), "key".into()).unwrap();
+        let mut request = TextRequest {
+            model: "m".into(),
+            messages: vec![],
+            response_schema: None,
+            max_tokens: 10,
+            temperature: 0.0,
+            reasoning: None,
+        };
+        assert_eq!(adapter.timeout_for(&request), TIMEOUT);
+        request.reasoning = Some(crate::ReasoningEffort::High);
+        assert_eq!(adapter.timeout_for(&request), REASONING_TIMEOUT);
+        let adapter = adapter.with_timeout(Duration::from_secs(240)).unwrap();
+        assert_eq!(adapter.timeout_for(&request), Duration::from_secs(240));
     }
 
     #[test]

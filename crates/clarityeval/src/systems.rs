@@ -60,13 +60,18 @@ impl Params {
             max_repairs: pipeline::MAX_REPAIRS,
             parallel_sections: pipeline::PARALLEL_SECTIONS,
             seed: None,
-            timeout_s: Some(PIPELINE_TIMEOUT_S),
+            timeout_s: Some(
+                if reasoning.is_some() {
+                    dc_ai::openrouter::REASONING_TIMEOUT
+                } else {
+                    dc_ai::openrouter::TIMEOUT
+                }
+                .as_secs(),
+            ),
         }
     }
 }
 
-/// The app adapter's own per-call timeout; the pipeline keeps it.
-pub const PIPELINE_TIMEOUT_S: u64 = 45;
 /// The baseline writes a whole presentation in one call, so it gets longer.
 pub const BASELINE_TIMEOUT_S: u64 = 240;
 pub const JUDGE_TIMEOUT_S: u64 = 120;

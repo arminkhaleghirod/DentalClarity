@@ -184,6 +184,17 @@ impl Budget {
     }
 }
 
+/// Spend to record for one finished call. A call that timed out or came back
+/// unusable was still sent and may be billed without a usage report, so it is
+/// counted at its worst-case reservation. Refused or failed requests cost nothing.
+fn billed_cost(result: &dc_ai::Result<TextResponse>, reservation: f64) -> Option<f64> {
+    match result {
+        Ok(response) => Some(usage_cost(&response.usage)),
+        Err(AiError::BadResponse(_)) => Some(reservation),
+        Err(_) => None,
+    }
+}
+
 /// A text model whose calls are checked against and counted in the budget.
 pub struct BudgetedModel {
     inner: Arc<dyn TextModel>,
@@ -212,8 +223,8 @@ impl TextModel for BudgetedModel {
         }
         let result = self.inner.generate(request).await;
         self.budget.release(reservation);
-        if let Ok(response) = &result
-            && let Err(err) = self.budget.record(usage_cost(&response.usage)).await
+        if let Some(cost) = billed_cost(&result, reservation)
+            && let Err(err) = self.budget.record(cost).await
         {
             tracing::warn!(%err, "could not record model spend");
         }
@@ -350,6 +361,50 @@ mod tests {
             model.generate(request()).await,
             Err(AiError::Limited(_))
         ));
+    }
+
+    struct Failing(fn() -> AiError);
+
+    #[async_trait]
+    impl TextModel for Failing {
+        fn provider(&self) -> &'static str {
+            "failing"
+        }
+        async fn generate(&self, _: TextRequest) -> dc_ai::Result<TextResponse> {
+            Err((self.0)())
+        }
+    }
+
+    #[tokio::test]
+    async fn billed_failures_are_counted_at_the_reservation() {
+        let db = open_in_memory().await.unwrap();
+        let budget = Arc::new(Budget::new(db.clone(), Some(1.0)));
+        let timed_out = BudgetedModel {
+            inner: Arc::new(Failing(|| {
+                AiError::BadResponse("no reply within 120 s".into())
+            })),
+            budget: budget.clone(),
+        };
+        assert!(timed_out.generate(request()).await.is_err());
+        let (cost, calls): (f64, i64) = sqlx::query_as("SELECT cost_usd, calls FROM ai_usage")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(calls, 1);
+        // "hello" is one token by the estimate, plus the 1000-token output cap.
+        assert!((cost - estimate_cost(1, 1000)).abs() < 1e-12, "{cost}");
+
+        let refused = BudgetedModel {
+            inner: Arc::new(Failing(|| AiError::Request("HTTP 503".into()))),
+            budget: budget.clone(),
+        };
+        assert!(refused.generate(request()).await.is_err());
+        let (calls,): (i64,) = sqlx::query_as("SELECT calls FROM ai_usage")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(budget.reserved(), 0.0);
     }
 
     #[test]
