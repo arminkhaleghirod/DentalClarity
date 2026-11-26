@@ -66,7 +66,7 @@ impl SectionRecord {
         serde_json::from_value(json).expect("section records mirror section results")
     }
 
-    fn transport_error(&self) -> bool {
+    pub fn transport_error(&self) -> bool {
         self.reasons
             .iter()
             .any(|r| r.contains("could not be reached"))
@@ -952,6 +952,8 @@ pub fn case_passed(metrics: &[Metric]) -> bool {
 pub fn critical_failures(metrics: &[Metric]) -> usize {
     metrics.iter().filter(|m| m.critical).count()
 }
+
+pub mod visible;
 
 #[cfg(test)]
 mod tests;

@@ -18,6 +18,8 @@ pub struct OpenRouter {
     base_url: String,
     api_key: String,
     routing: serde_json::Value,
+    /// Sampling seed sent with every request, when set. The app leaves it unset.
+    seed: Option<u64>,
 }
 
 /// Provider routing sent with every text request.
@@ -61,7 +63,26 @@ impl OpenRouter {
             base_url: DEFAULT_BASE_URL.to_owned(),
             api_key,
             routing: default_routing(crate::defaults::DEMO_PROVIDER_ORDER),
+            seed: None,
         })
+    }
+
+    /// Sends `seed` with every request. With `require_parameters` routing this
+    /// limits the call to providers that accept a seed, so callers decide
+    /// per model whether to set it. Used by ClarityEval; the app never sets it.
+    pub fn with_seed(mut self, seed: Option<u64>) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Replaces the per-request timeout (45 seconds by default). Used by
+    /// ClarityEval for single calls that write much more than one section.
+    pub fn with_timeout(mut self, timeout: Duration) -> Result<Self> {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| AiError::Request(e.to_string()))?;
+        Ok(self)
     }
 
     /// Replaces the provider routing policy.
@@ -117,6 +138,9 @@ impl TextModel for OpenRouter {
             "usage": { "include": true },
             "provider": self.routing,
         });
+        if let Some(seed) = self.seed {
+            body["seed"] = json!(seed);
+        }
         if let Some(effort) = request.reasoning {
             body["reasoning"] = json!({ "effort": effort });
         }

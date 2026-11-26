@@ -6,12 +6,17 @@
 //! the report writer ([`report`]). Scorers are pure and unit-tested; only
 //! `run` touches the network.
 
+pub mod baseline;
 pub mod case;
+pub mod dryrun;
+pub mod judge;
 pub mod lint;
 pub mod meta;
 pub mod report;
 pub mod runner;
 pub mod score;
+pub mod stats;
+pub mod systems;
 
 use std::path::{Path, PathBuf};
 

@@ -176,7 +176,9 @@ pub fn build(
     }
 }
 
-fn facts_block(sheet: &FactSheet, level: ReadingLevel) -> String {
+/// The `<facts>` block every section prompt starts with. ClarityEval's
+/// baseline and judge prompts reuse it so all systems see the same facts.
+pub fn facts_block(sheet: &FactSheet, level: ReadingLevel) -> String {
     let mut out = String::from("<facts>\n");
     let audience = serde_json::to_value(sheet.age_band).ok();
     let _ = writeln!(

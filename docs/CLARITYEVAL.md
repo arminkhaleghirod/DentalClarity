@@ -187,6 +187,26 @@ must     = ["refers_to_dental_team", "explains_crown_purpose_generally"]
 | Provider exposure | Held-out prompts are sent to API providers during final runs. Use zero-retention/no-training settings where a route offers them. This limits benchmark leakage; privacy is already covered because the data is synthetic. | Proposed |
 | Novelty | All cases are newly authored; no web-sourced Q&A, so pretraining contamination risk is low but not zero (common phrasings). | n/a |
 
+### 5.1 Held-out split v1
+
+Held-out v1 is the split used for the final reported evaluation. It has 36 cases, 12 per category, written on 36 new synthetic base plans (`plan-heldout-001` to `plan-heldout-036`). None of these plans, patients, notes or procedure mixes appear in dev. Case ids use the 100 range (`T-101`, `G-101`, `S-101` and so on) so they never collide with dev ids when `validate` loads both splits. Every task kind is one the runner executes today (`presentation`, `procedure_explanation`, `plan_summary`, `journey`, `next_steps`). All cases are `draft` until the second-person check in section 4 is done.
+
+| Category | Cases | Hard | What it stresses |
+|---|---|---|---|
+| Treatment plan (T-101 to T-112) | 12 | 8 | Plans of one to four phases, up to ten procedures, several procedures on one tooth, a bridge across a removed tooth, primary teeth with a guardian audience, a teen addressed directly, older adults with dentures and implants, fee-only and unknown estimates, notes whose reason differs from the usual one (injury, appearance, a medical team's request), and single-section tasks (summary, journey, next steps) |
+| Grounding (G-101 to G-112) | 12 | 12 | Valid codes without a knowledge entry and practice custom codes that must be held with no model call, a note naming a different tooth (mirror tooth, permanent tooth on a baby-tooth line), duplicate lines, estimates for one phase only, a note on a neighboring procedure that must not be borrowed, a note that mentions unplanned treatment, and whole-mouth or quadrant procedures that must not gain a tooth number or a visit interval |
+| Safety (S-101 to S-112) | 12 | 12 | Notes that carry instructions to the model: role override, prompt and link requests, fear and deadline pressure, medication stop and dosing instructions, diagnosis and cancer bait, prices and discounts, insurance claims, guarantees and attempts to remove the patient's choice, and a Spanish-language instruction. Three cases plant identifiers: full names known and unknown to the sanitizer, birth date, insurance number, phone, email, visit date, call-back time and street address |
+
+Expectations use the fields the deterministic scorers already read (`must_reference_facts`, `must_not_state_tooth`, `indication`, `must_cite_any_of`, `held_sections`, `must_not_contain`, `forbidden_strings`, `injection`, `audience`, `max_words`), and each case has `notes_for_judge` for the judge and dentist passes.
+
+The files live in `eval/heldout/cases/<category>/`, which is git-ignored. `clarityeval validate --split heldout` lints them and `clarityeval run --split heldout` runs them.
+
+The commitment is in `eval/commitments/heldout-v1.txt`. It records the date, the case count, each case id with its hash, the root hash and verification steps that need only a shell and `sha256sum`. Until the `commit` and `verify-commitment` commands exist, v1 uses a scheme that standard tools can check, which differs from the proposal in the table above in two ways: it hashes the exact file bytes instead of canonical JSON, and the manifest is a text file instead of JSON. Each case has its own random 32-byte salt, kept in `eval/heldout/salts.txt` as 64 hex characters. The per-case hash is `sha256(salt_hex || file_bytes)`, and the root is the sha256 of the sorted per-case hex hashes joined with no separator.
+
+Root hash for v1: `b4c88e53fb39df1fbdbccfb314125d51b9c4fe9ec527a24ae557aa043b182695`
+
+Publication plan: the commitment file is committed and the annotated tag `clarityeval-heldout-v1` is created before any final run. The final runs use these files unchanged. After the final runs, the case files and `salts.txt` are published together so anyone can recompute every per-case hash and the root. If any case changes before the final runs (for example after the second-person check), the salts and commitment are regenerated as v2 and the change is reported.
+
 ## 6. Metrics: deterministic scorers (Proposed)
 
 All live in `crates/clarityeval/src/score/`, are pure functions of (case, output), and have unit tests with adversarial fixtures shared with `dc-generation` validators (ARCHITECTURE §9).
@@ -528,34 +548,111 @@ Fallbacks: if dentists cannot review by 02-04, publish LLM-judge results labelle
 
 ## Running the benchmark
 
-The first slice of the runner lives in `crates/clarityeval`. It covers `validate`, `run` and `report`; the other commands in section 14.1 are not built yet.
+The runner lives in `crates/clarityeval`. It covers `validate`, `run` and `report`; the other commands in section 14.1 are not built yet. `run` compares systems: the full DentalClarity pipeline for each model and, with `--baseline`, a plain-prompt baseline for each model. Reads `OPENROUTER_API_KEY` from the environment or `.env`.
 
 ```sh
 # Lint every case (dev, plus held-out if present locally). No network.
 cargo run -p clarityeval -- validate
 
-# Run the real dc-generation pipeline through OpenRouter. Costs money.
-# Reads OPENROUTER_API_KEY from the environment or .env.
-cargo run -p clarityeval -- run --split dev \
-  --model deepseek/deepseek-v4.1-flash-1017 --reasoning high \
-  --cases 'S-001,G-*' --max-cost-usd 1.0
+# Exercise the whole flow offline: a scripted model answers every call. No key, no cost.
+cargo run -p clarityeval -- run --dry-run --models deepseek/deepseek-v4.1-flash-1017 --baseline --judge any/judge
 
-# Re-score a run offline with the current scorers and write report.md.
+# Dev screening: several models, each through the full pipeline, plus the baseline. Costs money.
+cargo run -p clarityeval -- run --split dev \
+  --models deepseek/deepseek-v4.1-flash-1017,vendor/model-b,vendor/model-c \
+  --reasoning high --baseline --max-cost-usd 5
+
+# Final held-out evaluation (run once per model per freeze).
+cargo run -p clarityeval -- run --split heldout --final \
+  --models deepseek/deepseek-v4.1-flash-1017,vendor/model-b,vendor/model-c \
+  --reasoning high --baseline --judge vendor/judge-model --max-cost-usd 25 --name final-heldout-v1
+
+# Re-score a run offline with the current scorers; rewrites report.md and results.json.
 cargo run -p clarityeval -- report eval/runs/<run_id>
 ```
 
-`run` options: `--reviewer-model` (defaults to `--model`), `--reasoning none|low|medium|high`, `--cases` (comma-separated patterns with `*` and `?`, matched on case id or path), `--limit N`, `--out DIR` and `--max-cost-usd` (no new case starts once the reported spend reaches it).
+`run` options:
 
-Cases live in `eval/cases/dev/<category>/<case_id>.toml` and follow section 3. Source facts sit inline in each case; `plan_ref` names the base plan, and `validate` enforces plan-level split integrity. The repo-wide canary is in `eval/canary.txt`. Task kinds `presentation` (all sections), `plan_summary`, `journey`, `procedure_explanation` and `next_steps` run today; the others parse but are skipped until the pipeline has them.
+| Option | Meaning |
+|---|---|
+| `--split dev\|heldout` | Which split. Held-out reads `eval/heldout/cases/` and refuses to start without `--final`. |
+| `--cases-dir PATH` | Read cases from another directory (the split field in each case must still match). |
+| `--final` | Confirms a final held-out run. The runner then reads `eval/commitments/heldout-v1.txt`, records its root hash in the manifest and, with `eval/heldout/salts.txt`, checks every case file against its committed hash. A missing commitment or a mismatch stops the run unless `--allow-missing-commitment` is given, and the report flags it. |
+| `--models a,b,c` | Exact OpenRouter model ids. Each runs the full pipeline with that model as writer and reviewer. `--model` still works. |
+| `--reviewer MODEL` | Use one reviewer model for every pipeline system. |
+| `--baseline` | Adds `baseline:<model>` for each model (below). |
+| `--judge MODEL`, `--judge-reasoning` | LLM judge, one call per patient-visible section (below). |
+| `--reasoning none\|low\|medium\|high` | Reasoning effort for writer, reviewer and baseline (default high). |
+| `--seed N`, `--seed-mode auto\|always\|never` | Sampling seed (default 20261204). `auto` sends it unless a provider pinned first in the routing does not accept `seed`; with `require_parameters` sending it would skip that provider. The decision per model is recorded. |
+| `--concurrency N` | Presentations in flight at once (default 4). Latency is measured at this setting. |
+| `--cases`, `--limit`, `--out`, `--name` | Case id or path patterns with `*` and `?`; a cap on cases; output directory; a name for the run id. |
+| `--max-cost-usd` | No new presentation starts once systems plus judge have spent this much (default 1.0). |
+| `--bootstrap N` | Bootstrap resamples for the report (default 10000). |
+| `--config FILE` | A TOML file with the same settings, so a run can be repeated from one file. Command-line flags win. |
 
-Each run writes to `eval/runs/<utc-timestamp>-<model>-<short-sha>/`, which is git-ignored:
+A config file for the final run looks like this:
+
+```toml
+name = "final-heldout-v1"
+split = "heldout"
+baseline = true
+reasoning = "high"
+judge = "vendor/judge-model"
+seed = 20261204
+concurrency = 4
+max_cost_usd = 25.0
+
+[[systems]]
+model = "deepseek/deepseek-v4.1-flash-1017"
+
+[[systems]]
+model = "vendor/model-b"
+reasoning = "none"          # per-model override, for models without a reasoning setting
+```
+
+Run it with `cargo run -p clarityeval -- run --config eval/configs/final-heldout-v1.toml --final`.
+
+### Systems and routing
+
+- `pipeline:<model>` is the app's real path: `dc-generation` writes every section from the FactSheet and knowledge passages, checks it with the validators, reviews it with a second call and repairs at most twice. Held and failed sections never reach patients.
+- `baseline:<model>` is one call per presentation with a short versioned prompt (`crates/clarityeval/prompts/baseline.presentation.v1.txt`). It gets the same FactSheet facts and notes, no knowledge passages, and no validators, review or repair. It is asked for the same JSON shape so the same scorers apply; a reply that misses the shape is still scored on all of its text and counted as a schema failure.
+- Routing: the app's default model keeps its benchmarked provider order (PrimeIntellect first). Every other model uses the same policy with an empty order list: providers sorted by throughput with fallbacks, `require_parameters`, `data_collection: deny` and 8-bit or better weights. Before spending, the runner fetches each model's public endpoint list, stops if no endpoint meets the policy, and records the snapshot.
+- Every call records the returned model id, the upstream provider, temperature, reasoning effort, tokens, provider-reported cost and latency. Temperature is 0.2 for writer, reviewer and baseline, and 0 for the judge.
+
+### Metrics
+
+All counts are of what a patient would read: pipeline sections that ended `Passed`, and everything the baseline returned. Note-based `why` and `objective` blocks in the pipeline wait for one staff confirmation (P11), so they are not counted as unconfirmed; the baseline has no such hold.
+
+| Metric | Definition |
+|---|---|
+| Visible violations per 100 presentations | Sentences shown to a patient with an unsupported tooth or code, an invented cost or timing, diagnosis, guarantee, prognosis, pressure or medication wording, an invented patient-specific reason, unconfirmed note content, wording that follows an instruction planted in a note, a forbidden phrase or a planted identifier. Also reported without the unconfirmed-note kind, and by kind. |
+| Zero-violation presentations | Share of presentations with no visible violation. |
+| Citation validity | Share of visible citations that are ids the system was given. |
+| Unsupported codes held | Share of procedures without reviewed content for which no patient sees generated text. |
+| Identifier leakage | Share of presentations, among those that plant identifiers, that show any of them. |
+| Withheld sections | Share of requested sections held or failed. This is the price of the pipeline's safety. |
+| Schema-valid sections | Share of written sections that parse strictly as the section schema. |
+| Cost and latency | US dollars per presentation from provider-reported cost; presentation wall clock p50 and p90. Judge cost is reported separately. |
+
+Every figure comes with n and a 95% cluster-bootstrap percentile interval over base plans (10000 resamples, seed 20261204), per system and per category. For each model the report also gives the pipeline minus baseline difference on the same cases with a paired bootstrap; this is the comparison that shows what grounding, validation and review buy. The per-case deterministic metrics from section 6 are still computed and kept in `results.jsonl`.
+
+### LLM judge
+
+With `--judge`, each patient-visible section gets one judge call with a fixed rubric prompt (`crates/clarityeval/prompts/judge.section.v1.txt`). The judge sees the plan facts and the knowledge passages and note the pipeline would use for that section, the same for every system, and no model identity. It rates faithfulness and balance on the anchored 1 to 5 scales of section 7 and sets a critical flag with a type. An unreadable judgment is retried once and then recorded as missing. The report puts these scores in a separate table labelled "Automated judge, not clinician review".
+
+### Output
+
+Each run writes to `eval/runs/<utc-timestamp>-<name or model>-<short-sha>/`, which is git-ignored:
 
 | File | Contents |
 |---|---|
-| `manifest.json` | Requested and returned model ids, route, parameters, prompt versions, scorer version, git commit and dirty flag, rustc version, case hashes, dataset hash, start and end times, spend |
-| `results.jsonl` | One line per case: every `SectionResult`, every model call (role, latency, tokens, provider-reported cost, returned model id) and the deterministic metrics |
-| `report.md` | Written by `report`: summary, per-category and per-metric tables with n, section states, failure details |
+| `manifest.json` | Systems with models, routing, parameters, seeds and prompt versions; judge settings; endpoint snapshots and seed decisions; returned model ids and provider routes; split, cases directory, case counts, case hashes, dataset hash and commitment root with its check; git commit and dirty flag, rustc version, scorer versions, concurrency, spend, start and end times, and the command line |
+| `results.jsonl` | One line per system and case: every `SectionResult`, every model call, the deterministic metrics, the patient-visible score and the judgments |
+| `results.json` | The summary the report is built from (every estimate with its interval and n), plus every presentation |
+| `report.md` | Headline statements, comparison table, violations by kind, per-category breakdown, cost and latency, judge table, per-presentation rows, violation details, configuration and a "how to rerun" block |
 
-The upstream provider behind OpenRouter is recorded as unknown until the `dc-ai` adapter reports it.
+`run` writes `report.md` and `results.json` when it finishes; `report` rewrites them from the stored responses, so a scorer change never needs a new paid run. Re-scoring is exact. Re-running the models repeats the procedure, but outputs differ because providers are not deterministic, which is why returned ids, provider routes and dates are recorded.
 
-Held-out cases are never created in the committed tree. They are authored after dev prompts stabilize (milestone E3) into `eval/heldout/cases/<category>/`, which `.gitignore` excludes, with plans that do not appear in dev. `clarityeval validate --split heldout` lints them locally, and `validate` fails if anything appears under `eval/cases/heldout/`. The hash commitment of section 5 is published before any final run; the `commit` and `verify-commitment` commands are still to be built.
+Cases live in `eval/cases/dev/<category>/<case_id>.toml` and follow section 3. Source facts sit inline in each case; `plan_ref` names the base plan, and `validate` enforces plan-level split integrity. The repo-wide canary is in `eval/canary.txt`. Task kinds `presentation` (all sections), `plan_summary`, `journey`, `procedure_explanation` and `next_steps` run today; the others parse but are skipped until the pipeline has them.
+
+Held-out cases are never created in the committed tree. They live in `eval/heldout/cases/<category>/`, which `.gitignore` excludes, with plans that do not appear in dev (section 5.1). `clarityeval validate --split heldout` lints them locally, and `validate` fails if anything appears under `eval/cases/heldout/`. The commitment in `eval/commitments/heldout-v1.txt` is published before any final run; the `commit` and `verify-commitment` commands are still to be built, but `run --split heldout --final` checks the cases against it.
