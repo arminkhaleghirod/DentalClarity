@@ -84,7 +84,7 @@ Patient data reaches a `TextRequest` only through `dc-generation::prompt::FactSh
 | Tooth | `ToothRef` (`Permanent(n)`, `Primary(c)`, `Quadrant`, `Arch`, `None`) and surfaces | |
 | Phase | ordinal `ph1..phN` and its member refs | the practice's phase label stays local |
 | Status | `planned` or `completed`, only if reliably represented (TBD, verify in M2) | |
-| Linked clinical note | sanitized excerpt per procedure (below) | only if P11 is enabled |
+| Linked clinical note | sanitized excerpt per procedure (below) | yes (P11) |
 | KB passages | text and `SourceId` for this plan's categories | |
 | Audience | `age_band` (`child`, `teen`, `adult`, `older_adult`) and `guardian_audience: bool` | no exact age or DOB |
 | Language and reading level | BCP-47 tag; `simple`, `standard` or `detailed` | |
@@ -97,7 +97,7 @@ Names (patient, guardian, provider, staff); PatNum or any PMS key; DOB or exact 
 
 ### Linked clinical note handling
 
-[P, depends on P11, which is still Proposed]
+[C, P11] The note-derived `why` block is held as `NeedsReview` until staff confirm it with one click; until then the patient sees the `common_reasons` wording.
 
 1. Selection: only notes the connector links to a planned procedure in this plan, never the full chart. Which OD table and column hold that link is TBD (verify in M2).
 2. Stripping (`notes::sanitize`, deterministic):
@@ -468,7 +468,7 @@ est_cost_micro_usd, reported_cost_micro_usd?
 
 ## Open questions for the owner
 
-1. P11 (use of linked clinical notes) is still Proposed. Without it, every `why` is `common_reasons`.
+1. P11 is confirmed. Open question: the exact staff confirmation wording in the editor.
 2. The reviewer pass roughly doubles model calls per section and may push past 90 s. ClarityEval should measure both with and without it.
 3. Q&A retention (30 days proposed for clinical) and whether Q&A gets an asynchronous reviewer.
 4. Which languages get curated lexicons after English and Spanish.

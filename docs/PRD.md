@@ -106,7 +106,7 @@ DentalClarity reads the plan the dentist already saved in Open Dental and turns 
 |---|---|---|---|---|
 | FR-GEN-01 | Create screen shows the selected plan read-only: phase, tooth, code, PMS description, fee, patient estimate, totals. | Values match the snapshot exactly, money formatted from integer cents. The screen states the values are read-only. | Must | C |
 | FR-GEN-02 | Language select defaults to the PMS preferred language if supported, else English; reading level defaults to Standard. | Fixture with Spanish preference preselects Spanish; unknown language code preselects English and shows "Preferred language not set". | Must | C |
-| FR-GEN-03 | If a clinical note linked to a planned procedure is used, the create screen shows which note excerpt will be used and says other notes stay on the server. | Only notes linked to planned procedures appear (P11, owner to confirm). With no note, the screen says "No clinical note linked; content will describe common reasons". | Should | P |
+| FR-GEN-03 | If a clinical note linked to a planned procedure is used, the create screen shows which note excerpt will be used and says other notes stay on the server. | Only notes linked to planned procedures appear (P11). With no note, the screen says "No clinical note linked; content will describe common reasons". | Should | P |
 | FR-GEN-04 | Generation runs as a server job with stages: import snapshot, match references, lock facts, write sections, review pass, assemble version. | `GET /api/staff/jobs/:id` returns current stage, per-section status and elapsed time. Stage names match UI_SPEC §4.9. | Must | C |
 | FR-GEN-05 | Jobs survive browser close and server restart. | Killing the server mid-"write sections" and restarting resumes from the last completed stage; already-written sections are not re-requested (call count assertion with FakeTextModel). | Must | C |
 | FR-GEN-06 | Patient-facing content never shows an unvalidated section. | A section with `ValidationState::Failed` or `NeedsReview` is excluded from Present and the booklet, and its slot shows the held-section state (UI_SPEC §6). | Must | C |
@@ -342,7 +342,7 @@ These stay open at the hackathon release. The setup wizard and README state that
 | Shared staff account (P7) | No individual attribution of edits, presents or Q&A review; may conflict with unique user identification requirements. | Individual accounts, per-user audit events, role separation. |
 | Clinician review of the knowledge base (D9) | Entries stay `unreviewed` until a dentist signs off. | Dentist sign-off workflow and recorded review status per entry. |
 | Provider agreements | Bedrock/Polly eligibility and a BAA are the practice's responsibility; eligibility alone is not compliance. | Practice-side BAA, region and logging configuration, verified per SECURITY.md. |
-| Clinical note use (P11) | Owner has not confirmed; notes may carry identifiers in free text. | Owner decision; redaction rules in AI_PIPELINE.md; evaluation of note handling. |
+| Clinical note use (P11) | Notes may carry identifiers or unrelated findings in free text. Staff confirm each note-derived block before patients see it. | Redaction rules in AI_PIPELINE.md; ClarityEval cases on note handling; clinician review of note-derived output. |
 | Retention and deletion | Q&A, analytics and audio retention defaults are TBD. | Documented defaults, deletion job, backup policy. |
 | Open Dental semantics | Table meanings are unverified for target versions. | M2 verification against a real install. || Language quality | Most languages are untested. | ClarityEval multilingual results and native-speaker review per language. |
 | Installer and service hardening | Windows service, firewall, TLS certificate handling are thin for the hackathon. | Security assessment by the practice; signed installer. |
@@ -366,7 +366,7 @@ Judging weights were reported as AI/ethics 25%, social impact 25%, coding/implem
 
 ## 11. Open questions
 
-- Owner confirmation of clinical note use (P11) and its exact display wording.
+- Exact display and staff confirmation wording for note-derived explanations (P11).
 - Pediatric threshold for guardian framing (proposed under 13).
 - Default N days for recommended patients; retention defaults for Q&A and analytics.
 - Speech model for demo narration: the owner confirmed `heygen/heygen-voice-1-turbo`, listed on OpenRouter as of 2026-11-25. Still to check in M5: the exact speech endpoint and audio format. Voice quality is judged in a listening test.

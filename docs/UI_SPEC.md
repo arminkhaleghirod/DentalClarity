@@ -226,7 +226,7 @@ Provenance label (C, DECISIONS U3): 11 px 600, padding 3/8, radius pill, top-rig
 | Label | Family | Icon | Meaning |
 |---|---|---|---|
 | Locked · from Open Dental | neutral, shown as a strip segment (§4.6) | lock 13 px | Snapshot fact; not editable |
-| From clinical note | neutral | none | Text derived from a linked clinical note (P11) |
+| From clinical note | neutral | none | Text derived from a linked clinical note (P11). Shows a "Looks right" confirm button until staff confirm it; held from patients until then |
 | AI-written · checked | ready | none | Model text that passed validation and review |
 | Edited by staff · 8:34 AM | changed | none | Staff changed it; time of last edit |
 
@@ -542,4 +542,4 @@ Held sections print the held-patient card text (§6). Untranslated content never
 - The mockup has no Present exit control, no reading-level control outside procedure detail, and no floating Ask button in t2. This spec adds all three.
 - The patient label is "Ask a question" everywhere in the UI.
 - The mockup loads fonts from Google Fonts; production self-hosts them (E8).
-- The at-a-glance note callout paraphrases the clinical note ("From Dr. Patel's notes"). Whether that text is labelled note-derived or AI-written in staff provenance depends on P11, which is not yet confirmed.
+- The at-a-glance note callout paraphrases the clinical note ("From Dr. Patel's notes"). Staff provenance labels it "From clinical note", and it needs the same one-click staff confirmation (P11).

@@ -72,7 +72,7 @@ Acceptance:
 ## M5 Editor, Present mode and narration
 
 Acceptance:
-- Editor with provenance labels, staff edits, revert and the checks panel.
+- Editor with provenance labels, staff edits, revert and the checks panel. Note-derived explanations need one staff confirmation before patients see them (P11).
 - Present button locks the staff session server-side. Exit needs the PIN in clinical mode and nothing in demo mode.
 - Patient screens: at a glance, procedures, costs, next steps.
 - Sentence-level narration with `heygen/heygen-voice-1-turbo` in demo mode, cached per sentence and invalidated by edits.

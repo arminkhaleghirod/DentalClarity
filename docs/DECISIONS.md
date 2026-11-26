@@ -18,7 +18,7 @@ Last updated: 2026-11-25
 | P8 | Leaving Present mode needs the staff PIN in clinical mode and nothing in demo mode. In both modes, the patient session is server-scoped to one presentation version. | Confirmed |
 | P9 | Reading levels: simple, standard, detailed. Broad language coverage via the model; untested languages are never described as validated. | Confirmed |
 | P10 | Narration highlighting is sentence-level: audio is generated per sentence and the active sentence is highlighted. No claims of word-accurate timing. | Confirmed |
-| P11 | The relevant clinical note tied to planned procedures may be used to explain "why your dentist recommended it" (shown as "From Dr. X's notes"). Only notes linked to planned procedures are used, never the full chart. With no note, the content says "common reasons" and does not invent a patient-specific reason. | Proposed (from design; owner to confirm) |
+| P11 | A clinical note linked to a planned procedure is used to explain "why your dentist recommended it" (shown as "From Dr. X's notes"). Only notes linked to planned procedures are used, never the chart history, and identifiers are stripped before the note reaches a model. The note-derived block is held from patients until staff confirm it with one click in the editor; until then the patient sees the common-reasons wording. With no linked note, the content describes common reasons and never invents a patient-specific one. | Confirmed (2026-11-25) |
 
 ## Providers and data
 

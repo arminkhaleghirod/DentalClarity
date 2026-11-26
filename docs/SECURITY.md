@@ -288,7 +288,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | G8 | Audit log integrity | append-only or hash-chained audit events, retention set by the practice |
 | G9 | Clinical content review | KB entries reviewed by a dentist (`review_status` not `unreviewed`) [C, D9]; validator and reviewer measured in ClarityEval |
 | G10 | Open Dental semantics | M2 verification complete for the deployed OD version, including note linkage |
-| G11 | Note handling | owner decision on P11; clinician review of note-derived output |
+| G11 | Note handling | staff confirmation per note-derived block (P11); clinician review of note-derived output |
 | G12 | Retention | practice-approved retention values configured |
 | G13 | Incident response | documented contact, breach-assessment procedure, log access |
 | G14 | Independent review | external security review or penetration test of the clinical build |
