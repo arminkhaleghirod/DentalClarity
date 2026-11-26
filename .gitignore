@@ -1,0 +1,31 @@
+# Build output
+/target/
+/crates/dc-web/dist/
+
+# Secrets and local configuration. Never commit API keys or credentials.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Local runtime data (databases, generated audio and PDFs)
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# ClarityEval held-out split stays out of git until final runs (see docs/CLARITYEVAL.md)
+/eval/heldout/
+/eval/runs/
+
+# Local working files
+/.local/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
