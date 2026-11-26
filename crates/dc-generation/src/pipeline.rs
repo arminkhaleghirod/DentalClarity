@@ -299,6 +299,27 @@ pub async fn section(
             Ok(v) => {
                 let critical = v.verdict == Verdict::Block
                     || v.issues.iter().any(|i| i.severity == Severity::Critical);
+                // Only safety findings may hold a section from patients:
+                // faithfulness, patient-specific claims, scope, balance and
+                // certainty (R1 to R5) at major or critical severity. Clarity
+                // and audience notes (R6, R7) and minor findings get one repair
+                // attempt, then the section passes with the note recorded.
+                let holds = critical || v.issues.iter().any(is_safety_finding);
+                if !holds && attempt >= 1 {
+                    result.attempt_log.push(format!(
+                        "attempt {}: reviewer notes accepted after a repair: {}",
+                        result.attempts,
+                        v.issues
+                            .iter()
+                            .map(|i| format!("{} {}", i.category, i.path))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                    result.state = SectionState::Passed;
+                    result.reasons.clear();
+                    result.output = Some(value);
+                    break;
+                }
                 result.reasons = v
                     .issues
                     .iter()
@@ -483,6 +504,23 @@ async fn call(
     Err(last.expect("at least one attempt"))
 }
 
+/// A reviewer finding that is about safety (R1 to R5) rather than style,
+/// at major or critical severity.
+fn is_safety_finding(issue: &crate::schema::ReviewIssue) -> bool {
+    let rubric: u32 = issue
+        .category
+        .trim()
+        .trim_start_matches(['R', 'r'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    // An unrecognized category is treated as a safety finding, to stay on the safe side.
+    let safety_category = rubric == 0 || (1..=5).contains(&rubric);
+    safety_category && issue.severity != Severity::Minor
+}
+
 fn add_usage(total: &mut Usage, more: &Usage) {
     total.input_tokens += more.input_tokens;
     total.output_tokens += more.output_tokens;
@@ -609,6 +647,23 @@ mod tests {
         assert_eq!(result.state, SectionState::Failed);
         assert!(result.output.is_none());
         assert!(result.reasons.iter().any(|r| r.contains("V11")));
+    }
+
+    #[tokio::test]
+    async fn clarity_notes_pass_after_one_repair() {
+        let style = json!({"verdict": "revise", "issues": [{"path": "/what_it_is/0", "category": "R6", "severity": "major", "explanation": "Unexplained abbreviation."}]}).to_string();
+        let result = run_procedure(
+            vec![good_procedure(), good_procedure()],
+            vec![style.clone(), style],
+        )
+        .await;
+        assert_eq!(
+            result.state,
+            SectionState::Passed,
+            "{:?}",
+            result.attempt_log
+        );
+        assert_eq!(result.attempts, 2);
     }
 
     #[tokio::test]

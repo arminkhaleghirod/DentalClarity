@@ -149,10 +149,32 @@ pub fn tooth_label(tooth: ToothRef, surfaces: &str) -> String {
         ToothRef::None => "no specific tooth".to_owned(),
         other => other.to_string(),
     };
-    if surfaces.is_empty() {
-        base
-    } else {
-        format!("{base}, surfaces {surfaces}")
+    match surface_words(surfaces) {
+        Some(words) => format!("{base}, {words}"),
+        None => base,
+    }
+}
+
+/// Tooth surfaces in plain words, so shorthand like "MO" never reaches a
+/// model that might copy it into patient text.
+pub fn surface_words(surfaces: &str) -> Option<String> {
+    let names: Vec<&str> = surfaces
+        .chars()
+        .filter_map(|c| match c.to_ascii_uppercase() {
+            'M' => Some("the side toward the front of the mouth"),
+            'D' => Some("the side toward the back of the mouth"),
+            'O' => Some("the chewing surface"),
+            'I' => Some("the biting edge"),
+            'B' => Some("the cheek side"),
+            'F' => Some("the outer side"),
+            'L' => Some("the tongue side"),
+            _ => None,
+        })
+        .collect();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!("on {one}")),
+        [rest @ .., last] => Some(format!("on {} and {last}", rest.join(", "))),
     }
 }
 
@@ -196,6 +218,19 @@ mod tests {
             !note.contains("Okafor") && !note.contains("Daniel"),
             "{note}"
         );
+    }
+
+    #[test]
+    fn surfaces_are_written_out() {
+        assert_eq!(
+            tooth_label(ToothRef::Permanent(14), "MO"),
+            "tooth 14, on the side toward the front of the mouth and the chewing surface"
+        );
+        assert_eq!(
+            tooth_label(ToothRef::Permanent(19), "O"),
+            "tooth 19, on the chewing surface"
+        );
+        assert_eq!(tooth_label(ToothRef::None, ""), "no specific tooth");
     }
 
     #[test]
