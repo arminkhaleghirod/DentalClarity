@@ -62,7 +62,10 @@ impl FactSheet {
             format!("ph{}", i + 1)
         };
 
-        let mut names: Vec<&str> = vec![snapshot.patient.first_name.as_str()];
+        let mut names: Vec<&str> = vec![
+            snapshot.patient.first_name.as_str(),
+            snapshot.patient.last_name.as_str(),
+        ];
         if let Some(provider) = &snapshot.provider_display_name {
             names.push(provider);
         }
@@ -180,6 +183,19 @@ mod tests {
         let note = sheet.procedures[0].note.as_deref().unwrap();
         assert!(note.contains("deep caries"));
         assert!(sheet.procedures[1].note.is_none());
+    }
+
+    #[test]
+    fn notes_lose_the_patients_full_name() {
+        let mut snapshot = daniel();
+        snapshot.procedures[0].note.as_mut().unwrap().text =
+            "Daniel Okafor reports pain on #30, deep caries into pulp, symptomatic, plan RCT then buildup and crown.".into();
+        let sheet = FactSheet::build(&snapshot, &kb());
+        let note = sheet.procedures[0].note.as_deref().unwrap();
+        assert!(
+            !note.contains("Okafor") && !note.contains("Daniel"),
+            "{note}"
+        );
     }
 
     #[test]

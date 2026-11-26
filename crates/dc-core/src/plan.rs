@@ -20,6 +20,9 @@ pub struct PlanKey(pub String);
 pub struct PatientContext {
     pub key: PatientKey,
     pub first_name: String,
+    /// Used only to strip the name from clinical notes before they reach a model.
+    #[serde(default)]
+    pub last_name: String,
     pub age_years: Option<u8>,
     /// BCP 47 tag of the language recorded in the PMS, if any.
     pub preferred_language: Option<String>,
@@ -127,6 +130,7 @@ mod tests {
             patient: PatientContext {
                 key: PatientKey("1".into()),
                 first_name: "Test".into(),
+                last_name: "Patient".into(),
                 age_years: Some(40),
                 preferred_language: None,
             },

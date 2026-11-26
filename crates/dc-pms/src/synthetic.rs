@@ -142,6 +142,7 @@ impl SyntheticConnector {
             patient: PatientContext {
                 key: PatientKey(patient.key.clone()),
                 first_name: patient.first_name.clone(),
+                last_name: patient.last_name.clone(),
                 age_years: patient.age,
                 preferred_language: patient.language.clone(),
             },

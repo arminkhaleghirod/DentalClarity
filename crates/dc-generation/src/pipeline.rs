@@ -23,12 +23,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// At most this many repair rounds per section, shared by validator and reviewer findings.
-const MAX_REPAIRS: usize = 2;
+pub const MAX_REPAIRS: usize = 2;
 /// Sections generated at the same time for one presentation.
-const PARALLEL_SECTIONS: usize = 12;
+pub const PARALLEL_SECTIONS: usize = 12;
 /// Room for hidden reasoning plus the JSON reply. Reasoning tokens count
 /// toward this limit, and a cut-off reply is unreadable.
-const MAX_OUTPUT_TOKENS: u32 = 24_000;
+pub const MAX_OUTPUT_TOKENS: u32 = 24_000;
+/// Sampling temperature for every writer and reviewer call.
+pub const TEMPERATURE: f32 = 0.2;
 
 #[derive(Clone)]
 pub struct Models {
@@ -154,7 +156,9 @@ pub async fn generate(
     }
 }
 
-async fn section(
+/// Runs one section through write, validate, review and repair. [`generate`]
+/// calls this for every section; ClarityEval calls it for single-section tasks.
+pub async fn section(
     kind: &SectionKind,
     sheet: &FactSheet,
     kb: &KnowledgeBase,
@@ -460,7 +464,7 @@ async fn call(
         messages,
         response_schema: Some(schema),
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.2,
+        temperature: TEMPERATURE,
         reasoning,
     };
     let mut last = None;

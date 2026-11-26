@@ -38,7 +38,7 @@ S0 snapshot -> S1 KB resolve -> S2 locked facts -> S3 prompt build
                          S8 assemble version -> S9 variants and narration
 ```
 
-The job state machine and restart recovery are in ARCHITECTURE section 5. Each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P]
+The job state machine and restart recovery are in ARCHITECTURE section 5. The design is that each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P] Implemented in M4 as a simplification: section results are written once, when the job finishes, and a job left `queued` or `running` at startup is re-run from the start. Live progress (`jobs.progress_json`) is written at most every 250 ms while the job runs. At most 2 jobs run at once across the server; later jobs wait as `queued`.
 
 ### Stage table
 
@@ -48,7 +48,7 @@ The job state machine and restart recovery are in ARCHITECTURE section 5. Each s
 | S1 KB resolve | procedure codes | `ProcedureCategory` and KB entry ids/versions per procedure | Unmapped code becomes `Unsupported`: no procedure text is generated, the section is `NeedsReview(UnsupportedProcedure)`, locked facts still show | Per procedure; in-memory, no I/O |
 | S2 Locked facts | snapshot, KB categories | `FactSheet`: opaque refs (`p1`, `ph1`), tooth refs, surfaces, phase ordinals, status, category names, pre-rendered cost blocks | Inconsistent source (for example a tooth on a whole-mouth code): `NeedsReview(SourceInconsistent)` on that procedure. The data is never "fixed" | Pure function |
 | S3 Prompt build | `FactSheet`, KB passages, sanitized notes, language, level, audience | One `TextRequest` per section, plus its `input_hash` (see [Sync](#sync)) | Allowlist violation is a programming error: panic in debug builds, job failure in release | Pure; `insta` snapshot tests |
-| S4 Section writers | `TextRequest` | Raw JSON per section | Transport: 3 retries with jittered backoff on timeout, 429 or 5xx. Non-JSON or schema mismatch goes to S7 as a repair | All sections in parallel; 4 per job, global semaphore [P] |
+| S4 Section writers | `TextRequest` | Raw JSON per section | Transport: 3 retries with jittered backoff on timeout, 429 or 5xx. Non-JSON or schema mismatch goes to S7 as a repair | All sections of a job at once (up to 12); at most 2 jobs run at a time. Each call times out after 90 s and is retried; the output cap is 24,000 tokens because hidden reasoning counts toward it [P] |
 | S5 Deterministic validate | parsed output, `FactSheet`, KB | `Vec<Issue>` | Any `Block` issue goes to S7 | Per section, as soon as S4 returns |
 | S6 AI review | output plus the same facts, notes and KB the writer saw | `ReviewVerdict` | Reviewer error or timeout after retries: `NeedsReview(ReviewUnavailable)` | Per section, after S5 passes |
 | S7 Repair | previous output and its issues | New raw JSON, back to S5 | At most 2 repair rounds per section [P]. Still failing: `Failed` (deterministic) or `NeedsReview` (reviewer only) | Per section |
@@ -218,7 +218,7 @@ All live in `dc-generation::validate`. Each returns `Issue { code, path, severit
 | V10 | No diagnosis | lexicon patterns such as "you have <condition>", "you are diagnosed", "this means you have" | Block |
 | V11 | No guarantees | "guarantee", "will definitely", "100%", "permanently fix", "never fail", "pain-free" | Block |
 | V12 | No individual prognosis | "your tooth will last/fail", "you will lose", "in N years" | Block |
-| V13 | No pressure or urgency | "act now", "don't wait", "immediately", "as soon as possible", "before it's too late", "limited time", "you must" | Block |
+| V13 | No pressure or urgency | "act now", "don't wait", "immediately", "as soon as possible", "before it's too late", "limited time", "you must". "Right away" is allowed because escalation advice uses it ("call the practice right away if bleeding does not stop") | Block |
 | V14 | No medication advice | drug and drug-class lexicon, dosage pattern `\d+ ?mg`, "take ..." imperatives | Block |
 | V15 | No URLs, HTML or Markdown | `<`, `>`, `](`, `http`, `www.`, backticks, leading `#` or `*` | Block |
 | V16 | Placeholders | only the allowed placeholders, well-formed `{{...}}`; translations keep the same multiset | Block |
@@ -450,6 +450,13 @@ est_cost_micro_usd, reported_cost_micro_usd?
 4. At 80% of the cap, new full generations stop; Q&A and on-demand translation of cached cases continue until 100%.
 5. A provider-side spending limit on the demo key is a second layer, if OpenRouter offers one (TBD, verify in M4).
 6. The ledger is in SQLite, so it survives restarts. Reservations older than 10 minutes are released.
+
+Implemented in M4:
+
+- The cap is `DC_DEMO_MONTHLY_BUDGET_USD` (default 25). Spend per UTC month is in the `ai_usage` table (`month`, `cost_usd`, `calls`), which survives restarts and is never purged with visitor data.
+- Every model call goes through a wrapper that reserves `price(input characters / 4 + max_output_tokens)` before the call and refuses it when spend plus reservations would pass the cap. Reservations are held in memory, so a restart releases them.
+- After a call, the recorded cost is the provider-reported cost when present, otherwise the token estimate. Until the dated price table exists, the estimate uses placeholder rates of $1 per million input tokens and $4 per million output tokens, chosen to err high.
+- At 80% of the cap, `POST /api/staff/presentations` answers `503` with code `budget_reached`. 503 was chosen over 402 because the refusal is about server capacity, not about anything the visitor can pay for. Each section row also stores its own tokens and cost.
 
 ## Measuring the 90 second target
 

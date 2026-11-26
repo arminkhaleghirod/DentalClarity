@@ -369,7 +369,7 @@ fn text(t: &str, cites: &[String], path: &str, cx: &Context, issues: &mut Vec<Is
 
 // Lexicons (English) --------------------------------------------------------
 
-const DIAGNOSIS: &[&str] = &[
+pub const DIAGNOSIS: &[&str] = &[
     "you have cancer",
     "you have an infection",
     "you have gum disease",
@@ -381,7 +381,7 @@ const DIAGNOSIS: &[&str] = &[
     "this means you have",
     "your diagnosis",
 ];
-const GUARANTEES: &[&str] = &[
+pub const GUARANTEES: &[&str] = &[
     "guarantee",
     "guaranteed",
     "will definitely",
@@ -398,7 +398,7 @@ const GUARANTEES: &[&str] = &[
     "last forever",
     "last a lifetime",
 ];
-const PROGNOSIS: &[&str] = &[
+pub const PROGNOSIS: &[&str] = &[
     "your tooth will last",
     "your tooth will fail",
     "you will lose",
@@ -407,7 +407,7 @@ const PROGNOSIS: &[&str] = &[
     "you will need dentures",
     "you will need an implant",
 ];
-const PRESSURE: &[&str] = &[
+pub const PRESSURE: &[&str] = &[
     "act now",
     "don't wait",
     "do not wait",
@@ -421,7 +421,7 @@ const PRESSURE: &[&str] = &[
     "don't delay",
     "do not delay",
 ];
-const MEDICATION: &[&str] = &[
+pub const MEDICATION: &[&str] = &[
     "ibuprofen",
     "acetaminophen",
     "paracetamol",
@@ -473,7 +473,7 @@ fn sentence_count(text: &str) -> usize {
 }
 
 /// Teeth written as `#30`, `tooth 30`, `teeth 14 and 19` or `tooth K`.
-fn tooth_mentions(text: &str) -> Vec<ToothRef> {
+pub fn tooth_mentions(text: &str) -> Vec<ToothRef> {
     let mut found = Vec::new();
     let mut after_tooth_word = false;
     for token in text.split_whitespace() {
@@ -503,7 +503,7 @@ fn tooth_mentions(text: &str) -> Vec<ToothRef> {
     found
 }
 
-fn cdt_codes(text: &str) -> Vec<String> {
+pub fn cdt_codes(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| {
             w.len() == 5 && w.starts_with('D') && w[1..].chars().all(|c| c.is_ascii_digit())
@@ -583,7 +583,8 @@ const CALENDAR: &[&str] = &[
     "december",
 ];
 
-fn find_timing(lower: &str) -> Option<String> {
+/// Expects lowercase text.
+pub fn find_timing(lower: &str) -> Option<String> {
     for word in CALENDAR {
         if contains_phrase(lower, word) {
             return Some((*word).to_owned());
@@ -616,7 +617,7 @@ fn find_timing(lower: &str) -> Option<String> {
     None
 }
 
-fn find_money(text: &str) -> Option<String> {
+pub fn find_money(text: &str) -> Option<String> {
     if let Some(pos) = text.find(['$', '€', '£']) {
         return Some(text[pos..].chars().take(10).collect());
     }
