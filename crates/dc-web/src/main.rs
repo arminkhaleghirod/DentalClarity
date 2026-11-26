@@ -37,9 +37,7 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
-    let session = SessionContext {
-        info: RwSignal::new(None),
-    };
+    let session = SessionContext::new();
     provide_context(session);
     api::on_session_lost(move || session.reload());
     session.reload();

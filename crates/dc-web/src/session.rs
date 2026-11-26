@@ -2,9 +2,10 @@
 
 use crate::api;
 use crate::icons::Logo;
+use crate::motion::restore_focus;
 use dc_core::Mode;
 use dc_core::api::{SessionInfo, SessionState, SetupRequest};
-use leptos::ev::SubmitEvent;
+use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::leptos_dom::helpers::set_interval_with_handle;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -14,23 +15,70 @@ use std::time::Duration;
 #[derive(Clone, Copy)]
 pub struct SessionContext {
     pub info: RwSignal<Option<Result<SessionInfo, api::Failure>>>,
+    /// Counts changes to `info` made here and unlock attempts. A session
+    /// read sent before the latest one answers for an older state, so its
+    /// reply is dropped, CSRF token and all.
+    seq: StoredValue<u64>,
 }
 
 impl SessionContext {
+    pub fn new() -> Self {
+        Self {
+            info: RwSignal::new(None),
+            seq: StoredValue::new(0),
+        }
+    }
+
+    fn bump(self) -> u64 {
+        self.seq.update_value(|s| *s += 1);
+        self.seq.get_value()
+    }
+
+    fn is_current(self, ticket: u64) -> bool {
+        self.seq.get_value() == ticket
+    }
+
     /// Re-reads the session. In demo mode a browser without a visitor
     /// session starts one automatically.
     pub fn reload(self) {
+        let ticket = self.bump();
         spawn_local(async move {
             let result = match api::session().await {
-                Ok(info) if info.state == SessionState::NewVisitor => api::visit().await,
-                other => other,
+                Ok(info) if info.state == SessionState::NewVisitor => {
+                    if !self.is_current(ticket) {
+                        return;
+                    }
+                    api::set_csrf(info.csrf_token);
+                    api::visit().await
+                }
+                Ok(info) => {
+                    if !self.is_current(ticket) {
+                        return;
+                    }
+                    api::set_csrf(info.csrf_token.clone());
+                    Ok(info)
+                }
+                Err(failure) => Err(failure),
             };
-            self.info.set(Some(result));
+            if self.is_current(ticket) {
+                self.set_result(result);
+            }
         });
     }
 
     pub fn set(self, info: SessionInfo) {
-        self.info.set(Some(Ok(info)));
+        self.set_result(Ok(info));
+    }
+
+    fn set_result(self, result: Result<SessionInfo, api::Failure>) {
+        self.bump();
+        self.info.set(Some(result));
+    }
+}
+
+impl Default for SessionContext {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -188,16 +236,30 @@ const MIN_PASSWORD_LEN: usize = 12;
 /// current one, which moves the gate to the workspace once the lock lifts.
 /// A failed read keeps the lock screen as it is rather than showing the
 /// "not reachable" page for one dropped request.
-fn recheck(session: SessionContext) {
+///
+/// `busy` belongs to the lock screen. No read starts while an unlock or a
+/// sign-out runs, and a reply is dropped when the screen has gone, when one
+/// of those started meanwhile, or when the session changed after the read
+/// was sent. Otherwise a read that crossed an unlock would put back the
+/// locked state and the CSRF token the unlock replaced.
+fn recheck(session: SessionContext, busy: RwSignal<bool>) {
+    if busy.try_get_untracked() != Some(false) {
+        return;
+    }
+    let ticket = session.seq.get_value();
     spawn_local(async move {
         let Ok(fresh) = api::session().await else {
             return;
         };
+        if busy.try_get_untracked() != Some(false) || !session.is_current(ticket) {
+            return;
+        }
         if fresh.state == SessionState::NewVisitor {
             // The visitor session is gone; start a new one as on first load.
             session.reload();
             return;
         }
+        api::set_csrf(fresh.csrf_token.clone());
         let changed = session.info.with_untracked(|current| {
             current.as_ref().and_then(|r| r.as_ref().ok()) != Some(&fresh)
         });
@@ -206,6 +268,12 @@ fn recheck(session: SessionContext) {
         }
     });
 }
+
+/// The lock screen's sign-out button, and the safe choice in its
+/// confirmation. Focus moves between them as the confirmation opens and
+/// closes, so it never falls to the page body.
+const LOCK_SIGN_OUT_ID: &str = "lock-sign-out";
+const LOCK_CANCEL_ID: &str = "lock-confirm-cancel";
 
 /// A friendly message for a refused unlock.
 fn unlock_message(failure: &api::Failure) -> String {
@@ -254,16 +322,17 @@ pub fn Locked(practice_name: String) -> impl IntoView {
     let demo = move || status.with(|s| s.is_some_and(|(mode, _)| mode == Mode::Demo));
     let ended = move || status.with(|s| s.is_some_and(|(_, ended)| ended));
 
-    if let Ok(handle) = set_interval_with_handle(move || recheck(session), LOCK_CHECK_EVERY) {
-        on_cleanup(move || handle.clear());
-    }
-    let focus = window_event_listener(leptos::ev::focus, move |_| recheck(session));
-    on_cleanup(move || focus.remove());
-
     let password = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let confirming = RwSignal::new(false);
+    let sign_out_error = RwSignal::new(None::<String>);
+
+    if let Ok(handle) = set_interval_with_handle(move || recheck(session, busy), LOCK_CHECK_EVERY) {
+        on_cleanup(move || handle.clear());
+    }
+    let focus = window_event_listener(leptos::ev::focus, move |_| recheck(session, busy));
+    on_cleanup(move || focus.remove());
 
     let unlock = move || {
         if busy.get_untracked() {
@@ -281,8 +350,14 @@ pub fn Locked(practice_name: String) -> impl IntoView {
         }
         busy.set(true);
         error.set(None);
+        // A session read already on its way now answers for the old state.
+        session.bump();
         spawn_local(async move {
-            match api::unlock(secret).await {
+            let result = api::unlock(secret).await;
+            if busy.try_get_untracked().is_none() {
+                return;
+            }
+            match result {
                 Ok(info) => {
                     // Cleared first: the new session unmounts this screen.
                     password.set(String::new());
@@ -292,10 +367,10 @@ pub fn Locked(practice_name: String) -> impl IntoView {
                     busy.set(false);
                     if failure.code == "not_locked" {
                         // Unlocked elsewhere in the meantime.
-                        recheck(session);
+                        recheck(session, busy);
                     } else {
                         if failure.code == "present_active" {
-                            recheck(session);
+                            recheck(session, busy);
                         }
                         error.set(Some(unlock_message(&failure)));
                     }
@@ -309,12 +384,45 @@ pub fn Locked(practice_name: String) -> impl IntoView {
     };
 
     let sign_out = move |_| {
+        if busy.get_untracked() {
+            return;
+        }
         busy.set(true);
+        sign_out_error.set(None);
         spawn_local(async move {
-            let _ = api::logout().await;
-            busy.set(false);
-            session.reload();
+            let result = api::logout().await;
+            if busy.try_set(false).is_some() {
+                return;
+            }
+            match result {
+                Ok(()) => session.reload(),
+                Err(failure) => {
+                    // Still signed in and still locked: say so, and keep
+                    // the choice open.
+                    sign_out_error.set(Some(failure.message));
+                    restore_focus(vec![LOCK_CANCEL_ID.into()]);
+                }
+            }
         });
+    };
+    let open_confirm = move |_| {
+        sign_out_error.set(None);
+        confirming.set(true);
+        restore_focus(vec![LOCK_CANCEL_ID.into()]);
+    };
+    let cancel_confirm = move || {
+        if busy.get_untracked() {
+            return;
+        }
+        confirming.set(false);
+        sign_out_error.set(None);
+        restore_focus(vec![LOCK_SIGN_OUT_ID.into()]);
+    };
+    let confirm_keydown = move |ev: KeyboardEvent| {
+        if ev.key() == "Escape" {
+            ev.prevent_default();
+            cancel_confirm();
+        }
     };
 
     let sign_out_area = move || {
@@ -325,21 +433,26 @@ pub fn Locked(practice_name: String) -> impl IntoView {
                 "Signing out ends the staff session on this browser. Sign in again with the staff password."
             };
             view! {
-                <div class="lock-confirm" role="group" aria-labelledby="lock-confirm-text">
+                <div class="lock-confirm" role="group" aria-labelledby="lock-confirm-text"
+                    on:keydown=confirm_keydown>
                     <p id="lock-confirm-text" class="lock-confirm-text">{warning}</p>
+                    <FormError error=sign_out_error />
                     <div class="lock-confirm-actions">
                         <button type="button" class="button small" disabled=move || busy.get()
-                            on:click=sign_out>"Sign out"</button>
-                        <button type="button" class="button small text"
-                            on:click=move |_| confirming.set(false)>"Cancel"</button>
+                            on:click=sign_out>
+                            {move || if busy.get() { "Signing out…" } else { "Sign out" }}
+                        </button>
+                        <button type="button" id=LOCK_CANCEL_ID class="button small text"
+                            disabled=move || busy.get()
+                            on:click=move |_| cancel_confirm()>"Cancel"</button>
                     </div>
                 </div>
             }
             .into_any()
         } else {
             view! {
-                <button type="button" class="button text lock-sign-out"
-                    on:click=move |_| confirming.set(true)>"Sign out"</button>
+                <button type="button" id=LOCK_SIGN_OUT_ID class="button text lock-sign-out"
+                    on:click=open_confirm>"Sign out"</button>
             }
             .into_any()
         }

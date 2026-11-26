@@ -10,7 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
+use std::sync::{Mutex, PoisonError};
 
 #[derive(RustEmbed)]
 #[folder = "../dc-web/dist"]
@@ -75,23 +75,43 @@ fn is_fingerprinted(path: &str) -> bool {
 ///
 /// Trunk loads the WebAssembly module from a small inline script. Instead of
 /// allowing inline scripts in general, the policy allows exactly the inline
-/// scripts in the embedded `index.html`, by hash.
+/// scripts in the served `index.html`, by hash.
+///
+/// A release build embeds `index.html`, so it never changes. A debug build
+/// reads it from `crates/dc-web/dist` on each request, and `trunk build`
+/// rewrites it whenever the bundle changes. So the policy is kept against
+/// the file's own SHA-256 and rebuilt when that changes; one computed at
+/// first use would block the loader script of every later build. Each
+/// rebuilt policy is leaked to stay `'static`, which costs a few hundred
+/// bytes per rebuild in development and nothing in a release build.
 pub fn content_security_policy() -> &'static str {
-    static POLICY: OnceLock<String> = OnceLock::new();
-    POLICY.get_or_init(|| {
-        let hashes: String = WebApp::get("index.html")
-            .map(|f| inline_script_hashes(&String::from_utf8_lossy(&f.data)))
-            .unwrap_or_default()
-            .iter()
-            .map(|h| format!(" '{h}'"))
-            .collect();
-        format!(
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{hashes}; \
-             style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; \
-             font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; \
-             form-action 'self'"
-        )
-    })
+    static POLICY: Mutex<Option<([u8; 32], &'static str)>> = Mutex::new(None);
+    let index = WebApp::get("index.html");
+    let key = index
+        .as_ref()
+        .map(|f| f.metadata.sha256_hash())
+        .unwrap_or_default();
+    let mut cached = POLICY.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((cached_key, policy)) = *cached
+        && cached_key == key
+    {
+        return policy;
+    }
+    let hashes: String = index
+        .map(|f| inline_script_hashes(&String::from_utf8_lossy(&f.data)))
+        .unwrap_or_default()
+        .iter()
+        .map(|h| format!(" '{h}'"))
+        .collect();
+    let policy: &'static str = format!(
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{hashes}; \
+         style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; \
+         font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; \
+         form-action 'self'"
+    )
+    .leak();
+    *cached = Some((key, policy));
+    policy
 }
 
 /// `sha256-…` sources for every inline `<script>` element in `html`.

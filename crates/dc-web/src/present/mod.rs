@@ -148,6 +148,24 @@ fn focus_main() {
     }
 }
 
+/// Scrolls the tab strip, and only as far as needed, so the current tab is
+/// fully visible. Does nothing when every tab already fits.
+fn scroll_current_tab_into_view() {
+    let Ok(Some(tab)) = document().query_selector(".p-tab.is-current") else {
+        return;
+    };
+    let options = js_sys::Object::new();
+    for (key, value) in [("block", "nearest"), ("inline", "nearest")] {
+        let _ = js_sys::Reflect::set(&options, &key.into(), &value.into());
+    }
+    if let Some(scroll) = js_sys::Reflect::get(&tab, &"scrollIntoView".into())
+        .ok()
+        .and_then(|f| leptos::wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(f).ok())
+    {
+        let _ = scroll.call1(&tab, &options);
+    }
+}
+
 pub fn use_data() -> StoredValue<PatientView> {
     expect_context::<StoredValue<PatientView>>()
 }
@@ -426,6 +444,18 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
     .into_iter()
     .filter(|t| *t != Tab::Journey || journey_exists)
     .collect();
+
+    // On a phone the tabs scroll sideways. Keep the current one in view
+    // when a button elsewhere on the page changes the tab.
+    Effect::new(move |previous: Option<Tab>| {
+        let tab = nav.tab.get();
+        if previous.is_some_and(|p| p != tab) {
+            crate::motion::after_update(|| {
+                request_animation_frame(scroll_current_tab_into_view);
+            });
+        }
+        tab
+    });
 
     let tab_buttons = tabs
         .into_iter()

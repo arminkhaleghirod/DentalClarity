@@ -180,10 +180,11 @@ pub fn encode(value: &str) -> String {
     String::from(js_sys::encode_uri_component(value))
 }
 
+/// Reads the session. The caller stores its CSRF token with [`set_csrf`]
+/// once it knows the answer is still current: a read that crossed an unlock
+/// carries the token the unlock replaced.
 pub async fn session() -> Result<SessionInfo, Failure> {
-    let info: SessionInfo = get("/api/session").await?;
-    set_csrf(info.csrf_token.clone());
-    Ok(info)
+    get("/api/session").await
 }
 
 /// Starts a demo visitor session.
@@ -214,23 +215,42 @@ pub async fn unlock(password: Option<String>) -> Result<SessionInfo, Failure> {
     Ok(info)
 }
 
-pub async fn logout() -> Result<(), Failure> {
+async fn send_logout() -> Result<Response, Failure> {
     let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
-    let response = Request::post("/api/auth/logout")
+    Request::post("/api/auth/logout")
         .header("X-DC-CSRF", &csrf)
         .send()
         .await
-        .map_err(network)?;
-    set_csrf(None);
+        .map_err(network)
+}
+
+/// Ends the session. The server answers 204 with no body, so this does not
+/// go through `write`, but it retries a `bad_csrf` refusal the same way:
+/// once, after reading the session for the current token. The token is
+/// kept on failure, so a later try can still send it.
+pub async fn logout() -> Result<(), Failure> {
+    let mut response = send_logout().await?;
+    if response.status() == 403 {
+        let failure = refusal(response, false).await;
+        if failure.code != "bad_csrf" || !refresh_csrf().await {
+            return Err(logout_failed(failure.status));
+        }
+        response = send_logout().await?;
+    }
     if response.ok() {
+        set_csrf(None);
         Ok(())
     } else {
-        Err(Failure {
-            status: response.status(),
-            code: String::new(),
-            message: "Sign-out failed. Close the browser to end the session.".into(),
-            retry_after: None,
-        })
+        Err(logout_failed(response.status()))
+    }
+}
+
+fn logout_failed(status: u16) -> Failure {
+    Failure {
+        status,
+        code: String::new(),
+        message: "Sign-out failed. Try again, or close the browser to end the session.".into(),
+        retry_after: None,
     }
 }
 

@@ -5,7 +5,7 @@ use crate::api;
 use crate::format::{
     CONTENT_LANGUAGES, content_language, language_name, money_view, timestamp, tooth_label,
 };
-use crate::motion::{SkeletonCard, view_transition};
+use crate::motion::{SkeletonCard, restore_focus, view_transition};
 use crate::patients::patient_href;
 use crate::progress::{GenerationProgress, stage_text};
 use crate::session::use_session;
@@ -368,6 +368,46 @@ fn focus_later(id: String) {
     });
 }
 
+/// The section heading in the editor pane. It takes focus when the control
+/// that held it went away with nothing to replace it, for example after a
+/// release moves the section out of review.
+const PANE_TITLE_ID: &str = "pane-title";
+
+/// Element ids for one held section's actions.
+struct HeldIds {
+    confirm: String,
+    cancel: String,
+    release: String,
+    regenerate: String,
+    progress: String,
+}
+
+impl HeldIds {
+    fn new(key: &str) -> Self {
+        let base = dom_id("s", &(key.to_owned(), String::new()));
+        Self {
+            confirm: format!("release-confirm-{base}"),
+            cancel: format!("release-cancel-{base}"),
+            release: format!("release-{base}"),
+            regenerate: format!("regenerate-{base}"),
+            progress: format!("rewrite-{base}"),
+        }
+    }
+
+    /// Where focus goes when a confirmation or rewrite ends: back to the
+    /// button that started it when it is still there, else the pane heading.
+    fn after_action(&self, started_from: &str) -> Vec<String> {
+        let mut order = vec![started_from.to_owned()];
+        for id in [&self.release, &self.regenerate] {
+            if *id != started_from {
+                order.push(id.clone());
+            }
+        }
+        order.push(PANE_TITLE_ID.into());
+        order
+    }
+}
+
 /// One sentence per line; blank lines are dropped.
 fn sentences_from(draft: &str) -> Vec<String> {
     draft
@@ -470,6 +510,7 @@ impl EditCtx {
                 return;
             }
             self.release_confirm.set(None);
+            let ids = HeldIds::new(&key);
             match result {
                 Ok(change) => {
                     let shown = change.section.visibility == SectionVisibility::Ready;
@@ -490,6 +531,9 @@ impl EditCtx {
                         .set(Some((key, release_message(&failure))));
                 }
             }
+            // After the match, so a successful release has started the
+            // transition that rebuilds the pane and focus waits for it.
+            restore_focus(ids.after_action(&ids.release));
         });
     }
 
@@ -503,6 +547,7 @@ impl EditCtx {
             key: key.clone(),
             stage: SectionStage::Queued,
         }));
+        restore_focus(vec![HeldIds::new(&key).progress]);
         let id = self.id.get_value();
         spawn_local(async move {
             let result = api::regenerate_section(id, key.clone()).await;
@@ -517,6 +562,7 @@ impl EditCtx {
                 }
                 Err(failure) => {
                     self.rewrite.set(None);
+                    self.focus_after_rewrite(&key);
                     self.section_error
                         .set(Some((key, regenerate_message(&failure))));
                 }
@@ -565,6 +611,7 @@ impl EditCtx {
                 Ok(job) => self.on_job(job, job_id, key, heading),
                 Err(failure) if failure.status == 404 => {
                     self.rewrite.set(None);
+                    self.focus_after_rewrite(&key);
                     self.section_error.set(Some((key, failure.message)));
                 }
                 // Other failures are retried; a lost session is handled by
@@ -596,6 +643,14 @@ impl EditCtx {
     /// selected. With a finished rewrite job, also reports how it went.
     fn reload(self, key: String, finished: Option<(JobStatus, String)>) {
         let id = self.id.get_value();
+        // A finished rewrite started from Regenerate; any other reload
+        // follows a refused release.
+        let ids = HeldIds::new(&key);
+        let focus_order = if finished.is_some() {
+            ids.after_action(&ids.regenerate)
+        } else {
+            ids.after_action(&ids.release)
+        };
         spawn_local(async move {
             let fresh = api::presentation(id).await;
             if self.rewrite.try_with_untracked(|_| ()).is_none() {
@@ -611,6 +666,7 @@ impl EditCtx {
                         self.data.set(p);
                         self.rewrite.set(None);
                     });
+                    restore_focus(focus_order.clone());
                     if let Some((job, heading)) = finished {
                         if let Some(error) = job.error {
                             self.section_error.set(Some((key.clone(), error)));
@@ -626,6 +682,7 @@ impl EditCtx {
                 }
                 Err(failure) => {
                     self.rewrite.set(None);
+                    restore_focus(focus_order);
                     self.section_error.set(Some((
                         key,
                         format!(
@@ -636,6 +693,14 @@ impl EditCtx {
                 }
             }
         });
+    }
+
+    /// A rewrite replaces its progress line and, when it finishes, the
+    /// whole pane. Focus that was on either goes back to the section's
+    /// actions, or to the heading once the section has none.
+    fn focus_after_rewrite(self, key: &str) {
+        let ids = HeldIds::new(key);
+        restore_focus(ids.after_action(&ids.regenerate));
     }
 
     fn run(self, key: BlockKey, heading: String, action: BlockAction) {
@@ -932,7 +997,7 @@ fn section_pane(p: &PresentationView, section: &SectionView, ctx: EditCtx) -> An
     view! {
         <div class="pane-head">
             {eyebrow.map(|e| view! { <p class="eyebrow">{e}</p> })}
-            <h2 class="pane-title">{section.title.clone()}</h2>
+            <h2 class="pane-title" id=PANE_TITLE_ID tabindex="-1">{section.title.clone()}</h2>
         </div>
         {fact.map(|fact| view! { <LockedStrip fact /> })}
         {held.map(|(class, text)| view! {
@@ -1001,10 +1066,8 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
             })
         }
     };
-    let confirm_id = format!(
-        "release-confirm-{}",
-        dom_id("s", &(key.clone(), String::new()))
-    );
+    let ids = HeldIds::new(&key);
+    let after_cancel = ids.after_action(&ids.release);
 
     let regenerate = {
         let key = key.clone();
@@ -1013,14 +1076,15 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
     };
     let ask_release = {
         let key = key.clone();
-        let confirm_id = confirm_id.clone();
+        let cancel_id = ids.cancel.clone();
         move |_| {
             if ctx.any_busy_untracked() {
                 return;
             }
             ctx.section_error.set(None);
             ctx.release_confirm.set(Some(key.clone()));
-            focus_later(confirm_id.clone());
+            // Cancel is the safe choice, so focus starts there.
+            restore_focus(vec![cancel_id.clone()]);
         }
     };
     let release = {
@@ -1028,13 +1092,28 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
         let heading = heading.clone();
         move |_| ctx.release(key.clone(), heading.clone())
     };
-    let cancel_release = move |_| ctx.release_confirm.set(None);
+    let cancel_release = move || {
+        if ctx.releasing.get_untracked() {
+            return;
+        }
+        ctx.release_confirm.set(None);
+        restore_focus(after_cancel.clone());
+    };
+    let confirm_keydown = {
+        let cancel_release = cancel_release.clone();
+        move |ev: KeyboardEvent| {
+            if ev.key() == "Escape" {
+                ev.prevent_default();
+                cancel_release();
+            }
+        }
+    };
 
     let actions = move || {
         if let Some(stage) = rewriting.get() {
             // Rebuilt on each stage change, so the new stage settles in.
             return view! {
-                <div class="rewrite-progress" role="status">
+                <div class="rewrite-progress" id=ids.progress.clone() tabindex="-1" role="status">
                     <span class="rewrite-dot" aria-hidden="true"></span>
                     <span class="rewrite-stage">{format!("Writing this section again · {}", stage_text(stage))}</span>
                 </div>
@@ -1043,9 +1122,10 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
         }
         if confirming.get() {
             let release = release.clone();
+            let cancel_release = cancel_release.clone();
             return view! {
-                <div class="release-confirm" id=confirm_id.clone() tabindex="-1" role="group"
-                    aria-label="Confirm release">
+                <div class="release-confirm" id=ids.confirm.clone() role="group"
+                    aria-label="Confirm release" on:keydown=confirm_keydown.clone()>
                     <p class="release-confirm-text">{RELEASE_CONFIRM}</p>
                     <div class="held-action-row">
                         <button type="button" class="button primary small"
@@ -1053,9 +1133,9 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
                             on:click=release>
                             {move || if ctx.releasing.get() { "Releasing…" } else { "Release to patient" }}
                         </button>
-                        <button type="button" class="button small"
+                        <button type="button" class="button small" id=ids.cancel.clone()
                             disabled=move || ctx.releasing.get()
-                            on:click=cancel_release>"Cancel"</button>
+                            on:click=move |_| cancel_release()>"Cancel"</button>
                     </div>
                 </div>
             }
@@ -1068,12 +1148,12 @@ fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
                 view! {
                     <div class="held-action-row">
                         {can_release.then(|| view! {
-                            <button type="button" class="button primary small"
+                            <button type="button" class="button primary small" id=ids.release.clone()
                                 disabled=move || ctx.any_busy()
                                 on:click=ask_release>"Release to patient"</button>
                         })}
                         {can_regenerate.then(|| view! {
-                            <button type="button" class="button small"
+                            <button type="button" class="button small" id=ids.regenerate.clone()
                                 disabled=move || ctx.any_busy()
                                 on:click=regenerate>"Regenerate section"</button>
                         })}

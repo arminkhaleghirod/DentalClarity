@@ -373,6 +373,11 @@ a {
   color: var(--status-review-fg);
 }
 
+/* A failed sign-out, shown above the page it left in place. */
+.shell-error {
+  margin-top: var(--space-page);
+}
+
 /* Reduced motion: the tokens already remove movement (see tokens.css);
    progress bars jump instead of sliding. */
 @media (prefers-reduced-motion: reduce) {
@@ -1941,13 +1946,11 @@ a.button {
   box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
 }
 
-.release-confirm:focus {
+/* Focus lands on these only when the control that held it went away, so
+   they read as a place in the page, not as something to press. */
+.pane-title:focus,
+.rewrite-progress:focus {
   outline: none;
-}
-
-.release-confirm:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
 }
 
 .release-confirm-text {

@@ -169,6 +169,12 @@
   justify-content: center;
 }
 
+/* Lets the name shrink inside the flex row, so a long practice name ends
+   in an ellipsis instead of running under the language menu. */
+.p-brand-text {
+  min-width: 0;
+}
+
 .p-brand-name {
   font-weight: 700;
   font-size: 16px;
@@ -2284,6 +2290,41 @@
 
   .p-page {
     padding: 20px;
+  }
+}
+
+/* Phones: the five tabs no longer fit across. They keep their full labels
+   and scroll sideways, starting from the left edge so the first tab is
+   never cut off; the clipped last tab shows there is more. */
+@media (max-width: 560px) {
+  .p-header {
+    padding: 10px 16px;
+  }
+
+  .p-tabs {
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -16px;
+    padding: 0 16px;
+    scroll-padding: 0 16px;
+  }
+
+  .p-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .p-tab {
+    flex: 1 0 auto;
+    padding: 0 12px;
+  }
+
+  .p-select {
+    padding: 0 8px;
+  }
+
+  .p-done {
+    padding: 0 12px;
   }
 }
 

@@ -223,11 +223,15 @@ impl Narrator {
                 self.resume();
             }
         } else {
+            // Marked as waiting for the target part before pausing: the
+            // `timeupdate` that `pause()` queues on the old clip must not
+            // move the highlight back to where that clip stopped.
+            self.awaiting.set_value(Some(part));
+            self.pending_seek.set_value(Some(index));
+            self.sentence.set(Some(index));
             if let Some(audio) = self.audio.get_value() {
                 call(&audio, "pause");
             }
-            self.pending_seek.set_value(Some(index));
-            self.sentence.set(Some(index));
             self.go_to(part);
         }
     }
@@ -328,6 +332,8 @@ impl Narrator {
     }
 
     fn play_part(&self, part: usize, clip: api::BlockAudio) {
+        // This part is what plays now, whichever part was awaited before.
+        self.awaiting.set_value(None);
         let Some(audio) = self.main_element() else {
             api::revoke(&clip.url);
             self.fail_playback();
@@ -429,7 +435,12 @@ impl Narrator {
     }
 
     /// Highlights the sentence whose range holds the current position.
+    /// While another part is awaited, the element still holds the previous
+    /// clip, whose position says nothing about the sentence being moved to.
     fn update_sentence(&self) {
+        if self.awaiting.get_value().is_some() {
+            return;
+        }
         let Some(audio) = self.audio.get_value() else {
             return;
         };
