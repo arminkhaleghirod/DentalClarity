@@ -15,10 +15,20 @@ pub enum SessionKind {
 }
 
 impl SessionKind {
-    fn as_str(self) -> &'static str {
+    /// The stored `kind`, which is also the audit actor for the session.
+    pub fn as_str(self) -> &'static str {
         match self {
             SessionKind::Staff => "staff",
             SessionKind::Visitor => "visitor",
+        }
+    }
+
+    /// Reads a stored `kind`. Anything but `staff` is a visitor.
+    fn from_db(kind: &str) -> Self {
+        if kind == "staff" {
+            SessionKind::Staff
+        } else {
+            SessionKind::Visitor
         }
     }
 
@@ -91,10 +101,7 @@ pub async fn lookup(db: &SqlitePool, token: &str) -> Result<Option<Session>> {
     let Some((kind, csrf_token, locked, last_seen_at, expires_at)) = row else {
         return Ok(None);
     };
-    let kind = match kind.as_str() {
-        "staff" => SessionKind::Staff,
-        _ => SessionKind::Visitor,
-    };
+    let kind = SessionKind::from_db(&kind);
     let now = now();
     let (idle, _) = kind.lifetimes();
     if now >= expires_at || now - last_seen_at >= idle {
@@ -352,11 +359,7 @@ pub async fn lookup_present(db: &SqlitePool, token: &str) -> Result<Option<Prese
         presentation_id,
         version,
         staff_token_hash: staff_hash,
-        staff_kind: if kind == "staff" {
-            SessionKind::Staff
-        } else {
-            SessionKind::Visitor
-        },
+        staff_kind: SessionKind::from_db(&kind),
         pin_attempts: attempts,
     }))
 }
@@ -416,11 +419,7 @@ async fn rotate(
     let Some((kind, expires_at)) = old else {
         return Ok(None);
     };
-    let kind = if kind == "staff" {
-        SessionKind::Staff
-    } else {
-        SessionKind::Visitor
-    };
+    let kind = SessionKind::from_db(&kind);
     let token = new_token();
     let session = Session {
         token_hash: token_hash(&token),

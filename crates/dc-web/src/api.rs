@@ -42,6 +42,10 @@ pub fn set_csrf(token: Option<String>) {
     CSRF.with(|c| *c.borrow_mut() = token);
 }
 
+fn current_csrf() -> String {
+    CSRF.with(|c| c.borrow().clone()).unwrap_or_default()
+}
+
 /// Registers what to do when the server reports the session is gone or locked.
 pub fn on_session_lost(handler: impl Fn() + 'static) {
     ON_SESSION_LOST.with(|h| *h.borrow_mut() = Some(Box::new(handler)));
@@ -113,13 +117,12 @@ enum Write {
 }
 
 async fn send<B: Serialize>(write: Write, path: &str, body: &B) -> Result<Response, Failure> {
-    let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
     let request = match write {
         Write::Post => Request::post(path),
         Write::Put => Request::put(path),
     };
     request
-        .header("X-DC-CSRF", &csrf)
+        .header("X-DC-CSRF", &current_csrf())
         .json(body)
         .map_err(network)?
         .send()
@@ -127,28 +130,44 @@ async fn send<B: Serialize>(write: Write, path: &str, body: &B) -> Result<Respon
         .map_err(network)
 }
 
+/// Sends a request, and resends it once when it is refused with `bad_csrf`.
+/// That refusal means this tab holds an old token, for example after another
+/// tab unlocked the session, so the session is read again for the current
+/// token first. Any other 403 comes back as a failure; the answer to the
+/// resent request comes back as it is.
+async fn send_with_fresh_csrf<Fut>(send: impl Fn() -> Fut) -> Result<Response, Failure>
+where
+    Fut: Future<Output = Result<Response, Failure>>,
+{
+    let response = send().await?;
+    if response.status() != 403 {
+        return Ok(response);
+    }
+    // A 403 never reports a lost session, so there is nothing to watch.
+    let failure = refusal(response, false).await;
+    if failure.code != "bad_csrf" || !refresh_csrf().await {
+        return Err(failure);
+    }
+    send().await
+}
+
 const UNLOCK_PATH: &str = "/api/session/unlock";
 
-/// Sends a write. A staff write (or an unlock) refused with `bad_csrf` means this tab holds
-/// an old token, for example after another tab unlocked the session, so the
-/// session is read again for the current token and the write is sent once
-/// more. A second refusal is returned as it is.
+/// Sends a write. Staff writes and the unlock retry a `bad_csrf` refusal
+/// once, through [`send_with_fresh_csrf`].
 async fn write<B: Serialize, T: DeserializeOwned>(
     write: Write,
     path: &str,
     body: &B,
 ) -> Result<T, Failure> {
     let staff = path.starts_with("/api/staff/");
-    let retry = staff || path == UNLOCK_PATH;
-    let response = send(write, path, body).await?;
-    if !(retry && response.status() == 403) {
-        return finish(response, staff).await;
-    }
-    let failure = refusal(response, staff).await;
-    if failure.code != "bad_csrf" || !refresh_csrf().await {
-        return Err(failure);
-    }
-    finish(send(write, path, body).await?, staff).await
+    let send_once = || send(write, path, body);
+    let response = if staff || path == UNLOCK_PATH {
+        send_with_fresh_csrf(send_once).await?
+    } else {
+        send_once().await?
+    };
+    finish(response, staff).await
 }
 
 /// Reads the session only for its CSRF token, and reports whether it got
@@ -187,56 +206,55 @@ pub async fn session() -> Result<SessionInfo, Failure> {
     get("/api/session").await
 }
 
-/// Starts a demo visitor session.
-pub async fn visit() -> Result<SessionInfo, Failure> {
-    let info: SessionInfo = post("/api/visit", &()).await?;
+/// Posts a request answered with a new session, and keeps its CSRF token.
+async fn post_session<B: Serialize>(path: &str, body: &B) -> Result<SessionInfo, Failure> {
+    let info: SessionInfo = post(path, body).await?;
     set_csrf(info.csrf_token.clone());
     Ok(info)
+}
+
+/// Starts a demo visitor session.
+pub async fn visit() -> Result<SessionInfo, Failure> {
+    post_session("/api/visit", &()).await
 }
 
 pub async fn setup(request: &SetupRequest) -> Result<SessionInfo, Failure> {
-    let info: SessionInfo = post("/api/setup", request).await?;
-    set_csrf(info.csrf_token.clone());
-    Ok(info)
+    post_session("/api/setup", request).await
 }
 
 pub async fn login(password: String) -> Result<SessionInfo, Failure> {
-    let info: SessionInfo = post("/api/auth/login", &LoginRequest { password }).await?;
-    set_csrf(info.csrf_token.clone());
-    Ok(info)
+    post_session("/api/auth/login", &LoginRequest { password }).await
 }
 
 /// Lifts a lock whose present session has ended. Demo mode sends no
 /// password; clinical mode sends the staff password. The answer carries a
 /// new CSRF token, which replaces the old one.
 pub async fn unlock(password: Option<String>) -> Result<SessionInfo, Failure> {
-    let info: SessionInfo = post(UNLOCK_PATH, &UnlockSessionRequest { password }).await?;
-    set_csrf(info.csrf_token.clone());
-    Ok(info)
+    post_session(UNLOCK_PATH, &UnlockSessionRequest { password }).await
 }
 
 async fn send_logout() -> Result<Response, Failure> {
-    let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
     Request::post("/api/auth/logout")
-        .header("X-DC-CSRF", &csrf)
+        .header("X-DC-CSRF", &current_csrf())
         .send()
         .await
         .map_err(network)
 }
 
 /// Ends the session. The server answers 204 with no body, so this does not
-/// go through `write`, but it retries a `bad_csrf` refusal the same way:
-/// once, after reading the session for the current token. The token is
-/// kept on failure, so a later try can still send it.
+/// go through `write`, but it retries a `bad_csrf` refusal the same way.
+/// The token is kept on failure, so a later try can still send it.
 pub async fn logout() -> Result<(), Failure> {
-    let mut response = send_logout().await?;
-    if response.status() == 403 {
-        let failure = refusal(response, false).await;
-        if failure.code != "bad_csrf" || !refresh_csrf().await {
-            return Err(logout_failed(failure.status));
-        }
-        response = send_logout().await?;
-    }
+    let response = send_with_fresh_csrf(send_logout)
+        .await
+        // A network failure (status 0) keeps its own message.
+        .map_err(|f| {
+            if f.status == 0 {
+                f
+            } else {
+                logout_failed(f.status)
+            }
+        })?;
     if response.ok() {
         set_csrf(None);
         Ok(())

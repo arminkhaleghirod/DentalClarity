@@ -48,10 +48,6 @@ fn section_not_found() -> Failure {
     )
 }
 
-fn conflict(code: &'static str, message: impl Into<String>) -> Failure {
-    Failure::new(StatusCode::CONFLICT, code, message)
-}
-
 /// Fills in what staff can do with a section: write it again, or release
 /// it to patients. `section` already has the staff changes applied.
 pub(super) fn annotate(
@@ -198,7 +194,7 @@ async fn check_idle(state: &AppState, id: &str) -> Result<(), Failure> {
     .fetch_one(&state.db)
     .await?;
     if running > 0 {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "generation_in_progress",
             "This presentation is still being written. Wait for it to finish.",
         ));
@@ -221,13 +217,13 @@ pub async fn release(
     match loaded.stored_state.as_str() {
         "needs_review" => {}
         "passed" => {
-            return Err(conflict(
+            return Err(Failure::conflict(
                 "already_ready",
                 "This section is already ready for patients.",
             ));
         }
         _ => {
-            return Err(conflict(
+            return Err(Failure::conflict(
                 "nothing_to_release",
                 "This section has no text that passed the checks. Write it again instead.",
             ));
@@ -237,7 +233,7 @@ pub async fn release(
         return Err(section_not_found());
     };
     let Some(output) = loaded.output.as_ref() else {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "nothing_to_release",
             "This section has no text to release. Write it again instead.",
         ));
@@ -251,7 +247,7 @@ pub async fn release(
         loaded.level,
     );
     if !blockers.is_empty() {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "release_blocked",
             format!(
                 "Fix these before releasing the section: {}",
@@ -277,7 +273,7 @@ pub async fn release(
     .await?
     .rows_affected();
     if changed == 0 {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "already_ready",
             "This section is already ready for patients.",
         ));
@@ -346,7 +342,7 @@ pub async fn regenerate(
         return Err(section_not_found());
     };
     if !has_knowledge(kind, &sheet, &state.kb) {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "no_knowledge_entry",
             "No reviewed educational content exists for this procedure yet, so it cannot be written. It stays held.",
         ));

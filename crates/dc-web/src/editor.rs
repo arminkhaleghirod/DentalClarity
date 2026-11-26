@@ -424,6 +424,10 @@ enum BlockAction {
     Confirm,
 }
 
+/// Staff wording for a rewrite or release refused while a job still runs.
+const STILL_WRITING: &str =
+    "This presentation is still being written. Wait for it to finish, then try again.";
+
 /// Staff wording for a refused rewrite.
 fn regenerate_message(failure: &api::Failure) -> String {
     let wait = failure
@@ -438,9 +442,7 @@ fn regenerate_message(failure: &api::Failure) -> String {
         "generation_in_progress" if failure.status == 429 => {
             format!("Another presentation is still being written. Wait for it to finish.{wait}")
         }
-        "generation_in_progress" => {
-            "This presentation is still being written. Wait for it to finish, then try again.".into()
-        }
+        "generation_in_progress" => STILL_WRITING.into(),
         "rate_limited" if !wait.is_empty() => {
             format!("The demo limits how often sections can be written again.{wait}")
         }
@@ -463,10 +465,7 @@ fn release_message(failure: &api::Failure) -> String {
             "This section has no text that passed the checks. Write it again instead.".into()
         }
         "already_ready" => "This section is already shown to patients.".into(),
-        "generation_in_progress" => {
-            "This presentation is still being written. Wait for it to finish, then try again."
-                .into()
-        }
+        "generation_in_progress" => STILL_WRITING.into(),
         _ => failure.message.clone(),
     }
 }
@@ -477,6 +476,12 @@ impl EditCtx {
         self.busy.with(Option::is_some)
             || self.releasing.get()
             || self.rewrite.with(Option::is_some)
+    }
+
+    /// Whether the editor was left, so its signals are gone. Checked when a
+    /// request returns.
+    fn gone(self) -> bool {
+        self.rewrite.try_with_untracked(|_| ()).is_none()
     }
 
     fn any_busy_untracked(self) -> bool {
@@ -551,7 +556,7 @@ impl EditCtx {
         let id = self.id.get_value();
         spawn_local(async move {
             let result = api::regenerate_section(id, key.clone()).await;
-            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+            if self.gone() {
                 return;
             }
             match result {
@@ -579,7 +584,7 @@ impl EditCtx {
             let Some(key) = job.section_key.clone() else {
                 return;
             };
-            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+            if self.gone() {
                 return;
             }
             let heading = self
@@ -604,7 +609,7 @@ impl EditCtx {
     fn watch(self, job_id: String, key: String, heading: String) {
         spawn_local(async move {
             let result = api::job(job_id.clone()).await;
-            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+            if self.gone() {
                 return;
             }
             match result {
@@ -653,7 +658,7 @@ impl EditCtx {
         };
         spawn_local(async move {
             let fresh = api::presentation(id).await;
-            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+            if self.gone() {
                 return;
             }
             match fresh {

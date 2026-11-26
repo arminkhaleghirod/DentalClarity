@@ -22,6 +22,18 @@ pub fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// Removes the entry whose `started` time is earliest, to make room in a
+/// full map.
+fn evict_oldest<V>(map: &mut HashMap<String, V>, started: impl Fn(&V) -> Instant) {
+    let oldest = map
+        .iter()
+        .min_by_key(|(_, v)| started(v))
+        .map(|(k, _)| k.clone());
+    if let Some(oldest) = oldest {
+        map.remove(&oldest);
+    }
+}
+
 /// What a full limiter does with a key it does not track yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WhenFull {
@@ -67,15 +79,7 @@ impl WindowLimiter {
             if windows.len() >= MAX_KEYS {
                 match self.when_full {
                     WhenFull::Refuse => return Err(window.as_secs().max(1)),
-                    WhenFull::EvictOldest => {
-                        let oldest = windows
-                            .iter()
-                            .min_by_key(|(_, (_, start))| *start)
-                            .map(|(k, _)| k.clone());
-                        if let Some(oldest) = oldest {
-                            windows.remove(&oldest);
-                        }
-                    }
+                    WhenFull::EvictOldest => evict_oldest(&mut windows, |(_, start)| *start),
                 }
             }
         }
@@ -240,13 +244,8 @@ impl Limits {
         let mut moves = self.scope_moves.lock().expect("scope lock");
         if moves.len() >= MAX_KEYS {
             moves.retain(|_, (_, at)| now.duration_since(*at) < SCOPE_MOVE_MEMORY);
-            if moves.len() >= MAX_KEYS
-                && let Some(oldest) = moves
-                    .iter()
-                    .min_by_key(|(_, (_, at))| *at)
-                    .map(|(k, _)| k.clone())
-            {
-                moves.remove(&oldest);
+            if moves.len() >= MAX_KEYS {
+                evict_oldest(&mut moves, |(_, at)| *at);
             }
         }
         moves.insert(from.to_owned(), (to.to_owned(), now));

@@ -38,15 +38,9 @@ use std::time::Duration;
 /// Shown in place of `{{provider_display_name}}` when the plan has no provider.
 const NO_PROVIDER: &str = "your dentist";
 
+/// The audit actor for an action taken in a session of this kind.
 pub(super) fn actor(session_kind: SessionKind) -> &'static str {
-    match session_kind {
-        SessionKind::Staff => "staff",
-        SessionKind::Visitor => "visitor",
-    }
-}
-
-fn conflict(code: &'static str, message: &'static str) -> Failure {
-    Failure::new(StatusCode::CONFLICT, code, message)
+    session_kind.as_str()
 }
 
 /// `POST /api/staff/presentations/{id}/present`: locks the caller's session,
@@ -131,7 +125,7 @@ async fn presentable_version(
     .fetch_optional(&state.db)
     .await?;
     if !job.is_some_and(|(s,)| jobs::parse_job_state(&s).is_finished()) {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "not_ready",
             "This presentation is still being written.",
         ));
@@ -143,7 +137,7 @@ async fn presentable_version(
     .fetch_one(&state.db)
     .await?;
     if ready == 0 {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "nothing_to_present",
             "No section of this presentation is ready for patients yet.",
         ));
@@ -301,7 +295,7 @@ pub(super) async fn patient_view(
         return Err(not_found("presentation"));
     };
     if version != bound_version {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "version_changed",
             "This presentation has changed. Ask your dental team to open it again.",
         ));
@@ -564,7 +558,7 @@ async fn check_unlock(
             .fetch_optional(&state.db)
             .await?;
     let Some((password_hash, pin_hash)) = stored else {
-        return Err(conflict(
+        return Err(Failure::conflict(
             "setup_required",
             "DentalClarity has not been set up yet.",
         ));

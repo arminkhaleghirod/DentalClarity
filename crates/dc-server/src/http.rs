@@ -30,6 +30,10 @@ impl Failure {
         }
     }
 
+    pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
+    }
+
     pub fn too_many(retry_after: u64) -> Self {
         Self {
             retry_after: Some(retry_after),

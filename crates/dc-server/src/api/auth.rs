@@ -174,6 +174,41 @@ async fn record_failure(state: &AppState, ip: IpAddr, action: &str) -> Result<()
     Ok(())
 }
 
+/// Checks the staff password for sign-in or unlock, after the per-address
+/// attempt limit. A wrong password is recorded as `failed_action` and adds
+/// to the backoff; a right one clears the backoff.
+async fn check_staff_password(
+    state: &AppState,
+    ip: IpAddr,
+    password: String,
+    failed_action: &str,
+) -> Result<(), Failure> {
+    check_attempt(state, ip)?;
+    let stored: Option<(String,)> =
+        sqlx::query_as("SELECT password_hash FROM staff_account WHERE id = 1")
+            .fetch_optional(&state.db)
+            .await?;
+    let Some((hash,)) = stored else {
+        return Err(Failure::conflict(
+            "setup_required",
+            "DentalClarity has not been set up yet.",
+        ));
+    };
+    let ok = tokio::task::spawn_blocking(move || verify_secret(&password, &hash))
+        .await
+        .map_err(Failure::internal)?;
+    if !ok {
+        record_failure(state, ip, failed_action).await?;
+        return Err(Failure::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "That password is not correct.",
+        ));
+    }
+    state.limits.login_backoff.record_success(ip);
+    Ok(())
+}
+
 /// `POST /api/setup`: creates the shared staff account on first launch.
 /// Requires the one-time setup code printed in the server console, so a
 /// device on the network cannot claim a fresh install.
@@ -255,32 +290,7 @@ pub async fn login(
     if state.mode == Mode::Demo {
         return Err(not_in_this_mode());
     }
-    check_attempt(&state, ip)?;
-
-    let stored: Option<(String,)> =
-        sqlx::query_as("SELECT password_hash FROM staff_account WHERE id = 1")
-            .fetch_optional(&state.db)
-            .await?;
-    let Some((hash,)) = stored else {
-        return Err(Failure::new(
-            StatusCode::CONFLICT,
-            "setup_required",
-            "DentalClarity has not been set up yet.",
-        ));
-    };
-    let password = request.password;
-    let ok = tokio::task::spawn_blocking(move || verify_secret(&password, &hash))
-        .await
-        .map_err(Failure::internal)?;
-    if !ok {
-        record_failure(&state, ip, "login_failed").await?;
-        return Err(Failure::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid_credentials",
-            "That password is not correct.",
-        ));
-    }
-    state.limits.login_backoff.record_success(ip);
+    check_staff_password(&state, ip, request.password, "login_failed").await?;
     audit::record(&state.db, &ip.to_string(), "login", "").await?;
     let practice = settings::practice_name(&state).await?;
     signed_in(&state, practice).await
@@ -348,37 +358,11 @@ pub async fn unlock(
                     "Enter the staff password to unlock.",
                 ));
             };
-            check_attempt(&state, ip)?;
-            let stored: Option<(String,)> =
-                sqlx::query_as("SELECT password_hash FROM staff_account WHERE id = 1")
-                    .fetch_optional(&state.db)
-                    .await?;
-            let Some((hash,)) = stored else {
-                return Err(Failure::new(
-                    StatusCode::CONFLICT,
-                    "setup_required",
-                    "DentalClarity has not been set up yet.",
-                ));
-            };
-            let ok = tokio::task::spawn_blocking(move || verify_secret(&password, &hash))
-                .await
-                .map_err(Failure::internal)?;
-            if !ok {
-                record_failure(&state, ip, "session_unlock_failed").await?;
-                return Err(Failure::new(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_credentials",
-                    "That password is not correct.",
-                ));
-            }
-            state.limits.login_backoff.record_success(ip);
+            check_staff_password(&state, ip, password, "session_unlock_failed").await?;
             "password"
         }
     };
-    let actor = match session.kind {
-        SessionKind::Staff => "staff",
-        SessionKind::Visitor => "visitor",
-    };
+    let actor = super::present::actor(session.kind);
     // Everything that can fail happens before the rotation commits: the
     // practice name is read first and the audit event is written in the
     // rotation's transaction. A failure after the commit would leave the
