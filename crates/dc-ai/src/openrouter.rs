@@ -17,6 +17,26 @@ pub struct OpenRouter {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    routing: serde_json::Value,
+}
+
+/// Provider routing sent with every text request.
+///
+/// OpenRouter's default picks the cheapest provider, which for our models
+/// means preemptible and 4-bit tiers that stall on long reasoning calls.
+/// This policy tries the preferred providers first, falls back to others on
+/// errors, sorts fallbacks by throughput, and only uses providers that
+/// support every parameter we send, do not store or train on prompts, and
+/// run 8-bit or better weights.
+pub fn default_routing(order: &[&str]) -> serde_json::Value {
+    json!({
+        "order": order,
+        "allow_fallbacks": true,
+        "sort": "throughput",
+        "require_parameters": true,
+        "data_collection": "deny",
+        "quantizations": ["fp8", "bf16", "fp16", "unknown"],
+    })
 }
 
 impl std::fmt::Debug for OpenRouter {
@@ -33,14 +53,21 @@ impl OpenRouter {
         policy.check_openrouter()?;
         let client = reqwest::Client::builder()
             // Calls normally finish well inside this; a stuck call is retried.
-            .timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(45))
             .build()
             .map_err(|e| AiError::Request(e.to_string()))?;
         Ok(Self {
             client,
             base_url: DEFAULT_BASE_URL.to_owned(),
             api_key,
+            routing: default_routing(crate::defaults::DEMO_PROVIDER_ORDER),
         })
+    }
+
+    /// Replaces the provider routing policy.
+    pub fn with_routing(mut self, routing: serde_json::Value) -> Self {
+        self.routing = routing;
+        self
     }
 
     /// Points the adapter at a different endpoint, for tests against a local stub.
@@ -53,6 +80,7 @@ impl OpenRouter {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     model: Option<String>,
+    provider: Option<String>,
     choices: Vec<Choice>,
     usage: Option<ChatUsage>,
 }
@@ -87,6 +115,7 @@ impl TextModel for OpenRouter {
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "usage": { "include": true },
+            "provider": self.routing,
         });
         if let Some(effort) = request.reasoning {
             body["reasoning"] = json!({ "effort": effort });
@@ -134,6 +163,7 @@ impl TextModel for OpenRouter {
 
         Ok(TextResponse {
             model: parsed.model.unwrap_or(request.model),
+            route: parsed.provider,
             content,
             usage,
             latency_ms: started.elapsed().as_millis() as u64,

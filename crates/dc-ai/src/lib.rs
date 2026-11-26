@@ -68,6 +68,12 @@ pub mod defaults {
     /// Demo mode text model on OpenRouter.
     pub const DEMO_TEXT_MODEL: &str = "deepseek/deepseek-v4.1-flash-1017";
     pub const DEMO_TEXT_REASONING: ReasoningEffort = ReasoningEffort::High;
+    /// OpenRouter providers tried first for the demo text model, in order.
+    /// Chosen by benchmark on 2026-11-26: PrimeIntellect matched the fastest
+    /// tiers on real section prompts (about 4 s, about 210 tokens per second)
+    /// at a fifth of their cost. Other fast, non-retaining providers are the
+    /// fallback when it fails.
+    pub const DEMO_PROVIDER_ORDER: &[&str] = &["primeintellect"];
     /// Demo mode speech model on OpenRouter.
     pub const DEMO_SPEECH_MODEL: &str = "heygen/heygen-voice-1-turbo";
 }
@@ -83,6 +89,8 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextResponse {
     pub model: String,
+    /// Upstream provider that served the call, when the router reports it.
+    pub route: Option<String>,
     pub content: String,
     pub usage: Usage,
     pub latency_ms: u64,

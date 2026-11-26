@@ -201,11 +201,11 @@ fn para(p: &[Sentence], path: &str, min: usize, max: usize, cx: &Context, issues
     }
     for (i, s) in p.iter().enumerate() {
         let path = format!("{path}/{i}");
-        if s.cites.is_empty() || s.cites.len() > 4 {
+        if s.cites.is_empty() || s.cites.len() > 8 {
             issues.push(Issue::block(
                 "V3",
                 &path,
-                "each sentence needs 1 to 4 citations",
+                "each sentence needs 1 to 8 citations",
             ));
         }
         cites(&s.cites, &path, cx, issues);

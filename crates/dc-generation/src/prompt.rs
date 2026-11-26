@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt::Write;
 
-pub const WRITER_PROMPT: &str = include_str!("../prompts/writer.section.v1.txt");
+pub const WRITER_PROMPT: &str = include_str!("../prompts/writer.section.v2.txt");
 pub const REVIEWER_PROMPT: &str = include_str!("../prompts/reviewer.section.v1.txt");
 
 /// `writer.section@v1+<first 12 hex of sha256>`, recorded with every output.
@@ -20,7 +20,7 @@ pub fn version(name: &str, text: &str) -> String {
 }
 
 pub fn writer_version() -> String {
-    version("writer.section@v1", WRITER_PROMPT)
+    version("writer.section@v2", WRITER_PROMPT)
 }
 
 pub fn reviewer_version() -> String {
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn prompt_versions_are_stable() {
-        assert!(writer_version().starts_with("writer.section@v1+"));
+        assert!(writer_version().starts_with("writer.section@v2+"));
         assert_eq!(writer_version(), writer_version());
     }
 }

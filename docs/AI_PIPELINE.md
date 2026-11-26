@@ -48,7 +48,7 @@ The job state machine and restart recovery are in ARCHITECTURE section 5. The de
 | S1 KB resolve | procedure codes | `ProcedureCategory` and KB entry ids/versions per procedure | Unmapped code becomes `Unsupported`: no procedure text is generated, the section is `NeedsReview(UnsupportedProcedure)`, locked facts still show | Per procedure; in-memory, no I/O |
 | S2 Locked facts | snapshot, KB categories | `FactSheet`: opaque refs (`p1`, `ph1`), tooth refs, surfaces, phase ordinals, status, category names, pre-rendered cost blocks | Inconsistent source (for example a tooth on a whole-mouth code): `NeedsReview(SourceInconsistent)` on that procedure. The data is never "fixed" | Pure function |
 | S3 Prompt build | `FactSheet`, KB passages, sanitized notes, language, level, audience | One `TextRequest` per section, plus its `input_hash` (see [Sync](#sync)) | Allowlist violation is a programming error: panic in debug builds, job failure in release | Pure; `insta` snapshot tests |
-| S4 Section writers | `TextRequest` | Raw JSON per section | Transport: 3 retries with jittered backoff on timeout, 429 or 5xx. Non-JSON or schema mismatch goes to S7 as a repair | All sections of a job at once (up to 12); at most 2 jobs run at a time. Each call times out after 90 s and is retried; the output cap is 24,000 tokens because hidden reasoning counts toward it [P] |
+| S4 Section writers | `TextRequest` | Raw JSON per section | Transport: 3 retries with jittered backoff on timeout, 429 or 5xx. Non-JSON or schema mismatch goes to S7 as a repair | All sections of a job at once (up to 12); at most 2 jobs run at a time. Each call times out after 45 s and is retried (typical calls take 4 to 15 s); the output cap is 24,000 tokens because hidden reasoning counts toward it [P] |
 | S5 Deterministic validate | parsed output, `FactSheet`, KB | `Vec<Issue>` | Any `Block` issue goes to S7 | Per section, as soon as S4 returns |
 | S6 AI review | output plus the same facts, notes and KB the writer saw | `ReviewVerdict` | Reviewer error or timeout after retries: `NeedsReview(ReviewUnavailable)` | Per section, after S5 passes |
 | S7 Repair | previous output and its issues | New raw JSON, back to S5 | At most 2 repair rounds per section [P]. Still failing: `Failed` (deterministic) or `NeedsReview` (reviewer only) | Per section |
@@ -124,7 +124,7 @@ JSON-schema-constrained output is listed as supported for the demo text model (`
 
 ```rust
 /// Exactly one sentence; checked by V9.
-struct Sentence { text: String /* 1..=300 chars */, cites: Vec<SourceId> /* 1..=4 */ }
+struct Sentence { text: String /* 1..=300 chars */, cites: Vec<SourceId> /* 1..=8 */ }
 
 /// "fact:p3" | "fact:ph2" | "note:p3" | "kb:<entry_id>#<passage_id>"
 type SourceId = String;
@@ -137,7 +137,7 @@ type Para = Vec<Sentence>; // 1..=6 sentences unless noted
 ```json
 {"type":"object","additionalProperties":false,"required":["text","cites"],
  "properties":{"text":{"type":"string","minLength":1,"maxLength":300},
-  "cites":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"string",
+  "cites":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string",
    "pattern":"^(fact:(p|ph)[0-9]+|note:p[0-9]+|kb:[a-z0-9_]+#[a-z0-9_]+)$"}}}}
 ```
 
@@ -289,7 +289,7 @@ Rules:
   fear or pressure. The patient decides with their dental team.
 - No medication advice. No alternative treatments.
 - Reading level: {level}. Audience: {audience}. Language: English.
-- Each array item is exactly one sentence with 1 to 4 cites from the given ids.
+- Each array item is exactly one sentence with 1 to 8 cites from the given ids.
 - Allowed placeholders: {{practice_name}}, {{provider_display_name}}. No others.
 Return only JSON matching the schema {schema_name}.
 ```

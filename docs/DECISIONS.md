@@ -34,6 +34,7 @@ Last updated: 2026-11-25
 | D8 | CDT: only bare codes (e.g. `D2740`) are stored as keys, with our own plain-language names and categories. ADA descriptor text is never committed. At runtime, the practice's own Open Dental descriptions may be displayed. | Confirmed |
 | D9 | The knowledge base is drafted as original text citing reputable sources. Each entry carries `review_status` and stays `unreviewed` until a dentist signs off. | Confirmed |
 | D10 | Prompts carry an allowlist of typed fields. Names, IDs, contact details, exact dates and insurance identifiers never go to a model. Personalization placeholders (e.g. `{{patient_first_name}}`) are substituted locally. Masking alone is not called de-identification. | Confirmed |
+| D11 | Demo text calls route to PrimeIntellect first on OpenRouter, falling back to other fast providers on errors. Only providers that support every parameter we send, do not store or train on prompts, and run 8-bit or better weights are used. Chosen by benchmark on 2026-11-26. | Confirmed |
 
 ## Engineering
 

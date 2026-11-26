@@ -46,6 +46,7 @@ impl TextModel for FakeTextModel {
             .expect("FakeTextModel ran out of scripted responses");
         Ok(TextResponse {
             model,
+            route: None,
             content,
             usage: Usage::default(),
             latency_ms: 0,
