@@ -2,11 +2,12 @@
 //!
 //! State-changing requests carry the session's CSRF token in `X-DC-CSRF`.
 //! When the server answers 401 or 423, the app re-checks the session so the
-//! user lands on the sign-in or lock screen.
+//! user lands on the sign-in or lock screen. A staff write refused with
+//! `bad_csrf` re-reads the session for a fresh token and is sent once more.
 
 use dc_core::api::{
     ApiError, HealthResponse, LoginRequest, PatientDetail, PatientListItem, PatientRow,
-    PracticeSettings, SessionInfo, SetupRequest,
+    PracticeSettings, SessionInfo, SetupRequest, UnlockSessionRequest,
 };
 use dc_core::present::{
     BlockChangeResponse, ConfirmNoteRequest, RevertBlockRequest, StartPresentResponse,
@@ -14,7 +15,7 @@ use dc_core::present::{
 };
 use dc_core::presentation::{
     CreatePresentationRequest, CreatePresentationResponse, JobStatus, PresentationSummary,
-    PresentationView,
+    PresentationView, RegenerateSectionResponse,
 };
 use gloo_net::http::{Request, Response};
 use serde::Serialize;
@@ -33,6 +34,8 @@ pub struct Failure {
     /// The server's `ApiError::code`, or empty when the body had none.
     pub code: String,
     pub message: String,
+    /// Seconds from the `Retry-After` header of a 429, when the server sent one.
+    pub retry_after: Option<u64>,
 }
 
 pub fn set_csrf(token: Option<String>) {
@@ -57,8 +60,15 @@ async fn finish<T: DeserializeOwned>(
             status,
             code: String::new(),
             message: e.to_string(),
+            retry_after: None,
         });
     }
+    Err(refusal(response, watch_session).await)
+}
+
+/// Reads the error body of a response outside 200 to 299.
+async fn refusal(response: Response, watch_session: bool) -> Failure {
+    let status = response.status();
     if watch_session && (status == 401 || status == 423) {
         ON_SESSION_LOST.with(|h| {
             if let Some(handler) = h.borrow().as_ref() {
@@ -66,15 +76,20 @@ async fn finish<T: DeserializeOwned>(
             }
         });
     }
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.trim().parse().ok());
     let (code, message) = match response.json::<ApiError>().await {
         Ok(body) => (body.code, body.message),
         Err(_) => (String::new(), format!("The server returned {status}.")),
     };
-    Err(Failure {
+    Failure {
         status,
         code,
         message,
-    })
+        retry_after,
+    }
 }
 
 fn network(e: gloo_net::Error) -> Failure {
@@ -82,6 +97,7 @@ fn network(e: gloo_net::Error) -> Failure {
         status: 0,
         code: String::new(),
         message: format!("Could not reach the server. {e}"),
+        retry_after: None,
     }
 }
 
@@ -90,28 +106,73 @@ async fn get<T: DeserializeOwned>(path: &str) -> Result<T, Failure> {
     finish(response, path.starts_with("/api/staff/")).await
 }
 
-async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, Failure> {
+#[derive(Clone, Copy)]
+enum Write {
+    Post,
+    Put,
+}
+
+async fn send<B: Serialize>(write: Write, path: &str, body: &B) -> Result<Response, Failure> {
     let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
-    let response = Request::post(path)
+    let request = match write {
+        Write::Post => Request::post(path),
+        Write::Put => Request::put(path),
+    };
+    request
         .header("X-DC-CSRF", &csrf)
         .json(body)
         .map_err(network)?
         .send()
         .await
-        .map_err(network)?;
-    finish(response, path.starts_with("/api/staff/")).await
+        .map_err(network)
+}
+
+const UNLOCK_PATH: &str = "/api/session/unlock";
+
+/// Sends a write. A staff write (or an unlock) refused with `bad_csrf` means this tab holds
+/// an old token, for example after another tab unlocked the session, so the
+/// session is read again for the current token and the write is sent once
+/// more. A second refusal is returned as it is.
+async fn write<B: Serialize, T: DeserializeOwned>(
+    write: Write,
+    path: &str,
+    body: &B,
+) -> Result<T, Failure> {
+    let staff = path.starts_with("/api/staff/");
+    let retry = staff || path == UNLOCK_PATH;
+    let response = send(write, path, body).await?;
+    if !(retry && response.status() == 403) {
+        return finish(response, staff).await;
+    }
+    let failure = refusal(response, staff).await;
+    if failure.code != "bad_csrf" || !refresh_csrf().await {
+        return Err(failure);
+    }
+    finish(send(write, path, body).await?, staff).await
+}
+
+/// Reads the session only for its CSRF token, and reports whether it got
+/// one. A locked session still has a token; the retried write then meets
+/// the usual 423 handling.
+async fn refresh_csrf() -> bool {
+    match get::<SessionInfo>("/api/session").await {
+        Ok(SessionInfo {
+            csrf_token: Some(token),
+            ..
+        }) => {
+            set_csrf(Some(token));
+            true
+        }
+        _ => false,
+    }
+}
+
+async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, Failure> {
+    write(Write::Post, path, body).await
 }
 
 async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, Failure> {
-    let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
-    let response = Request::put(path)
-        .header("X-DC-CSRF", &csrf)
-        .json(body)
-        .map_err(network)?
-        .send()
-        .await
-        .map_err(network)?;
-    finish(response, path.starts_with("/api/staff/")).await
+    write(Write::Put, path, body).await
 }
 
 /// Percent-encodes a value for a path segment or query string.
@@ -144,6 +205,15 @@ pub async fn login(password: String) -> Result<SessionInfo, Failure> {
     Ok(info)
 }
 
+/// Lifts a lock whose present session has ended. Demo mode sends no
+/// password; clinical mode sends the staff password. The answer carries a
+/// new CSRF token, which replaces the old one.
+pub async fn unlock(password: Option<String>) -> Result<SessionInfo, Failure> {
+    let info: SessionInfo = post(UNLOCK_PATH, &UnlockSessionRequest { password }).await?;
+    set_csrf(info.csrf_token.clone());
+    Ok(info)
+}
+
 pub async fn logout() -> Result<(), Failure> {
     let csrf = CSRF.with(|c| c.borrow().clone()).unwrap_or_default();
     let response = Request::post("/api/auth/logout")
@@ -159,6 +229,7 @@ pub async fn logout() -> Result<(), Failure> {
             status: response.status(),
             code: String::new(),
             message: "Sign-out failed. Close the browser to end the session.".into(),
+            retry_after: None,
         })
     }
 }
@@ -250,4 +321,28 @@ pub async fn start_present(id: String) -> Result<StartPresentResponse, Failure> 
         &(),
     )
     .await
+}
+
+fn section_path(id: &str, section_key: &str, action: &str) -> String {
+    format!(
+        "/api/staff/presentations/{}/sections/{}/{action}",
+        encode(id),
+        encode(section_key)
+    )
+}
+
+/// Writes one section again. Poll `job` with the returned job id.
+pub async fn regenerate_section(
+    id: String,
+    section_key: String,
+) -> Result<RegenerateSectionResponse, Failure> {
+    post(&section_path(&id, &section_key, "regenerate"), &()).await
+}
+
+/// Releases a held section to patients after staff have checked it.
+pub async fn release_section(
+    id: String,
+    section_key: String,
+) -> Result<BlockChangeResponse, Failure> {
+    post(&section_path(&id, &section_key, "release"), &()).await
 }

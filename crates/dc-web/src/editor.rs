@@ -7,13 +7,14 @@ use crate::format::{
 };
 use crate::motion::{SkeletonCard, view_transition};
 use crate::patients::patient_href;
-use crate::progress::GenerationProgress;
+use crate::progress::{GenerationProgress, stage_text};
 use crate::session::use_session;
 use dc_core::Mode;
 use dc_core::content::ReadingLevel;
 use dc_core::present::{ConfirmNoteRequest, RevertBlockRequest, UpdateBlockRequest};
 use dc_core::presentation::{
-    BlockSource, PresentationView, ProcedureFactView, SectionView, SectionVisibility, TextBlock,
+    BlockSource, JobState, JobStatus, PresentationView, ProcedureFactView, SectionStage,
+    SectionView, SectionVisibility, TextBlock,
 };
 use leptos::ev::KeyboardEvent;
 use leptos::prelude::*;
@@ -21,13 +22,20 @@ use leptos::task::spawn_local;
 use leptos::wasm_bindgen::JsCast;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
+use std::time::Duration;
 
 /// Key of the costs entry, which is built from the plan rather than written.
 const COSTS_KEY: &str = "costs";
 
 const COST_CAVEAT: &str = "These are estimates from your plan. Your insurance decides the final amount, which can change.";
 
-const HELD_NOTE: &str = "Held from patients until this section is fixed or regenerated.";
+const HELD_NOTE: &str = "Held from patients until staff release it or it is written again.";
+const RELEASE_CONFIRM: &str = "You've checked this section. It will be shown to the patient.";
+
+/// How often a section rewrite is polled.
+const REWRITE_POLL_EVERY: Duration = Duration::from_secs(1);
+/// The wait after a failed poll, which is usually a dropped request.
+const REWRITE_RETRY_EVERY: Duration = Duration::from_secs(3);
 const DEMO_NOTE: &str = "This is a public demo. Don't enter real personal or health information.";
 
 #[component]
@@ -48,7 +56,9 @@ pub fn PresentationPage() -> impl IntoView {
                 </div>
             }>
                 {move || view_data.get().map(|result| match result {
-                    Ok(p) if !p.job_state.is_finished() => {
+                    // A section rewrite leaves the other sections readable,
+                    // so only a whole-presentation job shows the progress card.
+                    Ok(p) if !p.job_state.is_finished() && p.sections.is_empty() => {
                         let job_id = p.job_id.clone();
                         let presentation_id = p.id.clone();
                         view! {
@@ -165,7 +175,7 @@ fn EditorBar(data: RwSignal<PresentationView>) -> impl IntoView {
                 <button type="button" class="button text" aria-disabled="true"
                     title="Version history arrives in a later update">"History"</button>
                 <button type="button" class="button text" aria-disabled="true"
-                    title="Regenerating arrives in a later update">"Regenerate"</button>
+                    title="Writing the whole presentation again arrives in a later update">"Regenerate"</button>
                 <button type="button" class="button" aria-disabled="true"
                     title="The booklet arrives in a later update">"Export booklet"</button>
                 <button type="button" class="button primary present-button"
@@ -290,6 +300,10 @@ enum ChangeKind {
     Saved,
     Reverted,
     Confirmed,
+    /// Staff released a held section to patients.
+    Released,
+    /// The section was written again.
+    Rewritten,
 }
 
 #[derive(Clone, PartialEq)]
@@ -305,6 +319,13 @@ struct ChangeNote {
 /// Identifies one block: section key and block field.
 type BlockKey = (String, String);
 
+/// A section being written again, and the stage its job reports.
+#[derive(Clone, PartialEq)]
+struct Rewrite {
+    key: String,
+    stage: SectionStage,
+}
+
 /// Shared editor state. Only one block is edited at a time.
 #[derive(Clone, Copy)]
 struct EditCtx {
@@ -316,6 +337,14 @@ struct EditCtx {
     error: RwSignal<Option<(BlockKey, String)>>,
     note: RwSignal<Option<ChangeNote>>,
     demo: Signal<bool>,
+    /// The section being written again. One at a time per presentation.
+    rewrite: RwSignal<Option<Rewrite>>,
+    /// A release request is in flight.
+    releasing: RwSignal<bool>,
+    /// The section whose release confirmation is open.
+    release_confirm: RwSignal<Option<String>>,
+    /// A refused rewrite or release, by section key.
+    section_error: RwSignal<Option<(String, String)>>,
 }
 
 fn dom_id(prefix: &str, key: &BlockKey) -> String {
@@ -355,9 +384,262 @@ enum BlockAction {
     Confirm,
 }
 
+/// Staff wording for a refused rewrite.
+fn regenerate_message(failure: &api::Failure) -> String {
+    let wait = failure
+        .retry_after
+        .map(|secs| match secs {
+            0..=89 => format!(" Try again in {secs} seconds."),
+            _ => format!(" Try again in about {} minutes.", secs.div_ceil(60)),
+        })
+        .unwrap_or_default();
+    match failure.code.as_str() {
+        "no_knowledge_entry" => "There's no reviewed content for this procedure yet, so it can't be written. It stays held from patients.".into(),
+        "generation_in_progress" if failure.status == 429 => {
+            format!("Another presentation is still being written. Wait for it to finish.{wait}")
+        }
+        "generation_in_progress" => {
+            "This presentation is still being written. Wait for it to finish, then try again.".into()
+        }
+        "rate_limited" if !wait.is_empty() => {
+            format!("The demo limits how often sections can be written again.{wait}")
+        }
+        "budget_reached" => {
+            "The AI budget for this month is used up, so the section can't be written again. It stays held from patients.".into()
+        }
+        "provider_not_configured" => {
+            "No AI writer is connected, so the section can't be written again. It stays held from patients.".into()
+        }
+        _ => failure.message.clone(),
+    }
+}
+
+/// Staff wording for a refused release.
+fn release_message(failure: &api::Failure) -> String {
+    match failure.code.as_str() {
+        // The message lists the findings.
+        "release_blocked" => failure.message.clone(),
+        "nothing_to_release" => {
+            "This section has no text that passed the checks. Write it again instead.".into()
+        }
+        "already_ready" => "This section is already shown to patients.".into(),
+        "generation_in_progress" => {
+            "This presentation is still being written. Wait for it to finish, then try again."
+                .into()
+        }
+        _ => failure.message.clone(),
+    }
+}
+
 impl EditCtx {
+    /// Whether a block edit, release or rewrite is running.
+    fn any_busy(self) -> bool {
+        self.busy.with(Option::is_some)
+            || self.releasing.get()
+            || self.rewrite.with(Option::is_some)
+    }
+
+    fn any_busy_untracked(self) -> bool {
+        self.busy.with_untracked(Option::is_some)
+            || self.releasing.get_untracked()
+            || self.rewrite.with_untracked(Option::is_some)
+    }
+
+    /// Replaces one section with the server's copy, cross-fading the canvas.
+    fn apply_section(self, section: SectionView) {
+        view_transition("vt-state", move || {
+            self.data.update(|p| {
+                if let Some(slot) = p.sections.iter_mut().find(|s| s.key == section.key) {
+                    *slot = section;
+                }
+            });
+        });
+    }
+
+    fn release(self, key: String, heading: String) {
+        if self.any_busy_untracked() {
+            return;
+        }
+        self.releasing.set(true);
+        self.section_error.set(None);
+        let id = self.id.get_value();
+        spawn_local(async move {
+            let result = api::release_section(id, key.clone()).await;
+            if self.releasing.try_set(false).is_some() {
+                // The editor was left while the request ran.
+                return;
+            }
+            self.release_confirm.set(None);
+            match result {
+                Ok(change) => {
+                    let shown = change.section.visibility == SectionVisibility::Ready;
+                    self.apply_section(change.section);
+                    self.note.set(Some(ChangeNote {
+                        section_key: key,
+                        heading,
+                        kind: ChangeKind::Released,
+                        warnings: change.warnings,
+                        shown,
+                    }));
+                }
+                Err(failure) => {
+                    if failure.code == "already_ready" {
+                        self.reload(key.clone(), None);
+                    }
+                    self.section_error
+                        .set(Some((key, release_message(&failure))));
+                }
+            }
+        });
+    }
+
+    fn regenerate(self, key: String, heading: String) {
+        if self.any_busy_untracked() {
+            return;
+        }
+        self.section_error.set(None);
+        self.release_confirm.set(None);
+        self.rewrite.set(Some(Rewrite {
+            key: key.clone(),
+            stage: SectionStage::Queued,
+        }));
+        let id = self.id.get_value();
+        spawn_local(async move {
+            let result = api::regenerate_section(id, key.clone()).await;
+            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+                return;
+            }
+            match result {
+                Ok(started) => {
+                    // Present waits for the job, as after creating a presentation.
+                    self.data.update(|p| p.job_state = JobState::Queued);
+                    self.watch(started.job_id, key, heading);
+                }
+                Err(failure) => {
+                    self.rewrite.set(None);
+                    self.section_error
+                        .set(Some((key, regenerate_message(&failure))));
+                }
+            }
+        });
+    }
+
+    /// Picks up a rewrite that was already running when the editor opened.
+    fn resume(self, job_id: String) {
+        spawn_local(async move {
+            let Ok(job) = api::job(job_id.clone()).await else {
+                return;
+            };
+            let Some(key) = job.section_key.clone() else {
+                return;
+            };
+            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+                return;
+            }
+            let heading = self
+                .data
+                .with_untracked(|p| {
+                    p.sections
+                        .iter()
+                        .find(|s| s.key == key)
+                        .map(|s| s.title.clone())
+                })
+                .unwrap_or_default();
+            self.rewrite.set(Some(Rewrite {
+                key: key.clone(),
+                stage: stage_of(&job, &key),
+            }));
+            self.on_job(job, job_id, key, heading);
+        });
+    }
+
+    /// Polls a rewrite job until it finishes, then reloads the presentation.
+    /// Polling stops when the editor unmounts, since its signals are gone.
+    fn watch(self, job_id: String, key: String, heading: String) {
+        spawn_local(async move {
+            let result = api::job(job_id.clone()).await;
+            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+                return;
+            }
+            match result {
+                Ok(job) => self.on_job(job, job_id, key, heading),
+                Err(failure) if failure.status == 404 => {
+                    self.rewrite.set(None);
+                    self.section_error.set(Some((key, failure.message)));
+                }
+                // Other failures are retried; a lost session is handled by
+                // the session gate.
+                Err(_) => set_timeout(
+                    move || self.watch(job_id, key, heading),
+                    REWRITE_RETRY_EVERY,
+                ),
+            }
+        });
+    }
+
+    fn on_job(self, job: JobStatus, job_id: String, key: String, heading: String) {
+        if job.state.is_finished() {
+            self.reload(key, Some((job, heading)));
+            return;
+        }
+        let stage = stage_of(&job, &key);
+        if self.rewrite.with_untracked(|r| r.as_ref().map(|r| r.stage)) != Some(stage) {
+            self.rewrite.set(Some(Rewrite {
+                key: key.clone(),
+                stage,
+            }));
+        }
+        set_timeout(move || self.watch(job_id, key, heading), REWRITE_POLL_EVERY);
+    }
+
+    /// Reloads the presentation in place, so the selected section stays
+    /// selected. With a finished rewrite job, also reports how it went.
+    fn reload(self, key: String, finished: Option<(JobStatus, String)>) {
+        let id = self.id.get_value();
+        spawn_local(async move {
+            let fresh = api::presentation(id).await;
+            if self.rewrite.try_with_untracked(|_| ()).is_none() {
+                return;
+            }
+            match fresh {
+                Ok(p) => {
+                    let shown = p
+                        .sections
+                        .iter()
+                        .any(|s| s.key == key && s.visibility == SectionVisibility::Ready);
+                    view_transition("vt-state", move || {
+                        self.data.set(p);
+                        self.rewrite.set(None);
+                    });
+                    if let Some((job, heading)) = finished {
+                        if let Some(error) = job.error {
+                            self.section_error.set(Some((key.clone(), error)));
+                        }
+                        self.note.set(Some(ChangeNote {
+                            section_key: key,
+                            heading,
+                            kind: ChangeKind::Rewritten,
+                            warnings: Vec::new(),
+                            shown,
+                        }));
+                    }
+                }
+                Err(failure) => {
+                    self.rewrite.set(None);
+                    self.section_error.set(Some((
+                        key,
+                        format!(
+                            "The presentation could not be reloaded. {}",
+                            failure.message
+                        ),
+                    )));
+                }
+            }
+        });
+    }
+
     fn run(self, key: BlockKey, heading: String, action: BlockAction) {
-        if self.busy.get_untracked().is_some() {
+        if self.any_busy_untracked() {
             return;
         }
         self.busy.set(Some(key.clone()));
@@ -430,7 +712,15 @@ fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
         error: RwSignal::new(None),
         note: RwSignal::new(None),
         demo,
+        rewrite: RwSignal::new(None),
+        releasing: RwSignal::new(false),
+        release_confirm: RwSignal::new(None),
+        section_error: RwSignal::new(None),
     };
+    let (job_id, running) = data.with_untracked(|p| (p.job_id.clone(), !p.job_state.is_finished()));
+    if running {
+        ctx.resume(job_id);
+    }
     let first = data.with_untracked(|p| {
         nav_entries(p)
             .first()
@@ -444,7 +734,7 @@ fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
         <div class="editor-grid reveal">
             {move || {
                 let entries = data.with(nav_entries);
-                view! { <SectionRail entries selected /> }
+                view! { <SectionRail entries selected rewrite=ctx.rewrite /> }
             }}
             <main class="editor-canvas">
                 {move || no_sections().then(|| view! {
@@ -489,6 +779,14 @@ fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
     }
 }
 
+/// The stage a job reports for one section; queued until it is listed.
+fn stage_of(job: &JobStatus, key: &str) -> SectionStage {
+    job.sections
+        .iter()
+        .find(|s| s.key == key)
+        .map_or(SectionStage::Queued, |s| s.stage)
+}
+
 fn change_note_view(note: ChangeNote) -> AnyView {
     let outcome = match (&note.kind, note.shown) {
         (ChangeKind::Saved, true) => "Saved. Patients will see your text.",
@@ -499,6 +797,13 @@ fn change_note_view(note: ChangeNote) -> AnyView {
         }
         (ChangeKind::Confirmed, true) => "Confirmed. Patients will see this text.",
         (ChangeKind::Confirmed, false) => "Confirmed. This section is still held from patients.",
+        (ChangeKind::Released, _) => "Released. Patients will see this section.",
+        (ChangeKind::Rewritten, true) => {
+            "Written again and passed the checks. Patients will see it."
+        }
+        (ChangeKind::Rewritten, false) => {
+            "Written again. This section is still held from patients."
+        }
     };
     if note.warnings.is_empty() {
         return view! {
@@ -531,7 +836,11 @@ fn change_note_view(note: ChangeNote) -> AnyView {
 }
 
 #[component]
-fn SectionRail(entries: Vec<NavEntry>, selected: RwSignal<String>) -> impl IntoView {
+fn SectionRail(
+    entries: Vec<NavEntry>,
+    selected: RwSignal<String>,
+    rewrite: RwSignal<Option<Rewrite>>,
+) -> impl IntoView {
     let first_procedure = entries.iter().position(|e| e.procedure);
     let costs_at = entries.iter().position(|e| e.key == COSTS_KEY);
     view! {
@@ -543,6 +852,10 @@ fn SectionRail(entries: Vec<NavEntry>, selected: RwSignal<String>) -> impl IntoV
                         <li class="rail-group" aria-hidden="true">"Procedures"</li>
                     });
                     let key = entry.key.clone();
+                    let rewriting = {
+                        let key = key.clone();
+                        Memo::new(move |_| rewrite.with(|r| r.as_ref().is_some_and(|r| r.key == key)))
+                    };
                     let key_for_click = key.clone();
                     let is_current = move || selected.get() == key;
                     let (mark, mark_label) = match entry.mark {
@@ -580,8 +893,10 @@ fn SectionRail(entries: Vec<NavEntry>, selected: RwSignal<String>) -> impl IntoV
                                 }
                             >
                                 <span class="rail-text">{entry.label}</span>
-                                <span class=mark_class aria-hidden="true">{mark}</span>
-                                <span class="visually-hidden">{format!(", {mark_label}")}</span>
+                                <span class=mark_class class:rewriting=rewriting aria-hidden="true">{mark}</span>
+                                <span class="visually-hidden">
+                                    {move || if rewriting.get() { ", Writing again".to_owned() } else { format!(", {mark_label}") }}
+                                </span>
                             </button>
                         </li>
                     }
@@ -628,6 +943,7 @@ fn section_pane(p: &PresentationView, section: &SectionView, ctx: EditCtx) -> An
                         {reasons.into_iter().map(|r| view! { <li>{r}</li> }).collect_view()}
                     </ul>
                 })}
+                <HeldActions section=section.clone() ctx />
             </div>
         })}
         {blocks.into_iter().map(|block| view! {
@@ -646,6 +962,146 @@ fn section_pane(p: &PresentationView, section: &SectionView, ctx: EditCtx) -> An
         })}
     }
     .into_any()
+}
+
+/// What staff can do with a held section: write it again, or release it to
+/// patients after checking it. When release is refused, the findings that
+/// block it are listed so staff know what to fix.
+#[component]
+fn HeldActions(section: SectionView, ctx: EditCtx) -> impl IntoView {
+    let key = section.key.clone();
+    let heading = section.title.clone();
+    let can_regenerate = section.can_regenerate;
+    let can_release = section.can_release;
+    let blockers = (!can_release && section.visibility == SectionVisibility::NeedsReview)
+        .then_some(section.release_blockers)
+        .filter(|b| !b.is_empty());
+
+    let rewriting = {
+        let key = key.clone();
+        Memo::new(move |_| {
+            ctx.rewrite
+                .with(|r| r.as_ref().filter(|r| r.key == key).map(|r| r.stage))
+        })
+    };
+    let confirming = {
+        let key = key.clone();
+        Memo::new(move |_| {
+            ctx.release_confirm
+                .with(|c| c.as_deref() == Some(key.as_str()))
+        })
+    };
+    let error = {
+        let key = key.clone();
+        move || {
+            ctx.section_error.with(|e| {
+                e.as_ref()
+                    .filter(|(k, _)| *k == key)
+                    .map(|(_, m)| m.clone())
+            })
+        }
+    };
+    let confirm_id = format!(
+        "release-confirm-{}",
+        dom_id("s", &(key.clone(), String::new()))
+    );
+
+    let regenerate = {
+        let key = key.clone();
+        let heading = heading.clone();
+        move |_| ctx.regenerate(key.clone(), heading.clone())
+    };
+    let ask_release = {
+        let key = key.clone();
+        let confirm_id = confirm_id.clone();
+        move |_| {
+            if ctx.any_busy_untracked() {
+                return;
+            }
+            ctx.section_error.set(None);
+            ctx.release_confirm.set(Some(key.clone()));
+            focus_later(confirm_id.clone());
+        }
+    };
+    let release = {
+        let key = key.clone();
+        let heading = heading.clone();
+        move |_| ctx.release(key.clone(), heading.clone())
+    };
+    let cancel_release = move |_| ctx.release_confirm.set(None);
+
+    let actions = move || {
+        if let Some(stage) = rewriting.get() {
+            // Rebuilt on each stage change, so the new stage settles in.
+            return view! {
+                <div class="rewrite-progress" role="status">
+                    <span class="rewrite-dot" aria-hidden="true"></span>
+                    <span class="rewrite-stage">{format!("Writing this section again · {}", stage_text(stage))}</span>
+                </div>
+            }
+            .into_any();
+        }
+        if confirming.get() {
+            let release = release.clone();
+            return view! {
+                <div class="release-confirm" id=confirm_id.clone() tabindex="-1" role="group"
+                    aria-label="Confirm release">
+                    <p class="release-confirm-text">{RELEASE_CONFIRM}</p>
+                    <div class="held-action-row">
+                        <button type="button" class="button primary small"
+                            disabled=move || ctx.releasing.get()
+                            on:click=release>
+                            {move || if ctx.releasing.get() { "Releasing…" } else { "Release to patient" }}
+                        </button>
+                        <button type="button" class="button small"
+                            disabled=move || ctx.releasing.get()
+                            on:click=cancel_release>"Cancel"</button>
+                    </div>
+                </div>
+            }
+            .into_any();
+        }
+        let regenerate = regenerate.clone();
+        let ask_release = ask_release.clone();
+        (can_regenerate || can_release)
+            .then(|| {
+                view! {
+                    <div class="held-action-row">
+                        {can_release.then(|| view! {
+                            <button type="button" class="button primary small"
+                                disabled=move || ctx.any_busy()
+                                on:click=ask_release>"Release to patient"</button>
+                        })}
+                        {can_regenerate.then(|| view! {
+                            <button type="button" class="button small"
+                                disabled=move || ctx.any_busy()
+                                on:click=regenerate>"Regenerate section"</button>
+                        })}
+                    </div>
+                }
+            })
+            .into_any()
+    };
+
+    view! {
+        <div class="held-actions">
+            {blockers.map(|blockers| view! {
+                <div class="release-blockers">
+                    <p class="held-lead">"Fix these before releasing:"</p>
+                    <ul class="reason-list">
+                        {blockers.into_iter().map(|b| view! { <li>{b}</li> }).collect_view()}
+                    </ul>
+                </div>
+            })}
+            {(!can_regenerate).then(|| view! {
+                <p class="held-hint">"There's no reviewed content for this procedure yet, so it can't be written again."</p>
+            })}
+            {actions}
+            {move || error().map(|message| view! {
+                <p class="form-error" role="alert">{message}</p>
+            })}
+        </div>
+    }
 }
 
 #[component]
@@ -719,7 +1175,7 @@ fn BlockCard(
         let key = key.clone();
         Memo::new(move |_| ctx.busy.with(|b| b.as_ref() == Some(&key)))
     };
-    let any_busy = move || ctx.busy.with(Option::is_some);
+    let any_busy = move || ctx.any_busy();
     let error = {
         let key = key.clone();
         move || {

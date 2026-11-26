@@ -427,6 +427,46 @@ a {
   color: var(--color-text-subtle);
 }
 
+/* Lock screen: the main action, then sign-out with its confirmation. */
+.lock-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lock-body .auth-text {
+  margin: 0 0 8px;
+}
+
+.lock-body > .button,
+.lock-body > a.button {
+  justify-content: center;
+}
+
+.lock-sign-out {
+  align-self: center;
+}
+
+.lock-confirm {
+  margin-top: 4px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--status-review-bg);
+  color: var(--status-review-fg);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  animation: dc-rise-in var(--dur-base) var(--ease-emphasized) backwards;
+}
+
+.lock-confirm-text {
+  margin: 0 0 10px;
+}
+
+.lock-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .form {
   display: flex;
   flex-direction: column;
@@ -1825,6 +1865,92 @@ a.button {
   margin-top: 4px;
 }
 
+/* Actions on a held section: release, write again, and why release waits. */
+.held-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.held-actions:empty {
+  display: none;
+}
+
+.held-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.held-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.release-blockers .held-lead {
+  font-weight: 600;
+}
+
+.release-confirm,
+.rewrite-progress {
+  animation: dc-rise-in var(--dur-base) var(--ease-emphasized) backwards;
+}
+
+.release-confirm {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
+}
+
+.release-confirm:focus {
+  outline: none;
+}
+
+.release-confirm:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.release-confirm-text {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.rewrite-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.rewrite-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  animation: dc-pulse 1.2s ease-in-out infinite;
+}
+
+/* Each stage change redraws the label, so it settles in. */
+.rewrite-stage {
+  animation: dc-fade-in var(--dur-base) var(--ease-standard) backwards;
+}
+
+.rail-mark.rewriting {
+  animation: dc-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rewrite-dot,
+  .rail-mark.rewriting {
+    animation: none;
+  }
+}
+
 .block-card.editing {
   border: 2px solid var(--color-primary);
   padding: 15px 17px;
@@ -2114,6 +2240,28 @@ a.button {
 
 ::view-transition-new(editor-canvas) {
   animation: var(--dur-slow) var(--ease-emphasized) 30ms both dc-vt-in-up;
+}
+
+/* A section that changes state in place (released, or written again)
+   cross-fades without moving, since the reader stays on the same section. */
+.vt-state .editor-canvas {
+  view-transition-name: editor-state;
+}
+
+.vt-state .section-rail {
+  view-transition-name: editor-rail;
+}
+
+.vt-state .checks-rail {
+  view-transition-name: editor-checks;
+}
+
+::view-transition-old(editor-state) {
+  animation: var(--dur-fast) var(--ease-exit) both dc-fade-out;
+}
+
+::view-transition-new(editor-state) {
+  animation: var(--dur-base) var(--ease-standard) both dc-fade-in;
 }
 
 /* Without view transitions, new page content rises in on its own. */

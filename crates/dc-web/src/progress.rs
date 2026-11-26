@@ -20,7 +20,7 @@ pub fn presentation_href(id: &str) -> String {
     format!("/presentations/{}", api::encode(id))
 }
 
-fn stage_text(stage: SectionStage) -> &'static str {
+pub(crate) fn stage_text(stage: SectionStage) -> &'static str {
     match stage {
         SectionStage::Queued => "Queued",
         SectionStage::Writing => "Writing",
