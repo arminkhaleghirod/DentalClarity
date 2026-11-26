@@ -1,0 +1,28 @@
+[package]
+name = "clarityeval"
+description = "ClarityEval: benchmark runner and deterministic scorers for DentalClarity's model tasks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "clarityeval"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap = { version = "4.6", features = ["derive"] }
+dc-ai.workspace = true
+dc-core.workspace = true
+dc-generation.workspace = true
+dc-knowledge.workspace = true
+dotenvy = "0.15"
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+toml.workspace = true

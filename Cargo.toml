@@ -8,6 +8,7 @@ members = [
     "crates/dc-generation",
     "crates/dc-server",
     "crates/dc-web",
+    "crates/clarityeval",
 ]
 default-members = [
     "crates/dc-core",
@@ -16,6 +17,7 @@ default-members = [
     "crates/dc-ai",
     "crates/dc-generation",
     "crates/dc-server",
+    "crates/clarityeval",
 ]
 
 [workspace.package]

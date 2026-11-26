@@ -75,6 +75,13 @@ Acceptance:
 - Content that fails validation is held as needs review and never shown to patients.
 - Timing measured with the benchmark definition in [AI_PIPELINE.md](AI_PIPELINE.md).
 
+Progress:
+- Done: server wiring. `POST /api/staff/presentations` takes a plan snapshot, stores the presentation and a queued job, and starts it; `GET /api/staff/jobs/{id}` reports per-section progress while the job runs; `GET /api/staff/presentations` and `GET /api/staff/presentations/{id}` return the summary list and the full view with locked facts from the snapshot.
+- Done: jobs in SQLite (migration 0003), at most 2 running at once, re-run from the start after a restart. Final state is succeeded when every section passed, needs review when at least one passed, and failed when none did.
+- Done: demo controls. Presentations are scoped to the visitor session and purged after 24 hours; 3 new generations per hour per visitor, 10 per day per client address, 1 running job per visitor (all `429` with `Retry-After`); the monthly budget guard with the 80% soft stop.
+- Done: demo mode builds OpenRouter models from `OPENROUTER_API_KEY`, with `DC_TEXT_MODEL` as an override. Clinical mode answers `503 provider_not_configured` until M9.
+- Open: per-stage resume, a visible queue position, the `ai_calls` table, the dated price table, and the timing benchmark.
+
 ## M5 Editor, Present mode and narration
 
 Acceptance:

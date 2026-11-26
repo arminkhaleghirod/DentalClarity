@@ -1,0 +1,104 @@
+[
+ {
+  "key": "procedure:p3",
+  "state": "needs_review",
+  "output": {
+   "procedure_ref": "p3",
+   "what_it_is": [
+    {
+     "text": "A deep cleaning on tooth 19 removes tartar below the gum line.",
+     "cites": [
+      "kb:periodontal_scaling#what_it_is",
+      "fact:p3"
+     ]
+    }
+   ],
+   "why": {
+    "kind": "common_reasons",
+    "sentences": [
+     {
+      "text": "Your dentist found gum disease around these teeth.",
+      "cites": [
+       "kb:periodontal_scaling#common_reasons"
+      ]
+     },
+     {
+      "text": "Your dental team can tell you why they suggested it for you.",
+      "cites": [
+       "fact:p3"
+      ]
+     }
+    ]
+   },
+   "what_happens": [
+    {
+     "text": "The area is usually numbed before the cleaning starts.",
+     "cites": [
+      "kb:periodontal_scaling#what_happens"
+     ]
+    },
+    {
+     "text": "It takes two visits and costs $200.",
+     "cites": [
+      "kb:periodontal_scaling#what_happens"
+     ]
+    }
+   ],
+   "recovery": [
+    {
+     "text": "Many people have tender gums for a short while afterwards.",
+     "cites": [
+      "kb:periodontal_scaling#recovery"
+     ]
+    },
+    {
+     "text": "Take ibuprofen if your gums are sore.",
+     "cites": [
+      "kb:periodontal_scaling#recovery"
+     ]
+    }
+   ],
+   "benefits": [
+    {
+     "text": "It can help the gums heal and fit more snugly around the teeth.",
+     "cites": [
+      "kb:made_up#benefits"
+     ]
+    }
+   ],
+   "if_delayed": [
+    {
+     "text": "Act now, because you have gum disease that can lead to tooth loss.",
+     "cites": [
+      "kb:periodontal_scaling#if_delayed"
+     ]
+    }
+   ],
+   "questions": [
+    {
+     "text": "How should I care for my gums afterwards?",
+     "cites": []
+    },
+    {
+     "text": "Will I need follow-up cleanings?",
+     "cites": []
+    }
+   ]
+  },
+  "reasons": [],
+  "needs_note_confirmation": false,
+  "writer_model": "test/model",
+  "prompt_version": "writer.section@v1+000000000000",
+  "attempts": 3,
+  "attempt_log": [
+   "attempt 1: checks failed: V8 at /what_happens/1",
+   "attempt 2: reviewer Revise: R4"
+  ],
+  "usage": {
+   "input_tokens": 1200,
+   "output_tokens": 800,
+   "cost_usd": 0.0012
+  },
+  "elapsed_ms": 4100
+ }
+]

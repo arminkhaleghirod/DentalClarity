@@ -525,3 +525,37 @@ Fallbacks: if dentists cannot review by 02-04, publish LLM-judge results labelle
 6. Is anyone besides the owner available as second-person checker for hard cases?
 7. Name check: is "ClarityEval" free to use? Rename before the E4 tag if not.
 8. Is a formal publication venue planned (affects ethics-review checks and disclosure wording)?
+
+## Running the benchmark
+
+The first slice of the runner lives in `crates/clarityeval`. It covers `validate`, `run` and `report`; the other commands in section 14.1 are not built yet.
+
+```sh
+# Lint every case (dev, plus held-out if present locally). No network.
+cargo run -p clarityeval -- validate
+
+# Run the real dc-generation pipeline through OpenRouter. Costs money.
+# Reads OPENROUTER_API_KEY from the environment or .env.
+cargo run -p clarityeval -- run --split dev \
+  --model deepseek/deepseek-v4.1-flash-1017 --reasoning high \
+  --cases 'S-001,G-*' --max-cost-usd 1.0
+
+# Re-score a run offline with the current scorers and write report.md.
+cargo run -p clarityeval -- report eval/runs/<run_id>
+```
+
+`run` options: `--reviewer-model` (defaults to `--model`), `--reasoning none|low|medium|high`, `--cases` (comma-separated patterns with `*` and `?`, matched on case id or path), `--limit N`, `--out DIR` and `--max-cost-usd` (no new case starts once the reported spend reaches it).
+
+Cases live in `eval/cases/dev/<category>/<case_id>.toml` and follow section 3. Source facts sit inline in each case; `plan_ref` names the base plan, and `validate` enforces plan-level split integrity. The repo-wide canary is in `eval/canary.txt`. Task kinds `presentation` (all sections), `plan_summary`, `journey`, `procedure_explanation` and `next_steps` run today; the others parse but are skipped until the pipeline has them.
+
+Each run writes to `eval/runs/<utc-timestamp>-<model>-<short-sha>/`, which is git-ignored:
+
+| File | Contents |
+|---|---|
+| `manifest.json` | Requested and returned model ids, route, parameters, prompt versions, scorer version, git commit and dirty flag, rustc version, case hashes, dataset hash, start and end times, spend |
+| `results.jsonl` | One line per case: every `SectionResult`, every model call (role, latency, tokens, provider-reported cost, returned model id) and the deterministic metrics |
+| `report.md` | Written by `report`: summary, per-category and per-metric tables with n, section states, failure details |
+
+The upstream provider behind OpenRouter is recorded as unknown until the `dc-ai` adapter reports it.
+
+Held-out cases are never created in the committed tree. They are authored after dev prompts stabilize (milestone E3) into `eval/heldout/cases/<category>/`, which `.gitignore` excludes, with plans that do not appear in dev. `clarityeval validate --split heldout` lints them locally, and `validate` fails if anything appears under `eval/cases/heldout/`. The hash commitment of section 5 is published before any final run; the `commit` and `verify-commitment` commands are still to be built.
