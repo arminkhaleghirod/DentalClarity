@@ -137,3 +137,31 @@ pub struct PatientView {
     /// True in demo mode: exit needs no PIN, and screens show a demo note.
     pub demo: bool,
 }
+
+/// Cache key for one narrated sentence: SHA-256 over the speech model, the
+/// language and the exact text. Any edit to the text, or a change of voice or
+/// language, gives a new key, so stale audio is never played.
+pub fn audio_key(speech_model: &str, language: &str, text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in [speech_model, language, text] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_keys_change_with_any_input() {
+        let a = audio_key("voice", "en", "The area is numbed first.");
+        assert_eq!(a.len(), 64);
+        assert_eq!(a, audio_key("voice", "en", "The area is numbed first."));
+        assert_ne!(a, audio_key("voice", "en", "The area is numbed first"));
+        assert_ne!(a, audio_key("voice", "es", "The area is numbed first."));
+        assert_ne!(a, audio_key("other", "en", "The area is numbed first."));
+    }
+}
