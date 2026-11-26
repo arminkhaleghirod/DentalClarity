@@ -403,6 +403,16 @@ pub async fn regenerate(
     .bind(&client_key)
     .execute(&mut *tx)
     .await?;
+    if state.mode == Mode::Demo {
+        sqlx::query(
+            "INSERT INTO regeneration_events (owner_scope, client_key, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(&owner)
+        .bind(&client_key)
+        .bind(jobs::now_ms())
+        .execute(&mut *tx)
+        .await?;
+    }
     audit::record(
         &mut *tx,
         actor(session.kind),
@@ -421,8 +431,9 @@ pub async fn regenerate(
     }))
 }
 
-/// Demo limits on single-section regenerations, counted from `jobs` so they
-/// survive a restart.
+/// Demo limits on single-section regenerations, counted from
+/// `regeneration_events` so they survive a restart and the purge of the
+/// presentation they were made on.
 async fn check_regeneration_limits(
     state: &AppState,
     owner: &str,
@@ -440,9 +451,9 @@ async fn check_regeneration_limits(
         ..Failure::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
     };
     let by_visitor: Vec<(i64,)> = sqlx::query_as(
-        "SELECT j.created_at FROM jobs j JOIN presentations p ON p.id = j.presentation_id
-         WHERE p.owner_scope = ? AND j.section_key IS NOT NULL AND j.created_at > ?
-         ORDER BY j.created_at",
+        "SELECT created_at FROM regeneration_events
+         WHERE owner_scope = ? AND created_at > ?
+         ORDER BY created_at",
     )
     .bind(owner)
     .bind(now - hour_ms)
@@ -458,8 +469,8 @@ async fn check_regeneration_limits(
         ));
     }
     let by_address: Vec<(i64,)> = sqlx::query_as(
-        "SELECT created_at FROM jobs
-         WHERE client_key = ? AND section_key IS NOT NULL AND created_at > ?
+        "SELECT created_at FROM regeneration_events
+         WHERE client_key = ? AND created_at > ?
          ORDER BY created_at",
     )
     .bind(client_key)

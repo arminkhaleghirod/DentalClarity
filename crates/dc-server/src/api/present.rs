@@ -200,7 +200,9 @@ pub async fn audio(
 /// `MAX_NARRATION_SENTENCES` consecutive sentences of one block of the bound
 /// version, in order. The `x-dc-sentence-offsets` header gives each
 /// sentence's start in milliseconds and `x-dc-duration-ms` the length.
-/// Keys from different blocks, out of order or not in the version answer 404.
+/// The keys must be one part of a block as [`aligned_part`] cuts it. Keys
+/// from different blocks, out of order, not aligned to a part or not in the
+/// version answer 404.
 pub async fn narration(
     State(state): State<AppState>,
     CurrentPresent(present): CurrentPresent,
@@ -257,15 +259,28 @@ pub(super) fn narration_keys(query: Option<&str>) -> Option<Vec<String>> {
     valid.then_some(keys)
 }
 
-/// The texts of the sentences `keys` name, if they are consecutive sentences
-/// of one block of `view`, in order.
+/// The texts of the sentences `keys` name, if they are exactly one part of
+/// one block of `view`.
 pub(super) fn block_texts(view: &PatientView, keys: &[String]) -> Option<Vec<String>> {
     view.sections
         .iter()
         .flat_map(|s| &s.blocks)
-        .flat_map(|b| b.sentences.windows(keys.len()))
-        .find(|run| run.iter().zip(keys).all(|(s, k)| &s.audio_key == k))
-        .map(|run| run.iter().map(|s| s.text.clone()).collect())
+        .find_map(|b| aligned_part(&b.sentences, keys))
+}
+
+/// The texts of `keys` if they are one of the parts a block is cut into for
+/// narration: `MAX_NARRATION_SENTENCES` sentences from the start, with a
+/// shorter last part. This is how pre-warming and the patient screens ask,
+/// so a block has only these few merged clips. Accepting any run of
+/// consecutive sentences would let one block of 12 sentences produce 78
+/// cached clips, enough to fill the cache and push out other visitors' clips.
+fn aligned_part(sentences: &[PatientSentence], keys: &[String]) -> Option<Vec<String>> {
+    sentences
+        .chunks(MAX_NARRATION_SENTENCES)
+        .find(|part| {
+            part.len() == keys.len() && part.iter().zip(keys).all(|(s, k)| &s.audio_key == k)
+        })
+        .map(|part| part.iter().map(|s| s.text.clone()).collect())
 }
 
 /// Builds what the patient may see for the present session's version: only
@@ -496,7 +511,11 @@ pub async fn exit(
         Mode::Clinical => check_unlock(&state, &present, ip, request).await?,
     };
     let actor = actor(present.staff_kind);
-    let Some(issued) = sessions::end_present(&state.db, &present).await? else {
+    // The rotation and its audit event commit together. Nothing after this
+    // call may fail the request, or the browser would keep a token that no
+    // longer exists and never receive the new one.
+    let detail = format!("presentation {} with {method}", present.presentation_id);
+    let Some(issued) = sessions::end_present(&state.db, &present, actor, &detail).await? else {
         // The locked session was signed out from its lock screen meanwhile.
         return Ok((
             StatusCode::UNAUTHORIZED,
@@ -509,13 +528,6 @@ pub async fn exit(
     state
         .limits
         .transfer_scope(&present.staff_token_hash, &issued.session.token_hash);
-    audit::record(
-        &state.db,
-        actor,
-        "present_exited",
-        &format!("presentation {} with {method}", present.presentation_id),
-    )
-    .await?;
     let mut headers = HeaderMap::new();
     headers.append(header::SET_COOKIE, clear_present_cookie(&state.http));
     headers.append(
@@ -628,6 +640,28 @@ mod tests {
             ["One thing.", "Dr. Lee says two!", "Three? four.", "Five"]
         );
         assert!(split_sentences("  ").is_empty());
+    }
+
+    #[test]
+    fn narration_parts_must_be_aligned_to_the_block() {
+        let sentences: Vec<PatientSentence> = (0..=MAX_NARRATION_SENTENCES)
+            .map(|i| PatientSentence {
+                text: format!("Sentence {i}."),
+                audio_key: format!("{i:064x}"),
+            })
+            .collect();
+        let keys: Vec<String> = sentences.iter().map(|s| s.audio_key.clone()).collect();
+        let part = |range: std::ops::Range<usize>| aligned_part(&sentences, &keys[range]);
+        let first = part(0..MAX_NARRATION_SENTENCES).unwrap();
+        assert_eq!(first.len(), MAX_NARRATION_SENTENCES);
+        assert_eq!(first[0], "Sentence 0.");
+        let last = MAX_NARRATION_SENTENCES;
+        assert_eq!(part(last..last + 1).unwrap(), ["Sentence 12."]);
+        // Runs that start or end anywhere else are refused.
+        assert!(part(1..last + 1).is_none());
+        assert!(part(0..2).is_none());
+        assert!(part(1..2).is_none());
+        assert!(part(last - 1..last + 1).is_none());
     }
 
     #[test]

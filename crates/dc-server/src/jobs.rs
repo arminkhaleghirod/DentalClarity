@@ -597,6 +597,12 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
             .execute(&mut *tx)
             .await?
             .rows_affected();
+    // Regeneration events expire by their own time (milliseconds), not with
+    // the presentation, so the demo limits keep counting them for a full day.
+    sqlx::query("DELETE FROM regeneration_events WHERE created_at <= ?")
+        .bind(cutoff * 1000)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(removed)
 }

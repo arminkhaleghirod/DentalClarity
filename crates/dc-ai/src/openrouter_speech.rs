@@ -21,6 +21,13 @@ const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// A 400 character sentence is about 30 s of 44.1 kHz mono PCM, about
 /// 2.6 MB. Anything far larger is not a sentence clip.
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Per-call timeout. A sentence normally takes 1 to 2 s.
+const TIMEOUT: Duration = Duration::from_secs(30);
+/// Lowest and highest PCM sample rate accepted from the provider, in Hz.
+pub const MIN_SAMPLE_RATE: u32 = 8_000;
+pub const MAX_SAMPLE_RATE: u32 = 48_000;
+/// Most PCM channels accepted from the provider (stereo).
+pub const MAX_CHANNELS: u16 = 2;
 
 pub struct OpenRouterSpeech {
     client: reqwest::Client,
@@ -41,8 +48,7 @@ impl OpenRouterSpeech {
     pub fn new(policy: ProviderPolicy, api_key: String) -> Result<Self> {
         policy.check_openrouter()?;
         let client = reqwest::Client::builder()
-            // A sentence normally takes 1 to 2 s; the caller retries a stuck call.
-            .timeout(Duration::from_secs(30))
+            .timeout(TIMEOUT)
             .build()
             .map_err(|e| AiError::Request(e.to_string()))?;
         Ok(Self {
@@ -72,32 +78,45 @@ pub fn speech_body(request: &SpeechRequest) -> serde_json::Value {
     })
 }
 
+/// Whether `rate` and `channels` describe PCM this server will handle:
+/// 8 to 48 kHz, mono or stereo. Anything else from the provider is refused
+/// rather than trusted in sample arithmetic.
+pub fn supported_pcm(rate: u32, channels: u16) -> bool {
+    (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&rate) && (1..=MAX_CHANNELS).contains(&channels)
+}
+
 /// Sample rate and channel count from a `audio/pcm;rate=..;channels=..`
 /// content type. Missing parameters fall back to 44.1 kHz mono, the format
-/// the endpoint documents for HeyGen.
-fn pcm_format(content_type: &str) -> (u32, u16) {
+/// the endpoint documents for HeyGen. A parameter that does not parse, or a
+/// format outside [`supported_pcm`], gives `None`.
+fn pcm_format(content_type: &str) -> Option<(u32, u16)> {
     let mut rate = 44_100;
     let mut channels = 1;
     for param in content_type.split(';').skip(1) {
         if let Some((name, value)) = param.split_once('=') {
             match name.trim() {
-                "rate" => rate = value.trim().parse().unwrap_or(rate),
-                "channels" => channels = value.trim().parse().unwrap_or(channels),
+                "rate" => rate = value.trim().parse().ok()?,
+                "channels" => channels = value.trim().parse().ok()?,
                 _ => {}
             }
         }
     }
-    (rate, channels)
+    supported_pcm(rate, channels).then_some((rate, channels))
 }
 
-/// Wraps 16-bit little-endian PCM samples in a RIFF/WAVE header.
-pub fn pcm_to_wav(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
-    let data_len = u32::try_from(pcm.len()).unwrap_or(u32::MAX);
-    let block_align = channels * 2;
-    let byte_rate = sample_rate * u32::from(block_align);
+/// Wraps 16-bit little-endian PCM samples in a RIFF/WAVE header. `None` when
+/// the format is outside [`supported_pcm`] or the data does not fit a WAV.
+pub fn pcm_to_wav(pcm: &[u8], sample_rate: u32, channels: u16) -> Option<Vec<u8>> {
+    if !supported_pcm(sample_rate, channels) {
+        return None;
+    }
+    let data_len = u32::try_from(pcm.len()).ok()?;
+    let riff_len = data_len.checked_add(36)?;
+    let block_align = channels.checked_mul(2)?;
+    let byte_rate = sample_rate.checked_mul(u32::from(block_align))?;
     let mut out = Vec::with_capacity(44 + pcm.len());
     out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(&riff_len.to_le_bytes());
     out.extend_from_slice(b"WAVEfmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes()); // PCM
@@ -109,7 +128,7 @@ pub fn pcm_to_wav(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_len.to_le_bytes());
     out.extend_from_slice(pcm);
-    out
+    Some(out)
 }
 
 /// Turns the response body into a playable clip.
@@ -125,15 +144,16 @@ fn into_clip(content_type: &str, body: Vec<u8>) -> Result<SpeechClip> {
         .to_ascii_lowercase();
     match base.as_str() {
         "audio/pcm" | "audio/l16" => {
-            let (rate, channels) = pcm_format(content_type);
-            if rate == 0 || channels == 0 {
-                return Err(AiError::BadResponse("bad PCM format".into()));
-            }
+            let bad_format = || AiError::BadResponse("unsupported PCM format".into());
+            let (rate, channels) = pcm_format(content_type).ok_or_else(bad_format)?;
             let frames = body.len() as u64 / (u64::from(channels) * 2);
-            let duration_ms = u32::try_from(frames * 1000 / u64::from(rate)).ok();
+            let duration_ms = frames
+                .checked_mul(1000)
+                .map(|ms| ms / u64::from(rate))
+                .and_then(|ms| u32::try_from(ms).ok());
             Ok(SpeechClip {
                 mime_type: "audio/wav".into(),
-                bytes: pcm_to_wav(&body, rate, channels),
+                bytes: pcm_to_wav(&body, rate, channels).ok_or_else(bad_format)?,
                 duration_ms,
             })
         }
@@ -160,6 +180,10 @@ impl SpeechModel for OpenRouterSpeech {
     }
 
     async fn synthesize(&self, request: SpeechRequest) -> Result<SpeechClip> {
+        // A call that timed out may still be billed, so it is reported as a
+        // reply that came back unusable, not as a failed request (D12). The
+        // caller counts it against the budget and retries it at most once.
+        let timed_out = || AiError::BadResponse(format!("no reply within {} s", TIMEOUT.as_secs()));
         let response = self
             .client
             .post(format!("{}/audio/speech", self.base_url))
@@ -167,7 +191,13 @@ impl SpeechModel for OpenRouterSpeech {
             .json(&speech_body(&request))
             .send()
             .await
-            .map_err(|e| AiError::Request(e.without_url().to_string()))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    timed_out()
+                } else {
+                    AiError::Request(e.without_url().to_string())
+                }
+            })?;
 
         let status = response.status();
         if status.as_u16() == 429 || status.as_u16() == 402 {
@@ -192,10 +222,15 @@ impl SpeechModel for OpenRouterSpeech {
         {
             return Err(AiError::BadResponse("audio too large".into()));
         }
-        let body = response
-            .bytes()
-            .await
-            .map_err(|e| AiError::Request(e.without_url().to_string()))?;
+        // The provider has answered by now, so a body that cannot be read
+        // is an unusable reply that may have been billed.
+        let body = response.bytes().await.map_err(|e| {
+            if e.is_timeout() {
+                timed_out()
+            } else {
+                AiError::BadResponse(e.without_url().to_string())
+            }
+        })?;
         if body.len() > MAX_RESPONSE_BYTES {
             return Err(AiError::BadResponse("audio too large".into()));
         }
@@ -268,11 +303,41 @@ mod tests {
 
     #[test]
     fn pcm_format_defaults_and_other_types() {
-        assert_eq!(pcm_format("audio/pcm"), (44_100, 1));
-        assert_eq!(pcm_format("audio/pcm; rate=24000; channels=2"), (24_000, 2));
+        assert_eq!(pcm_format("audio/pcm"), Some((44_100, 1)));
+        assert_eq!(
+            pcm_format("audio/pcm; rate=24000; channels=2"),
+            Some((24_000, 2))
+        );
         let mp3 = into_clip("audio/mpeg", vec![0xFF, 0xFB, 0x90]).unwrap();
         assert_eq!(mp3.mime_type, "audio/mpeg");
         assert!(into_clip("application/json", vec![b'{']).is_err());
         assert!(into_clip("audio/pcm", Vec::new()).is_err());
+    }
+
+    #[test]
+    fn pcm_outside_the_supported_range_is_refused() {
+        for content_type in [
+            "audio/pcm;rate=0",
+            "audio/pcm;rate=7999",
+            "audio/pcm;rate=48001",
+            "audio/pcm;rate=4294967295",
+            "audio/pcm;rate=fast",
+            "audio/pcm;channels=0",
+            "audio/pcm;channels=3",
+            "audio/pcm;channels=65535",
+            "audio/pcm;channels=70000",
+        ] {
+            assert_eq!(pcm_format(content_type), None, "{content_type}");
+            let err = into_clip(content_type, vec![0; 64]).unwrap_err();
+            assert!(matches!(err, AiError::BadResponse(_)), "{content_type}");
+        }
+        assert_eq!(pcm_format("audio/pcm;rate=8000"), Some((8_000, 1)));
+        assert_eq!(
+            pcm_format("audio/pcm;rate=48000;channels=2"),
+            Some((48_000, 2))
+        );
+        assert!(pcm_to_wav(&[0; 4], 96_000, 1).is_none());
+        assert!(pcm_to_wav(&[0; 4], 44_100, 40_000).is_none());
+        assert!(pcm_to_wav(&[0; 4], 44_100, 2).is_some());
     }
 }

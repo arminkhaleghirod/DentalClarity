@@ -375,7 +375,18 @@ pub async fn unlock(
             "password"
         }
     };
-    let issued = match sessions::unlock_stale(&state.db, &session.token_hash).await? {
+    let actor = match session.kind {
+        SessionKind::Staff => "staff",
+        SessionKind::Visitor => "visitor",
+    };
+    // Everything that can fail happens before the rotation commits: the
+    // practice name is read first and the audit event is written in the
+    // rotation's transaction. A failure after the commit would leave the
+    // browser holding a token that no longer exists.
+    let practice = settings::practice_name(&state).await?;
+    let detail = format!("present session had ended; with {method}");
+    let unlocked = sessions::unlock_stale(&state.db, &session.token_hash, actor, &detail).await?;
+    let issued = match unlocked {
         Unlock::Unlocked(issued) => issued,
         Unlock::PresentActive => return Err(present_active()),
         Unlock::Gone => {
@@ -390,18 +401,6 @@ pub async fn unlock(
     state
         .limits
         .transfer_scope(&session.token_hash, &issued.session.token_hash);
-    let actor = match session.kind {
-        SessionKind::Staff => "staff",
-        SessionKind::Visitor => "visitor",
-    };
-    audit::record(
-        &state.db,
-        actor,
-        "session_unlocked",
-        &format!("present session had ended; with {method}"),
-    )
-    .await?;
-    let practice = settings::practice_name(&state).await?;
     let session_state = match state.mode {
         Mode::Demo => SessionState::Visitor,
         Mode::Clinical => SessionState::Staff,

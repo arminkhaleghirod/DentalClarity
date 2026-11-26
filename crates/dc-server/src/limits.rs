@@ -198,7 +198,17 @@ pub struct Limits {
     pub narration_scope: WindowLimiter,
     /// Synthesized narration characters per client address.
     pub narration_address: WindowLimiter,
+    /// Where each rotated demo scope went, and when. Work started under the
+    /// old token, such as the narration pre-warm, resolves its scope here at
+    /// charge time, so it keeps charging the visitor after an exit or unlock.
+    scope_moves: Mutex<HashMap<String, (String, Instant)>>,
 }
+
+/// How long a scope move is remembered: the narration scope window, after
+/// which the old key's count would have reset anyway.
+const SCOPE_MOVE_MEMORY: Duration = Duration::from_secs(60 * 60);
+/// Most moves followed from one scope, in case of a cycle.
+const MAX_SCOPE_HOPS: usize = 16;
 
 impl Default for Limits {
     fn default() -> Self {
@@ -214,6 +224,7 @@ impl Default for Limits {
             edits: WindowLimiter::evicting(),
             narration_scope: WindowLimiter::evicting(),
             narration_address: WindowLimiter::default(),
+            scope_moves: Mutex::default(),
         }
     }
 }
@@ -225,6 +236,35 @@ impl Limits {
     pub fn transfer_scope(&self, from: &str, to: &str) {
         self.edits.transfer(from, to);
         self.narration_scope.transfer(from, to);
+        let now = Instant::now();
+        let mut moves = self.scope_moves.lock().expect("scope lock");
+        if moves.len() >= MAX_KEYS {
+            moves.retain(|_, (_, at)| now.duration_since(*at) < SCOPE_MOVE_MEMORY);
+            if moves.len() >= MAX_KEYS
+                && let Some(oldest) = moves
+                    .iter()
+                    .min_by_key(|(_, (_, at))| *at)
+                    .map(|(k, _)| k.clone())
+            {
+                moves.remove(&oldest);
+            }
+        }
+        moves.insert(from.to_owned(), (to.to_owned(), now));
+    }
+
+    /// The scope that `scope` has become through token rotations in the
+    /// last hour, or `scope` itself when it has not moved.
+    pub fn current_scope(&self, scope: &str) -> String {
+        let now = Instant::now();
+        let moves = self.scope_moves.lock().expect("scope lock");
+        let mut current = scope;
+        for _ in 0..MAX_SCOPE_HOPS {
+            match moves.get(current) {
+                Some((to, at)) if now.duration_since(*at) < SCOPE_MOVE_MEMORY => current = to,
+                _ => break,
+            }
+        }
+        current.to_owned()
     }
 }
 
@@ -282,6 +322,24 @@ mod tests {
         limiter.transfer("a", "b");
         assert!(limiter.take("b", 1, 1000, hour).is_err());
         assert!(limiter.take("a", 1000, 1000, hour).is_ok());
+    }
+
+    #[test]
+    fn rotated_scopes_resolve_to_the_newest_token() {
+        let limits = Limits::default();
+        let hour = Duration::from_secs(3600);
+        limits.narration_scope.take("a", 10, 100, hour).unwrap();
+        assert_eq!(limits.current_scope("a"), "a");
+        limits.transfer_scope("a", "b");
+        limits.transfer_scope("b", "c");
+        assert_eq!(limits.current_scope("a"), "c");
+        assert_eq!(limits.current_scope("b"), "c");
+        assert_eq!(limits.current_scope("other"), "other");
+        // The usage followed the moves.
+        assert!(limits.narration_scope.take("c", 91, 100, hour).is_err());
+        // A cycle stops after a bounded number of hops.
+        limits.transfer_scope("c", "a");
+        let _ = limits.current_scope("a");
     }
 
     #[test]

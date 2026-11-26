@@ -431,9 +431,8 @@ async fn regeneration_respects_the_demo_gates() {
     // The visitor's six rewrites for this hour are used up.
     for _ in 0..crate::api::review::DEMO_REGENERATIONS_PER_VISITOR_PER_HOUR {
         sqlx::query(
-            "INSERT INTO jobs (id, presentation_id, state, created_at, progress_json, section_key)
-             SELECT lower(hex(randomblob(16))), id, 'needs_review', ?, '[]', 'procedure:p6'
-             FROM presentations",
+            "INSERT INTO regeneration_events (owner_scope, client_key, created_at)
+             SELECT owner_scope, 'another network', ? FROM presentations",
         )
         .bind(crate::jobs::now_ms() - 1000)
         .execute(&db)
@@ -444,7 +443,17 @@ async fn regeneration_respects_the_demo_gates() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(response.headers().get(header::RETRY_AFTER).is_some());
     assert_eq!(error_code(response).await, "rate_limited");
+    // The count does not depend on the presentation's jobs, which are
+    // purged with the presentation, and it outlives the purge of other
+    // demo data.
     sqlx::query("DELETE FROM jobs WHERE section_key IS NOT NULL")
+        .execute(&db)
+        .await
+        .unwrap();
+    crate::jobs::purge_demo_data(&db).await.unwrap();
+    let response = section_action(&mut client, &id, "procedure:p6", "regenerate").await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    sqlx::query("DELETE FROM regeneration_events")
         .execute(&db)
         .await
         .unwrap();

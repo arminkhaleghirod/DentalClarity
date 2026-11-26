@@ -1177,7 +1177,26 @@ async fn demo_data_is_purged_after_a_day() {
         .execute(&db)
         .await
         .unwrap();
+    // A regeneration from a minute ago and one from a day ago.
+    let now_ms = crate::jobs::now_ms();
+    for at in [now_ms - 60_000, now_ms - 86_401_000] {
+        sqlx::query(
+            "INSERT INTO regeneration_events (owner_scope, client_key, created_at)
+             VALUES ('scope', 'address', ?)",
+        )
+        .bind(at)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
     assert_eq!(crate::jobs::purge_demo_data(&db).await.unwrap(), 1);
+    // The recent regeneration still counts after its presentation is gone.
+    let (count, oldest): (i64, i64) =
+        sqlx::query_as("SELECT COUNT(*), MIN(created_at) FROM regeneration_events")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!((count, oldest), (1, now_ms - 60_000));
     for table in ["presentations", "presentation_sections", "jobs"] {
         let (n,): (i64,) = sqlx::query_as(match table {
             "presentations" => "SELECT COUNT(*) FROM presentations",

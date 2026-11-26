@@ -15,7 +15,10 @@
 //! Speech cost counts against the same monthly `ai_usage` budget as text,
 //! and narration may spend at most [`crate::generation::SPEECH_SHARE`] of
 //! the cap. In demo mode every synthesized character also counts against a
-//! per-visitor and a per-address quota ([`Quota`]); cached clips are free.
+//! per-visitor and a per-address quota ([`Quota`]), at least
+//! [`MIN_CHARGED_CHARS`] per call; cached clips are free. One client address
+//! may make at most [`UPSTREAM_PER_ADDRESS_PER_MINUTE`] of the server's
+//! [`UPSTREAM_PER_MINUTE`] upstream calls.
 //!
 //! A block plays as one clip ([`Narration::block`]): the sentence clips are
 //! fetched or synthesized as above, their PCM samples are joined with
@@ -36,7 +39,7 @@ use crate::http::Failure;
 use crate::limits::{Limits, WindowLimiter};
 use anyhow::{Context, Result};
 use axum::http::StatusCode;
-use dc_ai::openrouter_speech::{OpenRouterSpeech, pcm_to_wav};
+use dc_ai::openrouter_speech::{OpenRouterSpeech, pcm_to_wav, supported_pcm};
 use dc_ai::{AiError, ProviderPolicy, SpeechModel, SpeechRequest, defaults};
 use dc_core::Mode;
 use dc_core::present::{MAX_NARRATION_SENTENCES, audio_key};
@@ -55,10 +58,25 @@ pub const MAX_TEXT_CHARS: usize = 400;
 pub const SPEECH_USD_PER_MILLION_CHARS: f64 = 4.0;
 /// Extra attempts after a transport or server failure.
 const RETRIES: u32 = 2;
+/// Extra attempts after a call that timed out or came back unusable. The
+/// provider may have billed such a call, so it is retried only once (D12).
+const BILLED_RETRIES: u32 = 1;
 /// Upstream speech calls per minute across the whole server.
-const UPSTREAM_PER_MINUTE: u32 = 120;
+pub const UPSTREAM_PER_MINUTE: u32 = 120;
+/// Upstream speech calls per minute from one client address, a quarter of
+/// [`UPSTREAM_PER_MINUTE`], so one network cannot keep narration busy for
+/// every other visitor.
+pub const UPSTREAM_PER_ADDRESS_PER_MINUTE: u32 = 30;
+/// Characters charged to the quota for one synthesized call, however short
+/// the sentence. The provider limit is per call, so a run of very short
+/// sentences must not cost less quota than the calls it uses.
+pub const MIN_CHARGED_CHARS: u32 = 50;
 /// Concurrent upstream calls while pre-warming.
 const PREWARM_CONCURRENCY: usize = 2;
+/// Times pre-warming waits out `narration_busy` for one block before it
+/// stops. A long presentation can pass the per-address share of upstream
+/// calls, and the cache is better filled a little later than not at all.
+const PREWARM_BUSY_WAITS: u32 = 5;
 /// Concurrent sentence clips fetched or synthesized for one block request.
 const BLOCK_CONCURRENCY: usize = 4;
 /// Silence between two sentences of a merged block clip.
@@ -94,12 +112,16 @@ pub struct Quota {
 }
 
 impl Quota {
+    /// The scope is resolved on every charge, because the token it names may
+    /// have rotated since this quota was made (the pre-warm task outlives
+    /// the request that started it).
     fn take(&self, chars: u32) -> Result<(), Failure> {
         let hour = Duration::from_secs(60 * 60);
         let day = Duration::from_secs(24 * 60 * 60);
+        let scope = self.limits.current_scope(&self.scope);
         self.limits
             .narration_scope
-            .take(&self.scope, chars, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+            .take(&scope, chars, DEMO_SCOPE_CHARS_PER_HOUR, hour)
             .map_err(quota_reached)?;
         if let Err(wait) = self.limits.narration_address.take(
             &self.address,
@@ -107,16 +129,25 @@ impl Quota {
             DEMO_ADDRESS_CHARS_PER_DAY,
             day,
         ) {
-            self.limits.narration_scope.refund(&self.scope, chars);
+            self.limits.narration_scope.refund(&scope, chars);
             return Err(quota_reached(wait));
         }
         Ok(())
     }
 
     fn refund(&self, chars: u32) {
-        self.limits.narration_scope.refund(&self.scope, chars);
+        let scope = self.limits.current_scope(&self.scope);
+        self.limits.narration_scope.refund(&scope, chars);
         self.limits.narration_address.refund(&self.address, chars);
     }
+}
+
+/// Quota characters charged for synthesizing `text`: its length, but at
+/// least [`MIN_CHARGED_CHARS`].
+pub fn charged_chars(text: &str) -> u32 {
+    u32::try_from(text.chars().count())
+        .unwrap_or(u32::MAX)
+        .max(MIN_CHARGED_CHARS)
 }
 
 fn quota_reached(wait: u64) -> Failure {
@@ -160,6 +191,9 @@ pub struct Narration {
     /// same sentence make one upstream call.
     inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     upstream: WindowLimiter,
+    /// Upstream calls per client address, so one address gets at most its
+    /// share of `upstream`.
+    upstream_address: WindowLimiter,
     retry_delay: Duration,
 }
 
@@ -184,6 +218,7 @@ impl Narration {
             audio_dir,
             inflight: Mutex::default(),
             upstream: WindowLimiter::default(),
+            upstream_address: WindowLimiter::default(),
             retry_delay: Duration::from_millis(500),
         }
     }
@@ -500,7 +535,7 @@ impl Narration {
     }
 
     /// Synthesizes after taking the characters from `quota`, and gives them
-    /// back when nothing was synthesized.
+    /// back when nothing was synthesized and nothing may have been billed.
     async fn synthesize(
         &self,
         speech: &dyn SpeechModel,
@@ -509,89 +544,26 @@ impl Narration {
         text: &str,
         quota: Option<&Quota>,
     ) -> Result<(String, Vec<u8>), Failure> {
-        let chars = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+        let chars = charged_chars(text);
         if let Some(quota) = quota {
             quota.take(chars)?;
         }
-        let result = self.synthesize_now(speech, key, language, text).await;
-        if result.is_err()
-            && let Some(quota) = quota
-        {
-            quota.refund(chars);
-        }
-        result
-    }
-
-    async fn synthesize_now(
-        &self,
-        speech: &dyn SpeechModel,
-        key: &str,
-        language: &str,
-        text: &str,
-    ) -> Result<(String, Vec<u8>), Failure> {
-        if let Err(wait) =
-            self.upstream
-                .check("speech", UPSTREAM_PER_MINUTE, Duration::from_secs(60))
-        {
-            return Err(Failure {
-                retry_after: Some(wait),
-                ..Failure::new(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "narration_busy",
-                    "Narration is busy. Try again in a moment.",
-                )
-            });
-        }
-        let cost = speech_cost(text);
-        if !self.budget.reserve_speech(cost).await? {
-            return Err(Failure::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "budget_reached",
-                "Demo narration budget reached for this month. Narration is paused until next month.",
-            ));
-        }
-        let request = SpeechRequest {
-            model: self.model.clone(),
-            text: text.to_owned(),
-            language: language.to_owned(),
-            voice: self.voice.clone(),
-        };
-        let mut attempt = 0;
-        let result = loop {
-            match speech.synthesize(request.clone()).await {
-                Err(AiError::Request(err)) if attempt < RETRIES => {
-                    attempt += 1;
-                    tracing::debug!(%err, attempt, "narration call failed; retrying");
-                    tokio::time::sleep(self.retry_delay * attempt).await;
-                }
-                other => break other,
-            }
-        };
-        self.budget.release_speech(cost);
-
+        let mut billed = 0;
+        let address = quota.map(|q| q.address.as_str());
+        let result = self
+            .call(speech, language, text, address, &mut billed)
+            .await;
         let clip = match result {
             Ok(clip) => clip,
-            Err(AiError::Limited(err)) => {
-                tracing::warn!(%err, "narration provider refused the call");
-                return Err(Failure::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "narration_unavailable",
-                    "Narration is not available right now.",
-                ));
-            }
-            Err(AiError::NotAllowed { .. }) => return Err(unavailable()),
-            Err(err) => {
-                tracing::warn!(%err, "narration failed");
-                return Err(Failure::new(
-                    StatusCode::BAD_GATEWAY,
-                    "narration_failed",
-                    "The narration for this sentence could not be made. Try again.",
-                ));
+            Err(failure) => {
+                if billed == 0
+                    && let Some(quota) = quota
+                {
+                    quota.refund(chars);
+                }
+                return Err(failure);
             }
         };
-        if let Err(err) = self.budget.record_speech(cost).await {
-            tracing::warn!(%err, "could not record narration spend");
-        }
         tracing::debug!(
             bytes = clip.bytes.len(),
             duration_ms = clip.duration_ms,
@@ -600,6 +572,102 @@ impl Narration {
         self.store(key, language, &self.voice_id, &clip.mime_type, &clip.bytes)
             .await?;
         Ok((clip.mime_type, clip.bytes))
+    }
+
+    /// Counts one upstream call for `address` and for the whole server, or
+    /// answers `429 narration_busy`.
+    fn take_upstream(&self, address: Option<&str>) -> Result<(), Failure> {
+        let minute = Duration::from_secs(60);
+        let busy = |wait| Failure {
+            retry_after: Some(wait),
+            ..Failure::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "narration_busy",
+                "Narration is busy. Try again in a moment.",
+            )
+        };
+        if let Some(address) = address {
+            self.upstream_address
+                .check(address, UPSTREAM_PER_ADDRESS_PER_MINUTE, minute)
+                .map_err(busy)?;
+        }
+        if let Err(wait) = self.upstream.check("speech", UPSTREAM_PER_MINUTE, minute) {
+            if let Some(address) = address {
+                self.upstream_address.refund(address, 1);
+            }
+            return Err(busy(wait));
+        }
+        Ok(())
+    }
+
+    /// Calls the provider, retrying transport and server failures twice and
+    /// a timeout or unusable reply once. Every attempt counts against the
+    /// upstream limits and reserves its cost first. A clip, a timeout and an
+    /// unusable reply are recorded at [`speech_cost`], since the provider
+    /// may have billed them (D12); `billed` counts those attempts.
+    async fn call(
+        &self,
+        speech: &dyn SpeechModel,
+        language: &str,
+        text: &str,
+        address: Option<&str>,
+        billed: &mut u32,
+    ) -> Result<dc_ai::SpeechClip, Failure> {
+        let cost = speech_cost(text);
+        let request = SpeechRequest {
+            model: self.model.clone(),
+            text: text.to_owned(),
+            language: language.to_owned(),
+            voice: self.voice.clone(),
+        };
+        let mut transport_retries = 0;
+        loop {
+            self.take_upstream(address)?;
+            if !self.budget.reserve_speech(cost).await? {
+                return Err(Failure::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "budget_reached",
+                    "Demo narration budget reached for this month. Narration is paused until next month.",
+                ));
+            }
+            let result = speech.synthesize(request.clone()).await;
+            self.budget.release_speech(cost);
+            if matches!(result, Ok(_) | Err(AiError::BadResponse(_))) {
+                *billed += 1;
+                if let Err(err) = self.budget.record_speech(cost).await {
+                    tracing::warn!(%err, "could not record narration spend");
+                }
+            }
+            match result {
+                Ok(clip) => return Ok(clip),
+                Err(AiError::Request(err)) if transport_retries < RETRIES => {
+                    transport_retries += 1;
+                    tracing::debug!(%err, transport_retries, "narration call failed; retrying");
+                    tokio::time::sleep(self.retry_delay * transport_retries).await;
+                }
+                Err(AiError::BadResponse(err)) if *billed <= BILLED_RETRIES => {
+                    tracing::debug!(%err, "narration reply was unusable; retrying once");
+                    tokio::time::sleep(self.retry_delay).await;
+                }
+                Err(AiError::Limited(err)) => {
+                    tracing::warn!(%err, "narration provider refused the call");
+                    return Err(Failure::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "narration_unavailable",
+                        "Narration is not available right now.",
+                    ));
+                }
+                Err(AiError::NotAllowed { .. }) => return Err(unavailable()),
+                Err(err) => {
+                    tracing::warn!(%err, "narration failed");
+                    return Err(Failure::new(
+                        StatusCode::BAD_GATEWAY,
+                        "narration_failed",
+                        "The narration for this sentence could not be made. Try again.",
+                    ));
+                }
+            }
+        }
     }
 
     async fn store(
@@ -635,8 +703,9 @@ impl Narration {
     /// Fills the cache for `blocks` in the background, one block at a time
     /// in order with two upstream calls at a time, so each block's merged
     /// clip is ready as early as possible. Each block is the sentence texts
-    /// of one clip, at most [`MAX_NARRATION_SENTENCES`]. Failures are logged
-    /// and skipped; nothing happens without a provider.
+    /// of one clip, at most [`MAX_NARRATION_SENTENCES`]. When narration is
+    /// busy it waits as told and tries the block again; other failures are
+    /// logged and skipped. Nothing happens without a provider.
     pub fn prewarm(
         self: Arc<Self>,
         language: String,
@@ -652,10 +721,22 @@ impl Narration {
                 if texts.is_empty() || !seen.insert(texts.clone()) {
                     continue;
                 }
-                let result = self
-                    .block_with(&language, &texts, quota.as_ref(), PREWARM_CONCURRENCY)
-                    .await;
-                if let Err(failure) = result {
+                let mut waits = 0;
+                loop {
+                    let result = self
+                        .block_with(&language, &texts, quota.as_ref(), PREWARM_CONCURRENCY)
+                        .await;
+                    let Err(failure) = result else {
+                        break;
+                    };
+                    if failure.code == "narration_busy" && waits < PREWARM_BUSY_WAITS {
+                        waits += 1;
+                        // Sentences already made stay cached, so the retry
+                        // only asks for the rest.
+                        let wait = failure.retry_after.unwrap_or(1).clamp(1, 60);
+                        tokio::time::sleep(Duration::from_secs(wait)).await;
+                        continue;
+                    }
                     tracing::debug!(code = failure.code, "narration pre-warm skipped a block");
                     // Out of budget, quota or capacity: the rest would fail
                     // the same way.
@@ -665,6 +746,7 @@ impl Narration {
                     ) {
                         return;
                     }
+                    break;
                 }
             }
         })
@@ -857,7 +939,11 @@ impl Wav<'_> {
 }
 
 fn frames_to_ms(frames: u64, rate: u32) -> u32 {
-    u32::try_from(frames * 1000 / u64::from(rate)).unwrap_or(u32::MAX)
+    frames
+        .checked_mul(1000)
+        .and_then(|ms| ms.checked_div(u64::from(rate)))
+        .and_then(|ms| u32::try_from(ms).ok())
+        .unwrap_or(u32::MAX)
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
@@ -868,8 +954,9 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
-/// The samples of a 16-bit PCM WAV file, cut to whole frames. Other formats
-/// give `None`.
+/// The samples of a 16-bit PCM WAV file, cut to whole frames. Other formats,
+/// and rates or channel counts outside `supported_pcm` (8 to 48 kHz, mono or
+/// stereo), give `None`.
 fn parse_wav(bytes: &[u8]) -> Option<Wav<'_>> {
     if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
         return None;
@@ -879,13 +966,13 @@ fn parse_wav(bytes: &[u8]) -> Option<Wav<'_>> {
     while pos + 8 <= bytes.len() {
         let id = &bytes[pos..pos + 4];
         let size = usize::try_from(u32_at(bytes, pos + 4)?).ok()?;
-        let start = pos + 8;
+        let start = pos.checked_add(8)?;
         let body = &bytes[start..start.saturating_add(size).min(bytes.len())];
         match id {
             b"fmt " => {
                 let (tag, channels) = (u16_at(body, 0)?, u16_at(body, 2)?);
                 let (rate, bits) = (u32_at(body, 4)?, u16_at(body, 14)?);
-                if tag != 1 || bits != 16 || channels == 0 || rate == 0 {
+                if tag != 1 || bits != 16 || !supported_pcm(rate, channels) {
                     return None;
                 }
                 format = Some((rate, channels));
@@ -920,10 +1007,13 @@ fn merge_wavs(clips: &[&[u8]], pause_ms: u32) -> Option<BlockClip> {
         return None;
     }
     let frame = first.frame_bytes();
-    let pause_frames = usize::try_from(u64::from(rate) * u64::from(pause_ms) / 1000).ok()?;
-    let pause = vec![0u8; pause_frames * frame];
-    let total =
-        parsed.iter().map(|w| w.data.len()).sum::<usize>() + pause.len() * (parsed.len() - 1);
+    let pause_frames =
+        usize::try_from(u64::from(rate).checked_mul(u64::from(pause_ms))? / 1000).ok()?;
+    let pause = vec![0u8; pause_frames.checked_mul(frame)?];
+    let total = parsed
+        .iter()
+        .try_fold(0usize, |sum, w| sum.checked_add(w.data.len()))?
+        .checked_add(pause.len().checked_mul(parsed.len() - 1)?)?;
     let mut pcm = Vec::with_capacity(total);
     let mut offsets_ms = Vec::with_capacity(parsed.len());
     for (i, wav) in parsed.iter().enumerate() {
@@ -935,7 +1025,7 @@ fn merge_wavs(clips: &[&[u8]], pause_ms: u32) -> Option<BlockClip> {
     }
     let duration_ms = frames_to_ms((pcm.len() / frame) as u64, rate);
     Some(BlockClip {
-        wav: pcm_to_wav(&pcm, rate, channels),
+        wav: pcm_to_wav(&pcm, rate, channels)?,
         offsets_ms,
         duration_ms,
     })
@@ -1083,11 +1173,13 @@ pub(crate) mod test_support {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Counts calls, waits a little so concurrent requests overlap, and can
-    /// fail the first few calls with a transport error.
+    /// fail the first few calls with a transport error (`fail_first`) or, after
+    /// those, with an unusable reply such as a timeout (`unusable_first`).
     #[derive(Default)]
     pub(crate) struct FakeSpeech {
         pub calls: AtomicU32,
         pub fail_first: u32,
+        pub unusable_first: u32,
         pub texts: Mutex<Vec<String>>,
     }
 
@@ -1110,6 +1202,9 @@ pub(crate) mod test_support {
             if n < self.fail_first {
                 return Err(AiError::Request("connection reset".into()));
             }
+            if n < self.fail_first + self.unusable_first {
+                return Err(AiError::BadResponse("no reply within 30 s".into()));
+            }
             Ok(fake_clip(&request.text))
         }
     }
@@ -1126,7 +1221,7 @@ pub(crate) mod test_support {
             .collect();
         SpeechClip {
             mime_type: "audio/wav".into(),
-            bytes: dc_ai::openrouter_speech::pcm_to_wav(&pcm, 44_100, 1),
+            bytes: dc_ai::openrouter_speech::pcm_to_wav(&pcm, 44_100, 1).unwrap(),
             duration_ms: Some(u32::try_from(frames * 1000 / 44_100).unwrap_or(0)),
         }
     }
@@ -1402,7 +1497,7 @@ mod tests {
         let pcm: Vec<u8> = std::iter::repeat_n(value.to_le_bytes(), samples)
             .flatten()
             .collect();
-        pcm_to_wav(&pcm, rate, channels)
+        pcm_to_wav(&pcm, rate, channels).unwrap()
     }
 
     #[test]
@@ -1532,7 +1627,7 @@ mod tests {
         }
         assert_eq!(s.speech.calls(), 2);
         assert_eq!(block_rows(&s.db).await, 1);
-        let used = u32::try_from(SENTENCE.chars().count() + other.chars().count()).unwrap();
+        let used = charged_chars(SENTENCE) + charged_chars(other);
         let hour = Duration::from_secs(3600);
         assert!(
             limits
@@ -1626,7 +1721,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let used = u32::try_from(SENTENCE.chars().count()).unwrap();
+        let used = charged_chars(SENTENCE);
         let hour = Duration::from_secs(3600);
         // Exactly the one synthesized sentence was counted.
         let left = DEMO_SCOPE_CHARS_PER_HOUR - used;
@@ -1724,6 +1819,189 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn timeouts_are_billed_and_retried_once() {
+        let fake = FakeSpeech {
+            unusable_first: 1,
+            ..FakeSpeech::default()
+        };
+        let s = setup(Mode::Demo, fake, Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        let visitor = quota(&limits, "scope", "10.0.0.7");
+        assert!(
+            s.narration
+                .clip("en", SENTENCE, Some(&visitor))
+                .await
+                .is_ok()
+        );
+        assert_eq!(s.speech.calls(), 2);
+        // The timed-out call and the good one are both counted.
+        let (cost, speech_calls): (f64, i64) =
+            sqlx::query_as("SELECT speech_cost_usd, speech_calls FROM ai_usage")
+                .fetch_one(&s.db)
+                .await
+                .unwrap();
+        assert_eq!(speech_calls, 2);
+        assert!((cost - 2.0 * speech_cost(SENTENCE)).abs() < 1e-12);
+
+        // Two unusable replies: one retry, then failure. Both are counted,
+        // and the quota is kept, since the provider may have billed them.
+        let fake = FakeSpeech {
+            unusable_first: 5,
+            ..FakeSpeech::default()
+        };
+        let s = setup(Mode::Demo, fake, Some(25.0)).await;
+        let err = s
+            .narration
+            .clip("en", SENTENCE, Some(&visitor))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "narration_failed");
+        assert_eq!(s.speech.calls(), 2);
+        let (speech_calls,): (i64,) = sqlx::query_as("SELECT speech_calls FROM ai_usage")
+            .fetch_one(&s.db)
+            .await
+            .unwrap();
+        assert_eq!(speech_calls, 2);
+        let hour = Duration::from_secs(3600);
+        let left = DEMO_SCOPE_CHARS_PER_HOUR - 2 * charged_chars(SENTENCE);
+        assert!(
+            limits
+                .narration_scope
+                .take("scope", left + 1, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn short_sentences_are_charged_a_minimum() {
+        assert_eq!(charged_chars("Yes."), MIN_CHARGED_CHARS);
+        assert_eq!(charged_chars(&"a".repeat(80)), 80);
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        let visitor = quota(&limits, "scope", "10.0.0.8");
+        s.narration
+            .clip("en", "Yes.", Some(&visitor))
+            .await
+            .unwrap();
+        let hour = Duration::from_secs(3600);
+        let left = DEMO_SCOPE_CHARS_PER_HOUR - MIN_CHARGED_CHARS;
+        assert!(
+            limits
+                .narration_scope
+                .take("scope", left + 1, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+                .is_err()
+        );
+        assert!(
+            limits
+                .narration_scope
+                .take("scope", left, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn one_address_gets_only_its_share_of_upstream_calls() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        let greedy = quota(&limits, "scope-a", "10.0.0.9");
+        for i in 0..UPSTREAM_PER_ADDRESS_PER_MINUTE {
+            s.narration
+                .clip("en", &format!("Sentence number {i}."), Some(&greedy))
+                .await
+                .unwrap();
+        }
+        let err = s
+            .narration
+            .clip("en", "One sentence too many.", Some(&greedy))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.code, "narration_busy");
+        assert!(err.retry_after.is_some());
+        // The refused call is not charged to the quota.
+        let hour = Duration::from_secs(3600);
+        let used = UPSTREAM_PER_ADDRESS_PER_MINUTE * MIN_CHARGED_CHARS;
+        assert!(
+            limits
+                .narration_scope
+                .take(
+                    "scope-a",
+                    DEMO_SCOPE_CHARS_PER_HOUR - used,
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    hour
+                )
+                .is_ok()
+        );
+        // Another network still gets through.
+        let other = quota(&limits, "scope-b", "10.0.0.10");
+        assert!(
+            s.narration
+                .clip("en", "One sentence too many.", Some(&other))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_charges_follow_a_rotated_scope() {
+        let s = setup(Mode::Demo, FakeSpeech::default(), Some(25.0)).await;
+        let limits = Arc::new(Limits::default());
+        // A quota made before the token rotated, as the pre-warm task holds.
+        let stale = quota(&limits, "old-token", "10.0.0.11");
+        limits.transfer_scope("old-token", "new-token");
+        s.narration
+            .clip("en", SENTENCE, Some(&stale))
+            .await
+            .unwrap();
+        let hour = Duration::from_secs(3600);
+        let left = DEMO_SCOPE_CHARS_PER_HOUR - charged_chars(SENTENCE);
+        assert!(
+            limits
+                .narration_scope
+                .take("new-token", left + 1, DEMO_SCOPE_CHARS_PER_HOUR, hour)
+                .is_err()
+        );
+        assert!(
+            limits
+                .narration_scope
+                .take(
+                    "old-token",
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    DEMO_SCOPE_CHARS_PER_HOUR,
+                    hour
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn wav_with_an_unsupported_rate_or_channel_count_is_refused() {
+        let good = wav(10, 44_100, 1, 1);
+        assert!(parse_wav(&good).is_some());
+        let with = |rate: u32, channels: u16| {
+            let mut bytes = good.clone();
+            bytes[22..24].copy_from_slice(&channels.to_le_bytes());
+            bytes[24..28].copy_from_slice(&rate.to_le_bytes());
+            bytes
+        };
+        for (rate, channels) in [
+            (0, 1),
+            (7_999, 1),
+            (48_001, 1),
+            (u32::MAX, 1),
+            (44_100, 0),
+            (44_100, 3),
+            (44_100, u16::MAX),
+        ] {
+            assert!(
+                parse_wav(&with(rate, channels)).is_none(),
+                "{rate} {channels}"
+            );
+        }
+        assert!(parse_wav(&with(48_000, 2)).is_some());
     }
 
     #[tokio::test]

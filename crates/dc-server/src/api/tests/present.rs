@@ -730,7 +730,10 @@ async fn prewarm_skips_staff_text_and_quota_counts_only_misses() {
     let generated = sentences.iter().find(|s| texts.contains(&s.text)).unwrap();
 
     // The address quota is used up: misses get 429, cached clips still play.
-    let used: u32 = unique.iter().map(|t| t.chars().count() as u32).sum();
+    let used: u32 = unique
+        .iter()
+        .map(|t| crate::narration::charged_chars(t))
+        .sum();
     state
         .limits
         .narration_address
@@ -836,10 +839,12 @@ async fn narration_plays_one_block_of_the_bound_version_as_one_clip() {
     let riff = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
     assert_eq!(body.len(), riff + 8);
 
-    // A later part of the same block, in order, is fine; a replay is cached.
+    // A run that is not one aligned part of the block is refused, so a
+    // block cannot be merged into many cached clips; a replay is cached.
     let calls = speech.calls();
     let tail = client.send(Method::GET, &url(&keys[1..]), None).await;
-    assert_eq!(tail.status(), StatusCode::OK);
+    assert_eq!(tail.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(tail).await, "audio_not_found");
     let again = client.send(Method::GET, &url(&keys), None).await;
     assert_eq!(again.status(), StatusCode::OK);
     assert_eq!(speech.calls(), calls);
@@ -929,10 +934,12 @@ async fn narration_quota_is_charged_per_synthesized_sentence() {
     assert_eq!(speech.calls(), before + 2);
 
     // The address was charged the pre-warmed sentences once each, plus the
-    // two edited sentences: nothing for merging or for the replay.
+    // two edited sentences: nothing for merging or for the replay. Each
+    // call is charged at least `MIN_CHARGED_CHARS`.
     let prewarmed: std::collections::HashSet<&String> = blocks.iter().flatten().collect();
-    let used = prewarmed.iter().map(|t| t.chars().count()).sum::<usize>()
-        + edited.iter().map(|t| t.chars().count()).sum::<usize>();
+    let charged = |t: &str| crate::narration::charged_chars(t) as usize;
+    let used = prewarmed.iter().map(|t| charged(t)).sum::<usize>()
+        + edited.iter().map(|t| charged(t)).sum::<usize>();
     let day = crate::narration::DEMO_ADDRESS_CHARS_PER_DAY;
     let address = crate::limits::ip_key("0.0.0.0".parse().unwrap());
     let window = std::time::Duration::from_secs(24 * 60 * 60);

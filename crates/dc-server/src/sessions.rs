@@ -258,8 +258,15 @@ pub enum Unlock {
 /// Unlocks a locked session whose present session has ended, by replacing
 /// it with a new token and CSRF token exactly as [`end_present`] does. The
 /// caller checks the staff password first in clinical mode. Refuses while a
-/// present session is live, re-checked inside the transaction.
-pub async fn unlock_stale(db: &SqlitePool, staff_hash: &str) -> Result<Unlock> {
+/// present session is live, re-checked inside the transaction. The
+/// `session_unlocked` audit event by `actor` commits with the rotation, so
+/// the caller has nothing left to write that could fail after it.
+pub async fn unlock_stale(
+    db: &SqlitePool,
+    staff_hash: &str,
+    actor: &str,
+    detail: &str,
+) -> Result<Unlock> {
     let now = now();
     let mut tx = db.begin().await?;
     let (live,): (i64,) = sqlx::query_as(
@@ -276,6 +283,9 @@ pub async fn unlock_stale(db: &SqlitePool, staff_hash: &str) -> Result<Unlock> {
         return Ok(Unlock::PresentActive);
     }
     let unlocked = rotate(&mut tx, staff_hash).await?;
+    if unlocked.is_some() {
+        crate::audit::record(&mut *tx, actor, "session_unlocked", detail).await?;
+    }
     tx.commit().await?;
     Ok(match unlocked {
         Some(issued) => Unlock::Unlocked(issued),
@@ -289,6 +299,16 @@ type PresentRow = (String, i64, String, i64, i64, i64, String, i64);
 /// session behind it is kept from idling out while the patient is viewing,
 /// so staff can still unlock afterwards. Expired present sessions are
 /// deleted and reported as missing; the locked session stays locked.
+///
+/// The staff session's absolute expiry is checked here, but deliberately not
+/// its idle timeout. While Present mode runs, the present session's own
+/// 60 minute idle window stands in for it: the staff session is locked and
+/// only the PIN or password (in clinical mode) opens it, and every present
+/// request refreshes its `last_seen_at`. Checking the 30 minute staff idle
+/// limit as well would end a patient's screen after 30 quiet minutes, for
+/// example while the patient talks with the dentist, and send staff back to
+/// a full sign-in. Once the present session ends, the staff session's idle
+/// timeout applies again from the last present request.
 pub async fn lookup_present(db: &SqlitePool, token: &str) -> Result<Option<PresentSession>> {
     let hash = token_hash(token);
     let row: Option<PresentRow> = sqlx::query_as(
@@ -359,14 +379,23 @@ pub async fn reserve_pin_attempt(db: &SqlitePool, present_hash: &str) -> Result<
 /// Ends a present session and unlocks the session behind it by replacing it
 /// with a new token and CSRF token. The old token stops working. The new
 /// session keeps the old absolute expiry, and demo presentations move to the
-/// new visitor scope. Returns `None` when the locked session no longer exists.
-pub async fn end_present(db: &SqlitePool, present: &PresentSession) -> Result<Option<Issued>> {
+/// new visitor scope. The `present_exited` audit event by `actor` commits
+/// with the rotation. Returns `None` when the locked session no longer exists.
+pub async fn end_present(
+    db: &SqlitePool,
+    present: &PresentSession,
+    actor: &str,
+    detail: &str,
+) -> Result<Option<Issued>> {
     let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM present_sessions WHERE token_hash = ?")
         .bind(&present.token_hash)
         .execute(&mut *tx)
         .await?;
     let issued = rotate(&mut tx, &present.staff_token_hash).await?;
+    if issued.is_some() {
+        crate::audit::record(&mut *tx, actor, "present_exited", detail).await?;
+    }
     tx.commit().await?;
     Ok(issued)
 }
@@ -419,6 +448,12 @@ async fn rotate(
         .bind(old_hash)
         .execute(&mut **tx)
         .await?;
+    // The visitor's regeneration count follows the scope.
+    sqlx::query("UPDATE regeneration_events SET owner_scope = ? WHERE owner_scope = ?")
+        .bind(&session.token_hash)
+        .bind(old_hash)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query("DELETE FROM present_sessions WHERE staff_token_hash = ?")
         .bind(old_hash)
         .execute(&mut **tx)
@@ -460,6 +495,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn rotation_and_its_audit_event_commit_together() {
+        let db = open_in_memory().await.unwrap();
+        let staff = create(&db, SessionKind::Staff).await.unwrap();
+        sqlx::query(
+            "INSERT INTO presentations (id, owner_scope, patient_key, patient_display_name,
+                 plan_key, language, reading_level, created_at, snapshot_json, fingerprint)
+             VALUES ('p1', 'staff', 'k', 'Test Patient', 'plan', 'en', 'standard', 0, '{}', 'f')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let present_token = start_present(&db, &staff.session, "p1", 1, "staff")
+            .await
+            .unwrap();
+        let present = lookup_present(&db, &present_token).await.unwrap().unwrap();
+        sqlx::query(
+            "CREATE TRIGGER no_audit BEFORE INSERT ON audit_events
+             BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        // A failed audit write leaves the old token working, so the browser
+        // is never left holding a token that no longer exists.
+        assert!(end_present(&db, &present, "staff", "d").await.is_err());
+        assert!(lookup(&db, &staff.token).await.unwrap().is_some());
+        assert!(lookup_present(&db, &present_token).await.unwrap().is_some());
+        sqlx::query("DELETE FROM present_sessions")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(
+            unlock_stale(&db, &staff.session.token_hash, "staff", "d")
+                .await
+                .is_err()
+        );
+        assert!(lookup(&db, &staff.token).await.unwrap().unwrap().locked);
+
+        sqlx::query("DROP TRIGGER no_audit")
+            .execute(&db)
+            .await
+            .unwrap();
+        let Unlock::Unlocked(issued) = unlock_stale(&db, &staff.session.token_hash, "staff", "d")
+            .await
+            .unwrap()
+        else {
+            panic!("expected an unlocked session");
+        };
+        assert!(lookup(&db, &staff.token).await.unwrap().is_none());
+        assert!(lookup(&db, &issued.token).await.unwrap().is_some());
+        let (events,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE action = 'session_unlocked'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(events, 1);
     }
 
     #[tokio::test]
