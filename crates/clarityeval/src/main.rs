@@ -1,7 +1,8 @@
 //! The `clarityeval` command line. See docs/CLARITYEVAL.md, "Running the benchmark".
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use clarityeval::baseline::Variant;
 use clarityeval::case::{self, LoadedCase, Split};
 use clarityeval::report::{self, Bootstrap};
 use clarityeval::systems::{self, RunConfig, SeedMode};
@@ -91,6 +92,9 @@ enum Command {
         /// Also run the plain-prompt baseline for every model.
         #[arg(long)]
         baseline: bool,
+        /// Baseline prompt: `rules` (v2, the writer's content rules) or `naive` (v1).
+        #[arg(long, value_enum)]
+        baseline_variant: Option<Variant>,
         /// LLM judge model: one call per patient-visible section.
         #[arg(long)]
         judge: Option<String>,
@@ -120,6 +124,9 @@ enum Command {
         /// Bootstrap resamples for the report.
         #[arg(long)]
         bootstrap: Option<usize>,
+        /// Bootstrap seed for the report.
+        #[arg(long)]
+        bootstrap_seed: Option<u64>,
         /// Run name used in the run id.
         #[arg(long)]
         name: Option<String>,
@@ -133,10 +140,16 @@ enum Command {
         /// Case files to re-score against (defaults to the run's cases directory).
         #[arg(long)]
         cases_dir: Option<PathBuf>,
-        #[arg(long, default_value_t = clarityeval::stats::BOOTSTRAP_RESAMPLES)]
-        bootstrap: usize,
-        #[arg(long, default_value_t = clarityeval::stats::BOOTSTRAP_SEED)]
-        bootstrap_seed: u64,
+        /// Bootstrap resamples (defaults to the run's recorded setting).
+        #[arg(long)]
+        bootstrap: Option<usize>,
+        /// Bootstrap seed (defaults to the run's recorded setting).
+        #[arg(long)]
+        bootstrap_seed: Option<u64>,
+        /// Keep the stored scores instead of re-scoring; the report lists every
+        /// presentation that was not re-scored.
+        #[arg(long)]
+        no_rescore: bool,
     },
 }
 
@@ -236,6 +249,7 @@ async fn main() -> Result<()> {
             models,
             reviewer,
             baseline,
+            baseline_variant,
             judge,
             judge_reasoning,
             reasoning,
@@ -247,6 +261,7 @@ async fn main() -> Result<()> {
             limit,
             max_cost_usd,
             bootstrap,
+            bootstrap_seed,
             name,
             dry_run,
         } => {
@@ -317,6 +332,9 @@ async fn main() -> Result<()> {
                 allow_missing_commitment,
                 models: choices,
                 baseline: baseline || cfg.baseline,
+                baseline_variant: baseline_variant
+                    .or(cfg.baseline_variant)
+                    .unwrap_or_default(),
                 judge: judge.or(cfg.judge.clone()),
                 judge_reasoning,
                 seed: seed
@@ -336,18 +354,22 @@ async fn main() -> Result<()> {
                 bootstrap: bootstrap
                     .or(cfg.bootstrap)
                     .unwrap_or(clarityeval::stats::BOOTSTRAP_RESAMPLES),
+                bootstrap_seed: bootstrap_seed
+                    .or(cfg.bootstrap_seed)
+                    .unwrap_or(clarityeval::stats::BOOTSTRAP_SEED),
                 command: std::env::args().skip(1).collect(),
                 config_file: config.map(|p| resolve(&root, &p)),
             };
             let dir = runner::run(&root, &loaded, &kb, &opts).await?;
             let (manifest, results) = report::load_results(&dir)?;
-            let b = Bootstrap {
-                resamples: opts.bootstrap,
-                ..Bootstrap::default()
-            };
-            let summary = report::summarize(&manifest, &results, &[], b);
+            let b = Bootstrap::from_manifest(&manifest);
+            let mut summary = report::summarize(&manifest, &results, &[], b);
+            report::finish(&mut summary, &root, &dir, Vec::new());
             let md = report::write(&dir, &summary, &results)?;
             println!("{md}");
+            for w in report::warnings(&summary) {
+                eprintln!("warning: {w}");
+            }
             println!("wrote {}", dir.display());
             Ok(())
         }
@@ -356,6 +378,7 @@ async fn main() -> Result<()> {
             cases_dir,
             bootstrap,
             bootstrap_seed,
+            no_rescore,
         } => {
             let run_dir = resolve(&root, &run_dir);
             let (manifest, mut results) = report::load_results(&run_dir)?;
@@ -364,15 +387,37 @@ async fn main() -> Result<()> {
                 (None, Some(d)) => resolve(&root, Path::new(d)),
                 (None, None) => case::split_dir(&root, manifest.split),
             };
-            let cases = load_from(&dir).unwrap_or_default();
-            let changed = report::rescore(&mut results, &cases, &kb);
-            let b = Bootstrap {
-                resamples: bootstrap,
-                seed: bootstrap_seed,
+            let cases = if no_rescore {
+                Vec::new()
+            } else {
+                load_from(&dir).with_context(|| {
+                    format!(
+                        "cannot re-score: the cases in {} did not load (pass --cases-dir, or \
+                         --no-rescore to keep the stored scores)",
+                        dir.display()
+                    )
+                })?
             };
-            let summary = report::summarize(&manifest, &results, &changed, b);
+            if !no_rescore && cases.is_empty() {
+                bail!(
+                    "cannot re-score: no cases in {} (pass --cases-dir, or --no-rescore to keep the stored scores)",
+                    dir.display()
+                );
+            }
+            let changed = report::rescore(&mut results, &cases, &kb);
+            let not_rescored = report::not_rescored(&results, &cases);
+            let recorded = Bootstrap::from_manifest(&manifest);
+            let b = Bootstrap {
+                resamples: bootstrap.unwrap_or(recorded.resamples),
+                seed: bootstrap_seed.unwrap_or(recorded.seed),
+            };
+            let mut summary = report::summarize(&manifest, &results, &changed, b);
+            report::finish(&mut summary, &root, &run_dir, not_rescored);
             let md = report::write(&run_dir, &summary, &results)?;
             println!("{md}");
+            for w in report::warnings(&summary) {
+                eprintln!("warning: {w}");
+            }
             Ok(())
         }
     }

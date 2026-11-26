@@ -291,6 +291,7 @@ pub struct RunConfig {
     pub limit: Option<usize>,
     #[serde(default)]
     pub baseline: bool,
+    pub baseline_variant: Option<crate::baseline::Variant>,
     pub reviewer: Option<String>,
     pub reasoning: Option<String>,
     pub judge: Option<String>,
@@ -300,6 +301,7 @@ pub struct RunConfig {
     pub concurrency: Option<usize>,
     pub max_cost_usd: Option<f64>,
     pub bootstrap: Option<usize>,
+    pub bootstrap_seed: Option<u64>,
     #[serde(default)]
     pub systems: Vec<ConfigSystem>,
 }

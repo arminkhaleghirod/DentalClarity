@@ -1,6 +1,7 @@
 //! Statistics for the report (docs/CLARITYEVAL.md section 13): cluster
-//! bootstrap confidence intervals with a fixed seed, percentiles and Wilson
-//! intervals. No external crates, so results are identical on every machine.
+//! bootstrap confidence intervals with a fixed seed, percentiles, Wilson
+//! intervals for proportions and a rule-of-three bound for zero counts. No
+//! external crates, so results are identical on every machine.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -33,6 +34,26 @@ impl Rng {
     }
 }
 
+/// Cells with fewer observations than this are descriptive only (section 13).
+pub const SMALL_N: usize = 10;
+
+/// How an [`Estimate`]'s interval was computed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    /// 95% cluster-bootstrap percentile interval over base plans.
+    #[default]
+    ClusterBootstrap,
+    /// Wilson score interval on the pooled counts, widened to the cluster
+    /// bootstrap interval where that is wider (correlated units in one plan).
+    Wilson,
+    /// No events: lower bound 0, upper bound 3/n (the rule of three, a
+    /// one-sided 95% bound for a count with none observed in n units).
+    RuleOfThree,
+    /// Paired cluster bootstrap of a difference.
+    PairedBootstrap,
+}
+
 /// A point estimate with a 95% interval and the number of observations behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Estimate {
@@ -43,6 +64,8 @@ pub struct Estimate {
     pub n: usize,
     /// Resampling clusters (base plans).
     pub clusters: usize,
+    #[serde(default)]
+    pub method: Method,
 }
 
 impl Estimate {
@@ -53,7 +76,13 @@ impl Estimate {
             hi: None,
             n: 0,
             clusters: 0,
+            method: Method::ClusterBootstrap,
         }
+    }
+
+    /// Too few observations to rank on.
+    pub fn small(&self) -> bool {
+        self.n < SMALL_N
     }
 
     /// `85% [70, 95]`.
@@ -166,7 +195,43 @@ pub fn cluster_bootstrap(obs: &[Obs], resamples: usize, seed: u64) -> Estimate {
         hi: percentile(&stats, 97.5),
         n: obs.len(),
         clusters: k,
+        method: Method::ClusterBootstrap,
     }
+}
+
+/// A count rate (events per unit, for example violations per presentation):
+/// the cluster bootstrap, except that a zero total gets the rule-of-three
+/// upper bound 3/units instead of a zero-width interval.
+pub fn count_rate(obs: &[Obs], resamples: usize, seed: u64) -> Estimate {
+    let mut e = cluster_bootstrap(obs, resamples, seed);
+    let units: f64 = obs.iter().map(|o| o.den).sum();
+    if e.value == Some(0.0) && units > 0.0 {
+        e.lo = Some(0.0);
+        e.hi = Some(rule_of_three(units));
+        e.method = Method::RuleOfThree;
+    }
+    e
+}
+
+/// One-sided 95% upper bound for a rate with no events in `units` units.
+pub fn rule_of_three(units: f64) -> f64 {
+    3.0 / units
+}
+
+/// A proportion with integer counts (successes over trials, pooled over
+/// observations): the Wilson interval on the pooled counts, widened to the
+/// cluster-bootstrap interval where that is wider, so sections or citations
+/// that share a plan do not make the interval look tighter than it is.
+pub fn proportion(obs: &[Obs], resamples: usize, seed: u64) -> Estimate {
+    let mut e = cluster_bootstrap(obs, resamples, seed);
+    let k: f64 = obs.iter().map(|o| o.num).sum();
+    let n: f64 = obs.iter().map(|o| o.den).sum();
+    if let Some((wlo, whi)) = wilson(k.round() as usize, n.round() as usize) {
+        e.lo = Some(e.lo.map_or(wlo, |b| b.min(wlo)));
+        e.hi = Some(e.hi.map_or(whi, |b| b.max(whi)));
+        e.method = Method::Wilson;
+    }
+    e
 }
 
 /// Paired difference of means (a minus b) over clusters present in both,
@@ -191,6 +256,7 @@ pub fn paired_difference(a: &[Obs], b: &[Obs], resamples: usize, seed: u64) -> E
     if shared.is_empty() {
         return Estimate {
             n,
+            method: Method::PairedBootstrap,
             ..Estimate::empty()
         };
     }
@@ -221,6 +287,7 @@ pub fn paired_difference(a: &[Obs], b: &[Obs], resamples: usize, seed: u64) -> E
         hi: percentile(&stats, 97.5),
         n,
         clusters: k,
+        method: Method::PairedBootstrap,
     }
 }
 
@@ -334,5 +401,33 @@ mod tests {
         assert_eq!(wilson(0, 0), None);
         let (lo, _) = wilson(0, 10).unwrap();
         assert_eq!(lo, 0.0);
+    }
+
+    #[test]
+    fn zero_counts_get_a_rule_of_three_bound() {
+        let obs: Vec<Obs> = (0..20).map(|i| Obs::mean(&format!("c{i}"), 0.0)).collect();
+        let e = count_rate(&obs, 500, 1);
+        assert_eq!(e.value, Some(0.0));
+        assert_eq!(e.method, Method::RuleOfThree);
+        assert_eq!(e.lo, Some(0.0));
+        assert!((e.hi.unwrap() - 0.15).abs() < 1e-12);
+        // Non-zero counts keep the bootstrap.
+        let mut obs = obs;
+        obs.push(Obs::mean("x", 2.0));
+        assert_eq!(count_rate(&obs, 500, 1).method, Method::ClusterBootstrap);
+    }
+
+    #[test]
+    fn proportions_use_wilson_and_never_collapse() {
+        // Every presentation clean: the bootstrap would give [1, 1].
+        let obs: Vec<Obs> = (0..12).map(|i| Obs::mean(&format!("c{i}"), 1.0)).collect();
+        let e = proportion(&obs, 500, 1);
+        assert_eq!(e.method, Method::Wilson);
+        assert_eq!(e.value, Some(1.0));
+        let (wlo, _) = wilson(12, 12).unwrap();
+        assert!((e.lo.unwrap() - wlo).abs() < 1e-12 && wlo < 0.8, "{e:?}");
+        assert_eq!(e.hi, Some(1.0));
+        assert!(e.small() || e.n >= SMALL_N);
+        assert!(proportion(&obs[..3], 100, 1).small());
     }
 }

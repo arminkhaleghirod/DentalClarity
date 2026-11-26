@@ -128,7 +128,7 @@ impl Recorder {
 fn role_of(request: &TextRequest) -> &'static str {
     match request.messages.first() {
         Some(m) if m.role == Role::System && m.content == prompt::REVIEWER_PROMPT => "reviewer",
-        Some(m) if m.role == Role::System && m.content == baseline::BASELINE_PROMPT => "baseline",
+        Some(m) if m.role == Role::System && baseline::is_baseline_prompt(&m.content) => "baseline",
         Some(m) if m.role == Role::System && m.content == judge::JUDGE_PROMPT => "judge",
         _ => "writer",
     }
@@ -257,6 +257,14 @@ pub struct Commitment {
     pub verified: Option<bool>,
     #[serde(default)]
     pub verification: Vec<String>,
+    /// Whether the salts file needed to check the cases was present.
+    #[serde(default)]
+    pub salts_present: Option<bool>,
+    /// Whether the commitment file is tracked by git, and unmodified against HEAD.
+    #[serde(default)]
+    pub git_tracked: Option<bool>,
+    #[serde(default)]
+    pub git_clean: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,6 +352,20 @@ pub struct Manifest {
     pub config_file: Option<String>,
     #[serde(default)]
     pub config_sha256: Option<String>,
+    /// sha256 over the `knowledge/` tree at run time (see `meta::tree_sha256`).
+    #[serde(default)]
+    pub knowledge_sha256: Option<String>,
+    /// sha256 of the validator source whose lexicons the visible scorer reuses.
+    #[serde(default)]
+    pub lexicon_sha256: Option<String>,
+    /// Bootstrap settings for the report, so `report` reproduces `run`.
+    #[serde(default)]
+    pub bootstrap_resamples: Option<usize>,
+    #[serde(default)]
+    pub bootstrap_seed: Option<u64>,
+    /// `rules` (v2) or `naive` (v1), when the baseline ran.
+    #[serde(default)]
+    pub baseline_variant: Option<String>,
 }
 
 fn legacy_format() -> u32 {
@@ -366,6 +388,7 @@ pub struct RunOptions {
     pub allow_missing_commitment: bool,
     pub models: Vec<ModelChoice>,
     pub baseline: bool,
+    pub baseline_variant: baseline::Variant,
     pub judge: Option<String>,
     pub judge_reasoning: Option<ReasoningEffort>,
     pub seed: u64,
@@ -377,6 +400,7 @@ pub struct RunOptions {
     pub max_cost_usd: f64,
     pub dry_run: bool,
     pub bootstrap: usize,
+    pub bootstrap_seed: u64,
     pub command: Vec<String>,
     pub config_file: Option<PathBuf>,
 }
@@ -441,6 +465,9 @@ pub fn read_commitment(root: &Path) -> Option<Commitment> {
         root: root_hash,
         verified: None,
         verification: vec![],
+        salts_present: None,
+        git_tracked: None,
+        git_clean: None,
     })
 }
 
@@ -468,9 +495,11 @@ pub fn verify_commitment(
     let text = std::fs::read_to_string(root.join(&commitment.path)).unwrap_or_default();
     let committed = committed_hashes(&text);
     let Ok(salt_text) = std::fs::read_to_string(salts) else {
+        commitment.salts_present = Some(false);
         commitment.verification = vec![format!("no salts file at {}", salts.display())];
         return;
     };
+    commitment.salts_present = Some(true);
     let salt: BTreeMap<&str, &str> = salt_text
         .lines()
         .filter_map(|l| l.split_once(char::is_whitespace))
@@ -565,7 +594,7 @@ pub fn plan_systems(opts: &RunOptions) -> Vec<(SystemSpec, ModelChoice)> {
                         seed: None,
                         timeout_s: Some(BASELINE_TIMEOUT_S),
                     },
-                    prompt_versions: vec![baseline::version()],
+                    prompt_versions: vec![opts.baseline_variant.version()],
                     routing,
                 },
                 m.clone(),
@@ -655,14 +684,41 @@ pub async fn run(
             .map_or_else(|| root.join("eval/heldout"), Path::to_path_buf)
             .join("salts.txt");
         verify_commitment(root, c, &selected, &salts);
+        let (tracked, clean) = meta::git_file_state(root, COMMITMENT_FILE);
+        c.git_tracked = tracked;
+        c.git_clean = clean;
+        if tracked != Some(true) {
+            c.verification
+                .push(format!("{COMMITMENT_FILE} is not committed to git"));
+        } else if clean != Some(true) {
+            c.verification.push(format!(
+                "{COMMITMENT_FILE} differs from the committed version"
+            ));
+        }
         for v in &c.verification {
             eprintln!("commitment: {v}");
         }
-        if c.verified == Some(false) && !opts.allow_missing_commitment {
-            bail!(
-                "the held-out cases do not match {COMMITMENT_FILE}; regenerate the commitment \
-                 (v2) or restore the committed files"
-            );
+        if !opts.allow_missing_commitment {
+            if c.salts_present == Some(false) {
+                bail!(
+                    "no salts file at {}, so the held-out cases cannot be checked against \
+                     {COMMITMENT_FILE} (pass --allow-missing-commitment to run anyway; the \
+                     report flags it)",
+                    salts.display()
+                );
+            }
+            if c.verified == Some(false) {
+                bail!(
+                    "the held-out cases do not match {COMMITMENT_FILE}; regenerate the commitment \
+                     (v2) or restore the committed files"
+                );
+            }
+            if tracked != Some(true) || clean != Some(true) {
+                bail!(
+                    "{COMMITMENT_FILE} must be committed and unmodified before a final run \
+                     (pass --allow-missing-commitment to run anyway; the report flags it)"
+                );
+            }
         }
     }
     if opts.max_cost_usd <= 0.0 {
@@ -823,7 +879,7 @@ pub async fn run(
         prompt_versions: {
             let mut v = prompt_versions();
             if opts.baseline {
-                v.push(baseline::version());
+                v.push(opts.baseline_variant.version());
             }
             if opts.judge.is_some() {
                 v.push(judge::version());
@@ -860,10 +916,19 @@ pub async fn run(
             .as_ref()
             .and_then(|p| std::fs::read(p).ok())
             .map(|b| hex::encode(Sha256::digest(b))),
+        knowledge_sha256: meta::tree_sha256(&root.join("knowledge")),
+        lexicon_sha256: Some(meta::lexicon_sha256()),
+        bootstrap_resamples: Some(opts.bootstrap),
+        bootstrap_seed: Some(opts.bootstrap_seed),
+        baseline_variant: opts
+            .baseline
+            .then(|| opts.baseline_variant.as_str().to_owned()),
     };
     write_manifest(&dir, &manifest)?;
 
     // Interleave systems per case so both see the same provider conditions.
+    // The cost cap is decided once per case: the first of its jobs to start
+    // decides for all of them, so every system covers the same cases.
     let jobs: Vec<(usize, &LoadedCase, &SystemSpec, &ModelChoice)> = selected
         .iter()
         .flat_map(|c| plans.iter().map(move |(s, m)| (*c, s, m)))
@@ -873,20 +938,28 @@ pub async fn run(
     let total_jobs = jobs.len();
     let spent = Arc::new(Mutex::new(0.0f64));
     let skipped = Arc::new(Mutex::new(0usize));
+    let decided: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
     let ctx = JobContext {
         run_id: &run_id,
         kb,
         clients: &clients,
         judge: opts.judge.as_deref(),
         judge_reasoning: opts.judge_reasoning,
+        baseline_variant: opts.baseline_variant,
     };
     let mut stream = futures::stream::iter(jobs)
         .map(|(i, loaded, system, choice)| {
             let spent = spent.clone();
             let skipped = skipped.clone();
+            let decided = decided.clone();
             let ctx = &ctx;
             async move {
-                if *spent.lock().expect("spent lock") >= opts.max_cost_usd {
+                let go = *decided
+                    .lock()
+                    .expect("decision lock")
+                    .entry(loaded.case.case_id.clone())
+                    .or_insert_with(|| *spent.lock().expect("spent lock") < opts.max_cost_usd);
+                if !go {
                     *skipped.lock().expect("skipped lock") += 1;
                     return None;
                 }
@@ -956,8 +1029,15 @@ pub async fn run(
     drop(stream);
     let skipped = *skipped.lock().expect("skipped lock");
     if skipped > 0 {
+        let cases_skipped = decided
+            .lock()
+            .expect("decision lock")
+            .values()
+            .filter(|go| !**go)
+            .count();
         manifest.stopped_early = Some(format!(
-            "cost cap ${:.4} reached; {skipped} of {total_jobs} presentations not started",
+            "cost cap ${:.4} reached; {cases_skipped} cases ({skipped} of {total_jobs} \
+             presentations) not started, for every system alike",
             opts.max_cost_usd
         ));
     }
@@ -984,6 +1064,7 @@ struct JobContext<'a> {
     clients: &'a Clients,
     judge: Option<&'a str>,
     judge_reasoning: Option<ReasoningEffort>,
+    baseline_variant: baseline::Variant,
 }
 
 /// The baseline's single call, with the pipeline's three transport retries.
@@ -1073,7 +1154,7 @@ async fn run_job(
                     messages: vec![
                         Message {
                             role: Role::System,
-                            content: baseline::BASELINE_PROMPT.into(),
+                            content: ctx.baseline_variant.prompt().into(),
                         },
                         Message {
                             role: Role::User,
@@ -1088,7 +1169,11 @@ async fn run_job(
                 let rec: Arc<dyn TextModel> = recorder.clone();
                 match baseline_call(&rec, request).await {
                     Ok(reply) => {
-                        sections = baseline::split_reply(&reply.content, &system.writer_model);
+                        sections = baseline::split_reply(
+                            &reply.content,
+                            &system.writer_model,
+                            ctx.baseline_variant,
+                        );
                     }
                     Err(e) => error = Some(format!("baseline call failed: {e}")),
                 }
@@ -1246,6 +1331,12 @@ mod tests {
         let mut c = read_commitment(&dir).unwrap();
         verify_commitment(&dir, &mut c, &[&loaded], &salts);
         assert_eq!(c.verified, Some(false));
+        assert_eq!(c.salts_present, Some(true));
+
+        // No salts file: nothing can be checked, and the run must say so.
+        let mut c = read_commitment(&dir).unwrap();
+        verify_commitment(&dir, &mut c, &[&loaded], &dir.join("missing-salts.txt"));
+        assert_eq!((c.salts_present, c.verified), (Some(false), None));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

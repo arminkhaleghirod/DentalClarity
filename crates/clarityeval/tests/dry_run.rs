@@ -22,6 +22,7 @@ fn opts(out: std::path::PathBuf, split: Split, final_run: bool) -> RunOptions {
             reasoning: Some(ReasoningEffort::High),
         }],
         baseline: true,
+        baseline_variant: clarityeval::baseline::Variant::Rules,
         judge: Some("judge/model".into()),
         judge_reasoning: None,
         seed: 7,
@@ -33,6 +34,7 @@ fn opts(out: std::path::PathBuf, split: Split, final_run: bool) -> RunOptions {
         max_cost_usd: 1.0,
         dry_run: true,
         bootstrap: 300,
+        bootstrap_seed: 1,
         command: vec!["run".into(), "--dry-run".into()],
         config_file: None,
     }
@@ -112,10 +114,33 @@ async fn dry_run_exercises_the_whole_flow() {
     let again = report::summarize(&manifest, &results, &changed, b);
     assert_eq!(summary.systems, again.systems, "bootstrap must be seeded");
     let p = &summary.paired[0];
-    assert!(p.violations_per_presentation.value.unwrap() < 0.0);
+    assert!(p.violating_sentences_per_presentation.value.unwrap() < 0.0);
+    assert_eq!(p.cases, cases.len());
+    // The manifest carries what `report` needs to reproduce `run`.
+    assert_eq!(manifest.bootstrap_resamples, Some(300));
+    assert_eq!(manifest.bootstrap_seed, Some(1));
+    assert_eq!(manifest.baseline_variant.as_deref(), Some("rules"));
+    assert!(manifest.knowledge_sha256.is_some() && manifest.lexicon_sha256.is_some());
+    assert!(
+        manifest.systems[1].prompt_versions[0].starts_with("baseline.presentation@v2+"),
+        "{:?}",
+        manifest.systems[1].prompt_versions
+    );
+    let mut summary = summary;
+    report::finish(&mut summary, &root, &dir, Vec::new());
+    assert!(
+        report::warnings(&summary)
+            .iter()
+            .all(|w| !w.contains("knowledge/") && !w.contains("lexicons")),
+        "{:?}",
+        report::warnings(&summary)
+    );
     let md = report::write(&dir, &summary, &results).unwrap();
     assert!(md.contains("Automated judge, not clinician review"));
     assert!(md.contains("**Dry run.**"));
+    assert!(md.contains("### Threats to validity"));
+    assert!(md.contains("Not checked by the pipeline's validators, total:"));
+    assert!(md.contains("--bootstrap 300 --bootstrap-seed 1"), "{md}");
     assert!(dir.join("results.json").is_file());
     std::fs::remove_dir_all(&out).unwrap();
 }
@@ -135,4 +160,34 @@ async fn heldout_needs_final_and_a_commitment() {
             .unwrap_err();
         assert!(err.to_string().contains("commitment"), "{err}");
     }
+}
+
+#[tokio::test]
+async fn the_cost_cap_skips_whole_cases() {
+    let root = clarityeval::repo_root();
+    let kb = KnowledgeBase::load(&root.join("knowledge")).unwrap();
+    let cases: Vec<_> = case::load_dir(&case::split_dir(&root, Split::Dev))
+        .unwrap()
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    let out = std::env::temp_dir().join(format!("clarityeval-cap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let mut o = opts(out.clone(), Split::Dev, false);
+    o.judge = None;
+    o.concurrency = 3;
+    // A few scripted calls' worth, so the cap is hit part way through.
+    o.max_cost_usd = 0.002;
+    let dir = runner::run(&root, &cases, &kb, &o).await.unwrap();
+    let (manifest, results) = report::load_results(&dir).unwrap();
+    assert!(manifest.stopped_early.is_some(), "the cap was not reached");
+    assert!(results.len() < cases.len() * 2);
+    for c in &cases {
+        let n = results
+            .iter()
+            .filter(|r| r.case_id == c.case.case_id)
+            .count();
+        assert!(n == 0 || n == 2, "{} ran on {n} systems", c.case.case_id);
+    }
+    std::fs::remove_dir_all(&out).unwrap();
 }

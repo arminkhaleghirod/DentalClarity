@@ -25,7 +25,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// Bump when a scorer's definition changes; recorded in every run manifest.
-pub const SCORER_VERSION: &str = "0.1.1";
+pub const SCORER_VERSION: &str = "0.2.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,9 +66,14 @@ impl SectionRecord {
         serde_json::from_value(json).expect("section records mirror section results")
     }
 
+    /// A model call for this section failed in transport (connection,
+    /// timeout, provider error), on any attempt. The pipeline gives up on
+    /// the section after such a failure, so its state says nothing about the
+    /// model's text.
     pub fn transport_error(&self) -> bool {
         self.reasons
             .iter()
+            .chain(&self.attempt_log)
             .any(|r| r.contains("could not be reached"))
     }
 }

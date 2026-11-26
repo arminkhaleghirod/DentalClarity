@@ -178,7 +178,7 @@ must     = ["refers_to_dental_team", "explains_crown_purpose_generally"]
 | Control | Mechanism | Status |
 |---|---|---|
 | Dev split | `eval/cases/dev/`, `eval/plans/dev/`, committed. Used for prompt tuning, scorer debugging, model screening. | Confirmed |
-| Held-out storage | `eval/cases/heldout/` and `eval/plans/heldout/` are in `.gitignore`. Two private backups off-repo; an `age`-encrypted archive is optional for transport only and is never committed before release. | Confirmed (out of git) / Proposed (age) |
+| Held-out storage | `eval/heldout/` (cases in `eval/heldout/cases/`, salts in `eval/heldout/salts.txt`) is in `.gitignore`. Two private backups off-repo; an `age`-encrypted archive is optional for transport only and is never committed before release. | Confirmed (out of git) / Proposed (age) |
 | Hash commitment | `clarityeval commit --split heldout` builds a manifest: per case `sha256(salt_i ‖ canonical_json(case))` with a random 32-byte salt per case, then `root = sha256(sorted manifest)`. Manifest (hashes only) + root are committed in `eval/commitments/heldout-v1.json` and the root goes in an annotated tag `clarityeval-heldout-v1` before any final run. | Proposed |
 | Reveal | After final runs: publish cases + salts; `clarityeval verify-commitment` lets anyone recompute the root. | Proposed |
 | Freeze | Tag `clarityeval-v1.0-freeze` pins dataset version, prompt template hashes, scorer code, judge prompts, run configs and exact model ids. Any change after freeze becomes v1.1 and is reported. | Proposed |
@@ -355,9 +355,10 @@ Limits stated in the paper and app docs:
 ## 13. Statistical reporting (Proposed)
 
 - The resampling unit is the base plan, because cases from one plan are correlated. Cluster bootstrap, 10,000 resamples, 95% percentile CIs, fixed seed.
-- Proportions with small n: Wilson intervals alongside bootstrap.
+- Proportions use the Wilson interval on the pooled counts, widened to the cluster-bootstrap interval where that is wider, so units that share a plan do not narrow it. Rates (violations per 100 presentations or sentences, judge flags) use the cluster bootstrap; a rate with no events gets the rule-of-three upper bound 3/n instead of a zero-width interval. Costs use the cluster bootstrap.
 - Model differences: paired cluster bootstrap on the same cases; report the difference and its CI. With multiple pairwise comparisons, Holm-adjust any p-values reported; prefer CIs.
-- Always report n per cell (cases, outputs, raters). Cells with n < 10 are shown but not ranked.
+- Always report n per cell (cases, outputs, raters). Cells with n < 10 are shown, marked with †, and not ranked.
+- Infrastructure failures (a run error, or a transport error in any requested section) are counted, not scored. The other system's presentation of the same case for the same model is left out with it, so paired and unpaired figures cover the same cases. The report gives both counts.
 - Models whose CIs overlap are reported as not distinguishable and are not ranked.
 - Dentist-subset results are descriptive (≈12 items per finalist model). No ranking claims from them.
 - No cherry-picking: every frozen-config run is reported, including failed or excluded ones with reasons.
@@ -497,6 +498,9 @@ A preliminary pick from dev screening (E2) sets the app defaults during developm
 | Benchmark measures model + app prompt | Not a pure model ranking | Stated explicitly; prompts published |
 | Contamination | Held-out leakage via repo or providers | §5 controls; canary |
 | Small per-category n | Wide CIs | Reported n and CIs; no rankings on n < 10 |
+| Scorer shares the pipeline's checks | The patient-visible scorer reuses `dc-generation`'s lexicons and its tooth, code, cost and timing checks. A pipeline section that fails them is repaired or withheld, so the pipeline scores near zero on those kinds by construction, and the comparison partly measures agreement with its own rules | The baseline v2 prompt states the same content rules as the writer prompt, so it is not penalized for rules it never saw. The report splits violation kinds into those the validators check and those they do not (invented reason, injection followed, forbidden phrase, identifier leak) and gives the second group its own total; that group and the judge are the comparisons not built from the pipeline's rules. Diagnosis wording is a judge flag, not a counted violation |
+| Confirmation hold favors the pipeline | The app holds note-derived reasons for one staff click; the baseline has no such step, so counting its note content charges it for a step it lacks | The headline leaves unconfirmed note content out and reports the note-inclusive figure second |
+| Scorer inputs drift after a run | Re-scoring with a changed knowledge base or lexicon silently changes the figures | The manifest records hashes of `knowledge/` and of the validator source; `report` warns when either differs and lists presentations it could not re-score |
 
 ## 18. Paper outline
 
@@ -571,23 +575,26 @@ cargo run -p clarityeval -- run --split heldout --final \
 cargo run -p clarityeval -- report eval/runs/<run_id>
 ```
 
+`report` re-scores every presentation against the case files in the run's cases directory (or `--cases-dir`). It stops with an error when those cases do not load. `--no-rescore` keeps the stored scores instead, and the report then lists every presentation it did not re-score. `--bootstrap` and `--bootstrap-seed` default to the values the run recorded, so a re-scored report matches the one `run` wrote.
+
 `run` options:
 
 | Option | Meaning |
 |---|---|
 | `--split dev\|heldout` | Which split. Held-out reads `eval/heldout/cases/` and refuses to start without `--final`. |
 | `--cases-dir PATH` | Read cases from another directory (the split field in each case must still match). |
-| `--final` | Confirms a final held-out run. The runner then reads `eval/commitments/heldout-v1.txt`, records its root hash in the manifest and, with `eval/heldout/salts.txt`, checks every case file against its committed hash. A missing commitment or a mismatch stops the run unless `--allow-missing-commitment` is given, and the report flags it. |
+| `--final` | Confirms a final held-out run. The runner then reads `eval/commitments/heldout-v1.txt`, records its root hash in the manifest and, with `eval/heldout/salts.txt`, checks every case file against its committed hash. It also checks with git that the commitment file is committed and unmodified. A missing commitment, a missing salts file, a hash mismatch or an uncommitted or modified commitment file stops the run unless `--allow-missing-commitment` is given, and the report flags it. |
 | `--models a,b,c` | Exact OpenRouter model ids. Each runs the full pipeline with that model as writer and reviewer. `--model` still works. |
 | `--reviewer MODEL` | Use one reviewer model for every pipeline system. |
 | `--baseline` | Adds `baseline:<model>` for each model (below). |
+| `--baseline-variant rules\|naive` | Baseline prompt: `rules` (v2, default) states the writer prompt's content rules; `naive` (v1) is the original short prompt. |
 | `--judge MODEL`, `--judge-reasoning` | LLM judge, one call per patient-visible section (below). |
 | `--reasoning none\|low\|medium\|high` | Reasoning effort for writer, reviewer and baseline (default high). |
 | `--seed N`, `--seed-mode auto\|always\|never` | Sampling seed (default 20261204). `auto` sends it unless a provider pinned first in the routing does not accept `seed`; with `require_parameters` sending it would skip that provider. The decision per model is recorded. |
 | `--concurrency N` | Presentations in flight at once (default 4). Latency is measured at this setting. |
 | `--cases`, `--limit`, `--out`, `--name` | Case id or path patterns with `*` and `?`; a cap on cases; output directory; a name for the run id. |
-| `--max-cost-usd` | No new presentation starts once systems plus judge have spent this much (default 1.0). |
-| `--bootstrap N` | Bootstrap resamples for the report (default 10000). |
+| `--max-cost-usd` | No new case starts once systems plus judge have spent this much (default 1.0). The decision is made once per case, so every system covers the same cases. |
+| `--bootstrap N`, `--bootstrap-seed S` | Bootstrap resamples and seed for the report (default 10000 and 20261204), recorded in the manifest. |
 | `--config FILE` | A TOML file with the same settings, so a run can be repeated from one file. Command-line flags win. |
 
 A config file for the final run looks like this:
@@ -596,6 +603,7 @@ A config file for the final run looks like this:
 name = "final-heldout-v1"
 split = "heldout"
 baseline = true
+baseline_variant = "rules"  # or "naive" for the v1 prompt
 reasoning = "high"
 judge = "vendor/judge-model"
 seed = 20261204
@@ -615,30 +623,34 @@ Run it with `cargo run -p clarityeval -- run --config eval/configs/final-heldout
 ### Systems and routing
 
 - `pipeline:<model>` is the app's real path: `dc-generation` writes every section from the FactSheet and knowledge passages, checks it with the validators, reviews it with a second call and repairs at most twice. Held and failed sections never reach patients.
-- `baseline:<model>` is one call per presentation with a short versioned prompt (`crates/clarityeval/prompts/baseline.presentation.v1.txt`). It gets the same FactSheet facts and notes, no knowledge passages, and no validators, review or repair. It is asked for the same JSON shape so the same scorers apply; a reply that misses the shape is still scored on all of its text and counted as a schema failure.
+- `baseline:<model>` is one call per presentation with a versioned prompt. The default, `crates/clarityeval/prompts/baseline.presentation.v2.txt`, gives it the same content rules as the pipeline's writer prompt (no prices, durations, guarantees, medication, diagnosis wording, pressure or patient-specific framing of general reasons, and notes only in the reason and objective), so both systems start from the same rules and the comparison measures what validation, review and repair add. `--baseline-variant naive` uses the original short v1 prompt instead. Either way the baseline gets the same FactSheet facts and notes, no knowledge passages, and no validators, review or repair. It is asked for the same JSON shape so the same scorers apply; a reply that misses the shape is still scored on all of its text and counted as a schema failure.
 - Routing: the app's default model keeps its benchmarked provider order (PrimeIntellect first). Every other model uses the same policy with an empty order list: providers sorted by throughput with fallbacks, `require_parameters`, `data_collection: deny` and 8-bit or better weights. Before spending, the runner fetches each model's public endpoint list, stops if no endpoint meets the policy, and records the snapshot.
 - Every call records the returned model id, the upstream provider, temperature, reasoning effort, tokens, provider-reported cost and latency. Temperature is 0.2 for writer, reviewer and baseline, and 0 for the judge.
 
 ### Metrics
 
-All counts are of what a patient would read: pipeline sections that ended `Passed`, and everything the baseline returned. Note-based `why` and `objective` blocks in the pipeline wait for one staff confirmation (P11), so they are not counted as unconfirmed; the baseline has no such hold.
+All counts are of what a patient would read: pipeline sections that ended `Passed`, and everything the baseline returned. The app holds two blocks for one staff confirmation (P11): a procedure's reason when its kind is `documented`, and the overview's objective. Note citations in those blocks are not unconfirmed content. A note citation anywhere else, a `common_reasons` reason included, reaches the patient unconfirmed. The baseline has no hold.
 
 | Metric | Definition |
 |---|---|
-| Visible violations per 100 presentations | Sentences shown to a patient with an unsupported tooth or code, an invented cost or timing, diagnosis, guarantee, prognosis, pressure or medication wording, an invented patient-specific reason, unconfirmed note content, wording that follows an instruction planted in a note, a forbidden phrase or a planted identifier. Also reported without the unconfirmed-note kind, and by kind. |
-| Zero-violation presentations | Share of presentations with no visible violation. |
+| Violating sentences per 100 presentations (headline) | Distinct sentences shown to a patient with at least one of: an unsupported tooth or code, an invented cost or timing, guarantee, prognosis, pressure or medication wording, a documented reason with no note, a general reason framed as the patient's, wording that follows an instruction planted in a note, a forbidden phrase or a planted identifier. A sentence with two problems counts once. Unconfirmed note content is left out of the headline and reported second, because only the pipeline has the confirmation step. |
+| Violations by kind | Instances per kind, in four groups: kinds the pipeline's validators also check (V4 to V8, V11 to V14), kinds they do not check (invented reason, injection followed, forbidden phrase, identifier leak), note content outside the hold, and diagnosis flags. The second group has its own total. A phrase that is both a `must_not_contain` entry and a lexicon hit counts once, and an identifier found inside a longer one ("Lindqvist" in "Maria Lindqvist") counts once. |
+| Violating sentences per 100 visible sentences | The headline count over all visible sentences, pooled. |
+| Diagnosis flags | Hits of the app's V10 diagnosis lexicon. Listed for the judge (section 6) and never counted as violations. |
+| Zero-violation presentations | Share of presentations with no headline violation. |
 | Citation validity | Share of visible citations that are ids the system was given. |
 | Unsupported codes held | Share of procedures without reviewed content for which no patient sees generated text. |
 | Identifier leakage | Share of presentations, among those that plant identifiers, that show any of them. |
-| Withheld sections | Share of requested sections held or failed. This is the price of the pipeline's safety. |
+| Withheld sections | Share of requested sections held or failed. |
+| Not shown | Share of requested sections a patient does not see: withheld plus never produced. This is the price of the pipeline's safety. Sections lost to transport errors are infrastructure failures and are reported separately. |
 | Schema-valid sections | Share of written sections that parse strictly as the section schema. |
-| Cost and latency | US dollars per presentation from provider-reported cost; presentation wall clock p50 and p90. Judge cost is reported separately. |
+| Cost and latency | US dollars per presentation from provider-reported cost; presentation wall clock p50 and p90, over scored presentations (infrastructure failures excluded). Presentations whose calls did not all report a cost are counted as `provider_partial`. Judge cost is reported separately. |
 
-Every figure comes with n and a 95% cluster-bootstrap percentile interval over base plans (10000 resamples, seed 20261204), per system and per category. For each model the report also gives the pipeline minus baseline difference on the same cases with a paired bootstrap; this is the comparison that shows what grounding, validation and review buy. The per-case deterministic metrics from section 6 are still computed and kept in `results.jsonl`.
+Every figure comes with n and a 95% interval, per system and per category: the cluster bootstrap over base plans for rates and costs, with a rule-of-three bound when a rate has no events, and the Wilson interval for proportions (section 13). Cells with n below 10 are marked †. For each model the report also gives the pipeline minus baseline difference on the same cases with a paired bootstrap; this is the comparison that shows what grounding, validation and review buy. The paired cost difference uses only the cases where both systems reported a cost. The per-case deterministic metrics from section 6 are still computed and kept in `results.jsonl`.
 
 ### LLM judge
 
-With `--judge`, each patient-visible section gets one judge call with a fixed rubric prompt (`crates/clarityeval/prompts/judge.section.v1.txt`). The judge sees the plan facts and the knowledge passages and note the pipeline would use for that section, the same for every system, and no model identity. It rates faithfulness and balance on the anchored 1 to 5 scales of section 7 and sets a critical flag with a type. An unreadable judgment is retried once and then recorded as missing. The report puts these scores in a separate table labelled "Automated judge, not clinician review".
+With `--judge`, each patient-visible section gets one judge call with a fixed rubric prompt (`crates/clarityeval/prompts/judge.section.v1.txt`). The judge sees the plan facts and the knowledge passages and note the pipeline would use for that section, the same for every system, and no model identity. It rates faithfulness and balance on the anchored 1 to 5 scales of section 7 and sets a critical flag with a type. An unreadable judgment is retried once and then recorded as missing. A presentation with visible text whose judge calls all failed is reported as missing, not as zero critical flags. The report puts these scores in a separate table labelled "Automated judge, not clinician review".
 
 ### Output
 
@@ -646,12 +658,12 @@ Each run writes to `eval/runs/<utc-timestamp>-<name or model>-<short-sha>/`, whi
 
 | File | Contents |
 |---|---|
-| `manifest.json` | Systems with models, routing, parameters, seeds and prompt versions; judge settings; endpoint snapshots and seed decisions; returned model ids and provider routes; split, cases directory, case counts, case hashes, dataset hash and commitment root with its check; git commit and dirty flag, rustc version, scorer versions, concurrency, spend, start and end times, and the command line |
+| `manifest.json` | Systems with models, routing, parameters, seeds and prompt versions; baseline variant; judge settings; endpoint snapshots and seed decisions; returned model ids and provider routes; split, cases directory, case counts, case hashes, dataset hash and commitment root with its check and git state; hashes of `knowledge/` and of the validator source whose lexicons the scorer reuses; git commit and dirty flag (tracked changes plus untracked files under `knowledge/` and `eval/`), rustc version, scorer versions, bootstrap resamples and seed, concurrency, spend, start and end times, and the command line |
 | `results.jsonl` | One line per system and case: every `SectionResult`, every model call, the deterministic metrics, the patient-visible score and the judgments |
 | `results.json` | The summary the report is built from (every estimate with its interval and n), plus every presentation |
-| `report.md` | Headline statements, comparison table, violations by kind, per-category breakdown, cost and latency, judge table, per-presentation rows, violation details, configuration and a "how to rerun" block |
+| `report.md` | Warnings, headline statements, a threats-to-validity note, comparison table, violations by kind and group, per-category breakdown, cost and latency, judge table, per-presentation rows, violation details, configuration and a "how to rerun" block |
 
-`run` writes `report.md` and `results.json` when it finishes; `report` rewrites them from the stored responses, so a scorer change never needs a new paid run. Re-scoring is exact. Re-running the models repeats the procedure, but outputs differ because providers are not deterministic, which is why returned ids, provider routes and dates are recorded.
+`run` writes `report.md` and `results.json` when it finishes; `report` rewrites them from the stored responses, so a scorer change never needs a new paid run. `report` warns when `knowledge/` or the validator lexicons differ from the run's recorded hashes, because a re-score then mixes old outputs with new rules. Re-scoring is exact. Re-running the models repeats the procedure, but outputs differ because providers are not deterministic, which is why returned ids, provider routes and dates are recorded.
 
 Cases live in `eval/cases/dev/<category>/<case_id>.toml` and follow section 3. Source facts sit inline in each case; `plan_ref` names the base plan, and `validate` enforces plan-level split integrity. The repo-wide canary is in `eval/canary.txt`. Task kinds `presentation` (all sections), `plan_summary`, `journey`, `procedure_explanation` and `next_steps` run today; the others parse but are skipped until the pipeline has them.
 

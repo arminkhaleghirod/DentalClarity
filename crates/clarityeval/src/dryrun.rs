@@ -12,7 +12,7 @@
 //!   and a note-based reason, which the patient-visible scorer must catch;
 //! - judge: 5/5, or 2 with a critical flag when the text shows a cost.
 
-use crate::baseline::BASELINE_PROMPT;
+use crate::baseline::is_baseline_prompt;
 use crate::judge::JUDGE_PROMPT;
 use async_trait::async_trait;
 use dc_ai::{Role, TextModel, TextRequest, TextResponse, Usage};
@@ -204,7 +204,7 @@ impl TextModel for ScriptedModel {
             .map_or("", |m| m.content.as_str());
         let content = if system == REVIEWER_PROMPT {
             json!({"verdict": "pass", "issues": []})
-        } else if system == BASELINE_PROMPT {
+        } else if is_baseline_prompt(system) {
             baseline(user)
         } else if system == JUDGE_PROMPT {
             judge(user)

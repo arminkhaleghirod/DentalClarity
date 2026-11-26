@@ -46,18 +46,19 @@ ClarityEval measures what a patient would actually read.
 
 - **Data.** 36 held-out cases on 36 synthetic plans that share no patient, plan or procedure mix with the 16 public dev cases. Twelve cases each cover treatment plans, grounding traps (codes without knowledge entries, notes about a different tooth, unplanned treatment) and safety traps (notes that contain instructions to the model, pressure, medication instructions, planted identifiers). Prompts were tuned on dev only.
 - **Commitment.** Before the final run we published a salted SHA-256 commitment to every held-out case (root `b4c88e53fb39df1fbdbccfb314125d51b9c4fe9ec527a24ae557aa043b182695`). The runner checks each case file against it. Cases and salts are published after the run so anyone can verify them.
-- **Primary metric.** Unsafe or unsupported statements shown to patients per 100 presentations: an unsupported tooth or code, an invented cost or timing, diagnosis, guarantee, prognosis, pressure or medication wording, an invented reason, unconfirmed note content, a followed injected instruction, or a leaked identifier.
-- **Baseline.** The same model with one plain prompt and the same facts and note, with no knowledge passages, validators, review or repair. This isolates what the pipeline adds.
-- **Secondary metrics.** Share of sections withheld for staff (the cost of safety), citation validity, schema validity, identifier leakage, US dollars per presentation, and latency p50 and p90.
-- **Statistics.** 95% cluster-bootstrap intervals over base plans (10,000 resamples) and paired bootstrap differences between pipeline and baseline on the same cases.
+- **Primary metric.** Sentences with an unsafe or unsupported statement shown to patients, per 100 presentations: an unsupported tooth or code, an invented cost or timing, guarantee, prognosis, pressure or medication wording, an invented reason, a followed injected instruction, a forbidden phrase or a leaked identifier. Note-derived content is reported as a second figure, because the pipeline holds it for a staff confirmation the baseline does not have.
+- **Baseline.** The same model with one prompt that carries the same content rules as the pipeline's writer (no prices, durations, guarantees, medication names or diagnosis) and the same facts and note, but no knowledge passages, validators, review or repair. This isolates what the pipeline's checks add beyond telling the model the rules.
+- **Circularity, stated up front.** Several violation kinds are detected with the same checks the pipeline runs before showing a section, so the pipeline scores zero on those by construction. The report therefore shows the kinds the pipeline does not check (injected instructions followed, forbidden phrases, identifier leaks, invented reasons) on their own line, and the LLM judge rates every visible section independently.
+- **Secondary metrics.** Share of requested sections not shown to the patient (the cost of safety), violations per 100 visible sentences, citation validity, schema validity, identifier leakage, US dollars per presentation, and latency p50 and p90.
+- **Statistics.** 95% cluster-bootstrap intervals over base plans (10,000 resamples), Wilson intervals for proportions, a rule-of-three upper bound when no events occur, and paired bootstrap differences between pipeline and baseline on the same cases. A presentation with any transport failure is left out of both systems' figures and counted.
 - **Judge.** An LLM judge rates faithfulness and balance on anchored 1 to 5 scales. It is reported separately and labelled as automated, not clinician review.
 
 ### Results
 
-| System | Visible violations per 100 presentations | Sections withheld | $ per presentation | Latency p50 |
+| System | Violating sentences per 100 presentations | Sections not shown | $ per presentation | Latency p50 |
 |---|---|---|---|---|
 | Pipeline, `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
-| Baseline, `TBD` | `TBD` | n/a | `TBD` | `TBD` |
+| Baseline, `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
 
 Full tables, intervals and per-category results: [RESULTS.md](RESULTS.md).
 

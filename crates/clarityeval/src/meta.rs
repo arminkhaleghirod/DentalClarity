@@ -1,5 +1,7 @@
-//! Run metadata helpers: UTC timestamps without a date crate, git state, tool versions.
+//! Run metadata helpers: UTC timestamps without a date crate, git state,
+//! tool versions and content hashes of the inputs the scorers depend on.
 
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,16 +50,82 @@ fn output(cmd: &str, args: &[&str], dir: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// The current commit and whether tracked files have uncommitted changes. Read-only.
+/// The current commit and whether the tree has uncommitted changes: any
+/// tracked file, plus untracked (not ignored) files under `knowledge/` and
+/// `eval/`, since a new knowledge entry or case changes results. Read-only.
 pub fn git_state(root: &Path) -> (Option<String>, Option<bool>) {
     let sha = output("git", &["rev-parse", "HEAD"], root);
-    let dirty = output(
+    let tracked = output(
         "git",
         &["status", "--porcelain", "--untracked-files=no"],
         root,
-    )
-    .map(|s| !s.is_empty());
+    );
+    let untracked = output(
+        "git",
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            "knowledge",
+            "eval",
+        ],
+        root,
+    );
+    let dirty = match (tracked, untracked) {
+        (Some(t), Some(u)) => Some(!t.is_empty() || !u.is_empty()),
+        _ => None,
+    };
     (sha, dirty)
+}
+
+/// Whether a file is tracked by git and unmodified against HEAD (staged or
+/// not). `None` when git cannot answer.
+pub fn git_file_state(root: &Path, rel: &str) -> (Option<bool>, Option<bool>) {
+    let tracked = Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", rel])
+        .current_dir(root)
+        .output()
+        .ok()
+        .map(|o| o.status.success());
+    let clean = output("git", &["status", "--porcelain", "--", rel], root).map(|s| s.is_empty());
+    (tracked, clean)
+}
+
+/// sha256 over `<relative path> <file sha256>` lines of every file under
+/// `dir`, sorted by path with `/` separators. `None` if the directory cannot
+/// be read.
+pub fn tree_sha256(dir: &Path) -> Option<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(base, &path, out)?;
+            } else {
+                let rel = path
+                    .strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes = std::fs::read(&path)?;
+                out.push(format!("{rel} {}\n", hex::encode(Sha256::digest(&bytes))));
+            }
+        }
+        Ok(())
+    }
+    let mut lines = Vec::new();
+    walk(dir, dir, &mut lines).ok()?;
+    lines.sort();
+    Some(hex::encode(Sha256::digest(lines.concat().as_bytes())))
+}
+
+/// The lexicons and text checks the visible scorer reuses, as compiled into
+/// this binary.
+const LEXICON_SOURCE: &str = include_str!("../../dc-generation/src/validate.rs");
+
+/// sha256 of `dc-generation/src/validate.rs` as compiled into this binary.
+pub fn lexicon_sha256() -> String {
+    hex::encode(Sha256::digest(LEXICON_SOURCE.as_bytes()))
 }
 
 pub fn rustc_version(root: &Path) -> Option<String> {
@@ -77,5 +145,23 @@ mod tests {
         assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00Z");
         let leap = UNIX_EPOCH + Duration::from_secs(951_782_400);
         assert_eq!(rfc3339(leap), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn tree_hash_tracks_content_and_names() {
+        let dir = std::env::temp_dir().join(format!("ce-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a/x.toml"), "one").unwrap();
+        let first = tree_sha256(&dir).unwrap();
+        assert_eq!(tree_sha256(&dir).unwrap(), first);
+        std::fs::write(dir.join("a/x.toml"), "two").unwrap();
+        let second = tree_sha256(&dir).unwrap();
+        assert_ne!(second, first);
+        std::fs::write(dir.join("y.toml"), "").unwrap();
+        assert_ne!(tree_sha256(&dir).unwrap(), second);
+        assert!(tree_sha256(&dir.join("missing")).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(lexicon_sha256().len(), 64);
     }
 }
