@@ -8,6 +8,10 @@ use dc_core::api::{
     ApiError, HealthResponse, LoginRequest, PatientDetail, PatientListItem, PatientRow,
     PracticeSettings, SessionInfo, SetupRequest,
 };
+use dc_core::present::{
+    BlockChangeResponse, ConfirmNoteRequest, RevertBlockRequest, StartPresentResponse,
+    UpdateBlockRequest,
+};
 use dc_core::presentation::{
     CreatePresentationRequest, CreatePresentationResponse, JobStatus, PresentationSummary,
     PresentationView,
@@ -200,4 +204,50 @@ pub async fn presentation(id: String) -> Result<PresentationView, Failure> {
 
 pub async fn presentations() -> Result<Vec<PresentationSummary>, Failure> {
     get("/api/staff/presentations").await
+}
+
+/// Replaces one block's sentences with staff text. Warnings are advisory.
+pub async fn update_block(
+    id: String,
+    request: &UpdateBlockRequest,
+) -> Result<BlockChangeResponse, Failure> {
+    put(
+        &format!("/api/staff/presentations/{}/blocks", encode(&id)),
+        request,
+    )
+    .await
+}
+
+/// Restores a block's generated text.
+pub async fn revert_block(
+    id: String,
+    request: &RevertBlockRequest,
+) -> Result<BlockChangeResponse, Failure> {
+    post(
+        &format!("/api/staff/presentations/{}/blocks/revert", encode(&id)),
+        request,
+    )
+    .await
+}
+
+/// Confirms a note-derived block so patients may see it (DECISIONS P11).
+pub async fn confirm_note(
+    id: String,
+    request: &ConfirmNoteRequest,
+) -> Result<BlockChangeResponse, Failure> {
+    post(
+        &format!("/api/staff/presentations/{}/confirm-note", encode(&id)),
+        request,
+    )
+    .await
+}
+
+/// Starts Present mode. The server locks this staff session, so the caller
+/// must follow up with a full page load of `present_path`.
+pub async fn start_present(id: String) -> Result<StartPresentResponse, Failure> {
+    post(
+        &format!("/api/staff/presentations/{}/present", encode(&id)),
+        &(),
+    )
+    .await
 }

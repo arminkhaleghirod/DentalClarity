@@ -1584,3 +1584,128 @@ a.button {
 .empty-state p {
   margin: 0;
 }
+
+/* Editor: editing, revert, confirm and Present (M5) */
+
+.editor-bar {
+  position: relative;
+}
+
+.present-error {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 20px;
+  z-index: 5;
+  max-width: 360px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--status-review-bg);
+  color: var(--status-review-fg);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
+}
+
+.held-note .held-lead {
+  margin: 0;
+  font-weight: 600;
+}
+
+.held-note .reason-list {
+  margin-top: 4px;
+}
+
+.block-card.editing {
+  border: 2px solid var(--color-primary);
+  padding: 15px 17px;
+  box-shadow: 0 0 0 4px var(--color-primary-soft);
+}
+
+.block-card:focus {
+  outline: none;
+}
+
+.block-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid #868e9c;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--color-text);
+  resize: vertical;
+}
+
+.block-textarea:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 0;
+  border-color: var(--color-primary);
+}
+
+.block-edit-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.block-edit-hints .block-hint,
+.block-card > .block-hint {
+  margin: 0;
+}
+
+.block-hint.demo-note {
+  color: var(--status-changed-fg);
+}
+
+.block-edit-actions,
+.block-links {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-top: 2px;
+}
+
+.block-edit-actions {
+  gap: 8px;
+}
+
+.link-button {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-primary-strong);
+  cursor: pointer;
+}
+
+.link-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.change-status:empty {
+  display: none;
+}
+
+.check-callout.changed {
+  background: var(--status-changed-bg);
+  color: var(--color-text-strong);
+}
+
+.check-callout.changed .callout-mark {
+  color: var(--status-changed-fg);
+}
+
+.callout-outcome {
+  margin: 6px 0 0;
+}

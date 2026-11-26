@@ -10,6 +10,7 @@ mod format;
 mod icons;
 mod pages;
 mod patients;
+mod present;
 mod presentations;
 mod progress;
 mod session;
@@ -24,7 +25,12 @@ use session::SessionContext;
 
 fn main() {
     console_error_panic_hook::set_once();
-    leptos::mount::mount_to_body(App);
+    // `/present` is the patient tree: no staff session, shell or router.
+    if present::is_present_path() {
+        leptos::mount::mount_to_body(present::PresentApp);
+    } else {
+        leptos::mount::mount_to_body(App);
+    }
 }
 
 #[component]

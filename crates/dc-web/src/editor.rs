@@ -1,15 +1,21 @@
-//! Presentation preview (mockup 2c, read-only for now): section rail,
-//! selected section, and the checks panel.
+//! Presentation editor (mockup 2c): section rail, the selected section with
+//! editable text blocks, the checks panel, and the Present button.
 
 use crate::api;
 use crate::format::{language_name, money_view, timestamp, tooth_label};
 use crate::patients::patient_href;
 use crate::progress::GenerationProgress;
+use crate::session::use_session;
+use dc_core::Mode;
 use dc_core::content::ReadingLevel;
+use dc_core::present::{ConfirmNoteRequest, RevertBlockRequest, UpdateBlockRequest};
 use dc_core::presentation::{
     BlockSource, PresentationView, ProcedureFactView, SectionView, SectionVisibility, TextBlock,
 };
+use leptos::ev::KeyboardEvent;
 use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos::wasm_bindgen::JsCast;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
@@ -17,6 +23,9 @@ use leptos_router::hooks::use_params_map;
 const COSTS_KEY: &str = "costs";
 
 const COST_CAVEAT: &str = "These are estimates from your plan. Your insurance decides the final amount, which can change.";
+
+const HELD_NOTE: &str = "Held from patients until this section is fixed or regenerated.";
+const DEMO_NOTE: &str = "This is a public demo. Don't enter real personal or health information.";
 
 #[component]
 pub fn PresentationPage() -> impl IntoView {
@@ -36,13 +45,16 @@ pub fn PresentationPage() -> impl IntoView {
                         let job_id = p.job_id.clone();
                         let presentation_id = p.id.clone();
                         view! {
-                            <EditorBar p />
+                            <EditorBar data=RwSignal::new(p) />
                             <div class="subpage-body running-body">
                                 <GenerationProgress job_id presentation_id on_finished=refetch />
                             </div>
                         }.into_any()
                     }
-                    Ok(p) => view! { <EditorBar p=p.clone() /> <Editor p /> }.into_any(),
+                    Ok(p) => {
+                        let data = RwSignal::new(p);
+                        view! { <EditorBar data /> <Editor data /> }.into_any()
+                    }
                     Err(failure) => view! {
                         <header class="subbar"><BackLink href="/presentations".into() label="Back to presentations" /></header>
                         <div class="subpage-body">
@@ -75,19 +87,70 @@ fn procedure_count(n: usize) -> String {
     }
 }
 
+/// Present needs a finished job and at least one section patients may see.
+fn can_present(p: &PresentationView) -> bool {
+    p.job_state.is_finished()
+        && p.sections
+            .iter()
+            .any(|s| s.visibility == SectionVisibility::Ready)
+}
+
+/// Sends the browser to Present mode with a full page load, so no staff
+/// state stays in memory.
+fn load_page(path: &str) -> Result<(), String> {
+    window()
+        .location()
+        .assign(path)
+        .map_err(|_| "The browser could not open Present mode.".to_owned())
+}
+
 #[component]
-fn EditorBar(p: PresentationView) -> impl IntoView {
-    let meta = format!("{} · {}", p.plan_name, procedure_count(p.procedures.len()));
+fn EditorBar(data: RwSignal<PresentationView>) -> impl IntoView {
+    let (id, name, meta, version, created, patient) = data.with_untracked(|p| {
+        (
+            p.id.clone(),
+            p.patient_display_name.clone(),
+            format!("{} · {}", p.plan_name, procedure_count(p.procedures.len())),
+            format!("v{}", p.version),
+            timestamp(&p.created_at),
+            patient_href(&p.patient_key),
+        )
+    });
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let ready = move || data.with(can_present);
+    let present = move |_| {
+        if !ready() || busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        let id = id.clone();
+        spawn_local(async move {
+            match api::start_present(id).await {
+                Ok(started) => {
+                    if let Err(message) = load_page(&started.present_path) {
+                        error.set(Some(message));
+                        busy.set(false);
+                    }
+                }
+                Err(failure) => {
+                    error.set(Some(failure.message));
+                    busy.set(false);
+                }
+            }
+        });
+    };
     view! {
         <header class="subbar editor-bar">
-            <BackLink href=patient_href(&p.patient_key) label="Back to patient" />
+            <BackLink href=patient label="Back to patient" />
             <div class="editor-who">
-                <h1 class="editor-name">{p.patient_display_name.clone()}</h1>
+                <h1 class="editor-name">{name}</h1>
                 <p class="editor-meta">{meta}</p>
             </div>
             <span class="version-chip">
-                <b>{format!("v{}", p.version)}</b>
-                <span class="muted">{timestamp(&p.created_at)}</span>
+                <b>{version}</b>
+                <span class="muted">{created}</span>
             </span>
             <div class="editor-actions">
                 <button type="button" class="button text" aria-disabled="true"
@@ -96,12 +159,19 @@ fn EditorBar(p: PresentationView) -> impl IntoView {
                     title="Regenerating arrives in a later update">"Regenerate"</button>
                 <button type="button" class="button" aria-disabled="true"
                     title="The booklet arrives in a later update">"Export booklet"</button>
-                <button type="button" class="button primary present-button" aria-disabled="true"
-                    title="Present mode arrives in M5">
+                <button type="button" class="button primary present-button"
+                    aria-disabled=move || (!ready() || busy.get()).then_some("true")
+                    aria-busy=move || busy.get().then_some("true")
+                    title=move || (!ready()).then_some("No section is ready to show patients yet.")
+                    on:click=present
+                >
                     <span class="play" aria-hidden="true"></span>
-                    "Present"
+                    {move || if busy.get() { "Starting…" } else { "Present" }}
                 </button>
             </div>
+            {move || error.get().map(|message| view! {
+                <p class="present-error" role="alert">{message}</p>
+            })}
         </header>
     }
 }
@@ -205,34 +275,182 @@ fn nav_entries(p: &PresentationView) -> Vec<NavEntry> {
     entries
 }
 
+/// What the checks panel says about the last change to a block.
+#[derive(Clone, PartialEq)]
+enum ChangeKind {
+    Saved,
+    Reverted,
+    Confirmed,
+}
+
+#[derive(Clone, PartialEq)]
+struct ChangeNote {
+    section_key: String,
+    heading: String,
+    kind: ChangeKind,
+    warnings: Vec<String>,
+    /// Whether patients can see the section after the change.
+    shown: bool,
+}
+
+/// Identifies one block: section key and block field.
+type BlockKey = (String, String);
+
+/// Shared editor state. Only one block is edited at a time.
+#[derive(Clone, Copy)]
+struct EditCtx {
+    id: StoredValue<String>,
+    data: RwSignal<PresentationView>,
+    editing: RwSignal<Option<BlockKey>>,
+    draft: RwSignal<String>,
+    busy: RwSignal<Option<BlockKey>>,
+    error: RwSignal<Option<(BlockKey, String)>>,
+    note: RwSignal<Option<ChangeNote>>,
+    demo: Signal<bool>,
+}
+
+fn dom_id(prefix: &str, key: &BlockKey) -> String {
+    let clean = |s: &str| {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+    };
+    format!("{prefix}-{}-{}", clean(&key.0), clean(&key.1))
+}
+
+/// Moves focus to an element once the next frame has rendered it.
+fn focus_later(id: String) {
+    request_animation_frame(move || {
+        if let Some(el) = document()
+            .get_element_by_id(&id)
+            .and_then(|e| e.dyn_into::<leptos::web_sys::HtmlElement>().ok())
+        {
+            let _ = el.focus();
+        }
+    });
+}
+
+/// One sentence per line; blank lines are dropped.
+fn sentences_from(draft: &str) -> Vec<String> {
+    draft
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+enum BlockAction {
+    Save(Vec<String>),
+    Revert,
+    Confirm,
+}
+
+impl EditCtx {
+    fn run(self, key: BlockKey, heading: String, action: BlockAction) {
+        if self.busy.get_untracked().is_some() {
+            return;
+        }
+        self.busy.set(Some(key.clone()));
+        self.error.set(None);
+        let id = self.id.get_value();
+        spawn_local(async move {
+            let (section_key, field) = key.clone();
+            let (kind, result) = match action {
+                BlockAction::Save(sentences) => (
+                    ChangeKind::Saved,
+                    api::update_block(
+                        id,
+                        &UpdateBlockRequest {
+                            section_key,
+                            field,
+                            sentences,
+                        },
+                    )
+                    .await,
+                ),
+                BlockAction::Revert => (
+                    ChangeKind::Reverted,
+                    api::revert_block(id, &RevertBlockRequest { section_key, field }).await,
+                ),
+                BlockAction::Confirm => (
+                    ChangeKind::Confirmed,
+                    api::confirm_note(id, &ConfirmNoteRequest { section_key, field }).await,
+                ),
+            };
+            self.busy.set(None);
+            match result {
+                Ok(change) => {
+                    let shown = change.section.visibility == SectionVisibility::Ready;
+                    let section_key = change.section.key.clone();
+                    self.data.update(|p| {
+                        if let Some(slot) = p.sections.iter_mut().find(|s| s.key == section_key) {
+                            *slot = change.section;
+                        }
+                    });
+                    if kind == ChangeKind::Saved {
+                        self.editing.set(None);
+                    }
+                    self.note.set(Some(ChangeNote {
+                        section_key,
+                        heading,
+                        kind,
+                        warnings: change.warnings,
+                        shown,
+                    }));
+                    focus_later(dom_id("block", &key));
+                }
+                Err(failure) => self.error.set(Some((key, failure.message))),
+            }
+        });
+    }
+}
+
 #[component]
-fn Editor(p: PresentationView) -> impl IntoView {
-    let entries = nav_entries(&p);
-    let first = entries
-        .first()
-        .map(|e| e.key.clone())
-        .unwrap_or_else(|| COSTS_KEY.into());
+fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
+    let session = use_session();
+    let demo = Signal::derive(move || {
+        session.info.get().and_then(Result::ok).map(|i| i.mode) == Some(Mode::Demo)
+    });
+    let ctx = EditCtx {
+        id: StoredValue::new(data.with_untracked(|p| p.id.clone())),
+        data,
+        editing: RwSignal::new(None),
+        draft: RwSignal::new(String::new()),
+        busy: RwSignal::new(None),
+        error: RwSignal::new(None),
+        note: RwSignal::new(None),
+        demo,
+    };
+    let first = data.with_untracked(|p| {
+        nav_entries(p)
+            .first()
+            .map(|e| e.key.clone())
+            .unwrap_or_else(|| COSTS_KEY.into())
+    });
     let selected = RwSignal::new(first);
-    let data = StoredValue::new(p);
-    let no_sections = data.with_value(|p| p.sections.is_empty());
+    let no_sections = move || data.with(|p| p.sections.is_empty());
 
     view! {
         <div class="editor-grid">
-            <SectionRail entries selected />
+            {move || {
+                let entries = data.with(nav_entries);
+                view! { <SectionRail entries selected /> }
+            }}
             <main class="editor-canvas">
-                {no_sections.then(|| view! {
+                {move || no_sections().then(|| view! {
                     <div class="notice error" role="alert">
                         "No sections were written for this version. Patients cannot be shown this presentation."
                     </div>
                 })}
                 {move || {
                     let key = selected.get();
-                    data.with_value(|p| {
+                    data.with(|p| {
                         if key == COSTS_KEY {
                             view! { <CostsPane p=p.clone() /> }.into_any()
                         } else {
                             match p.sections.iter().find(|s| s.key == key) {
-                                Some(section) => section_pane(p, section),
+                                Some(section) => section_pane(p, section, ctx),
                                 None => view! { <div class="notice">"Select a section."</div> }.into_any(),
                             }
                         }
@@ -241,16 +459,66 @@ fn Editor(p: PresentationView) -> impl IntoView {
             </main>
             <aside class="checks-rail" aria-labelledby="checks-title">
                 <h2 id="checks-title" class="rail-title">"Checks"</h2>
+                <div role="status" class="change-status">
+                    {move || {
+                        let key = selected.get();
+                        ctx.note
+                            .get()
+                            .filter(|n| n.section_key == key)
+                            .map(change_note_view)
+                    }}
+                </div>
                 {move || {
                     let key = selected.get();
-                    data.with_value(|p| checks_for(p, &key))
+                    data.with(|p| checks_for(p, &key))
                 }}
                 <div class="rail-divider"></div>
                 <h2 class="rail-title">"Details"</h2>
-                {data.with_value(details)}
+                {move || data.with(details)}
             </aside>
         </div>
     }
+}
+
+fn change_note_view(note: ChangeNote) -> AnyView {
+    let outcome = match (&note.kind, note.shown) {
+        (ChangeKind::Saved, true) => "Saved. Patients will see your text.",
+        (ChangeKind::Saved, false) => "Saved. This section is still held from patients.",
+        (ChangeKind::Reverted, true) => "Restored the generated text. Patients will see it.",
+        (ChangeKind::Reverted, false) => {
+            "Restored the generated text. This section is still held from patients."
+        }
+        (ChangeKind::Confirmed, true) => "Confirmed. Patients will see this text.",
+        (ChangeKind::Confirmed, false) => "Confirmed. This section is still held from patients.",
+    };
+    if note.warnings.is_empty() {
+        return view! {
+            <ul class="check-list">
+                <li class="check-row">
+                    <span class="check-mark" aria-hidden="true">"✓"</span>
+                    <span><b>{note.heading}</b>": "{outcome}</span>
+                </li>
+            </ul>
+        }
+        .into_any();
+    }
+    let lead = match note.kind {
+        ChangeKind::Saved => "Check this edit:",
+        _ => "Check this text:",
+    };
+    view! {
+        <div class="check-callout changed">
+            <span class="callout-mark" aria-hidden="true">"!"</span>
+            <div>
+                <p class="callout-lead">{note.heading}" · "{lead}</p>
+                <ul class="reason-list">
+                    {note.warnings.into_iter().map(|w| view! { <li>{w}</li> }).collect_view()}
+                </ul>
+                <p class="callout-outcome">{outcome}</p>
+            </div>
+        </div>
+    }
+    .into_any()
 }
 
 #[component]
@@ -304,7 +572,7 @@ fn SectionRail(entries: Vec<NavEntry>, selected: RwSignal<String>) -> impl IntoV
     }
 }
 
-fn section_pane(p: &PresentationView, section: &SectionView) -> AnyView {
+fn section_pane(p: &PresentationView, section: &SectionView, ctx: EditCtx) -> AnyView {
     let procedures: Vec<&SectionView> = p.sections.iter().filter(|s| is_procedure(s)).collect();
     let eyebrow = procedures
         .iter()
@@ -313,15 +581,17 @@ fn section_pane(p: &PresentationView, section: &SectionView) -> AnyView {
     let fact = fact_for(p, section).cloned();
     let held = match section.visibility {
         SectionVisibility::Ready => None,
-        SectionVisibility::NeedsReview => Some((
-            "held-note review",
-            "Held for staff review. Patients see nothing from this section until it is resolved.",
-        )),
+        SectionVisibility::NeedsReview => Some(("held-note review", HELD_NOTE)),
         SectionVisibility::Failed => Some((
             "held-note failed",
             "This section failed its checks and is never shown to patients.",
         )),
     };
+    let reasons = (section.visibility != SectionVisibility::Ready && !section.reasons.is_empty())
+        .then(|| section.reasons.clone());
+    let editable = section.visibility != SectionVisibility::Failed;
+    let shown = section.visibility == SectionVisibility::Ready;
+    let section_key = section.key.clone();
     let blocks = section.blocks.clone();
     let questions = section.questions.clone();
     let empty = blocks.is_empty() && questions.is_empty();
@@ -331,8 +601,19 @@ fn section_pane(p: &PresentationView, section: &SectionView) -> AnyView {
             <h2 class="pane-title">{section.title.clone()}</h2>
         </div>
         {fact.map(|fact| view! { <LockedStrip fact /> })}
-        {held.map(|(class, text)| view! { <p class=class>{text}</p> })}
-        {blocks.into_iter().map(|block| view! { <BlockCard block /> }).collect_view()}
+        {held.map(|(class, text)| view! {
+            <div class=class>
+                <p class="held-lead">{text}</p>
+                {reasons.map(|reasons| view! {
+                    <ul class="reason-list">
+                        {reasons.into_iter().map(|r| view! { <li>{r}</li> }).collect_view()}
+                    </ul>
+                })}
+            </div>
+        })}
+        {blocks.into_iter().map(|block| view! {
+            <BlockCard block section_key=section_key.clone() editable shown ctx />
+        }).collect_view()}
         {(!questions.is_empty()).then(|| view! {
             <article class="block-card">
                 <div class="block-head"><h3 class="block-title">"Questions to ask"</h3></div>
@@ -389,23 +670,198 @@ fn source_pill(source: BlockSource) -> (&'static str, &'static str) {
 }
 
 #[component]
-fn BlockCard(block: TextBlock) -> impl IntoView {
+fn BlockCard(
+    block: TextBlock,
+    section_key: String,
+    editable: bool,
+    shown: bool,
+    ctx: EditCtx,
+) -> impl IntoView {
     let (pill_class, pill_label) = source_pill(block.source);
-    let confirm = block.source == BlockSource::ClinicalNote && block.needs_confirmation;
+    let note_block = block.source == BlockSource::ClinicalNote;
+    let confirm = note_block && block.needs_confirmation;
+    let confirmed = note_block && !block.needs_confirmation;
+    let edited = block.source == BlockSource::StaffEdit;
+    let editable = editable && block.source != BlockSource::Source;
+    let key: BlockKey = (section_key, block.field.clone());
+    let card_id = dom_id("block", &key);
+    let edit_id = dom_id("edit", &key);
+    let area_id = dom_id("text", &key);
+    let hint_id = dom_id("hint", &key);
+    let heading = block.heading.clone();
     let text = block.sentences.join(" ");
+    let original = block.sentences.join("\n");
+
+    let is_editing = {
+        let key = key.clone();
+        Memo::new(move |_| ctx.editing.with(|e| e.as_ref() == Some(&key)))
+    };
+    let is_busy = {
+        let key = key.clone();
+        Memo::new(move |_| ctx.busy.with(|b| b.as_ref() == Some(&key)))
+    };
+    let any_busy = move || ctx.busy.with(Option::is_some);
+    let error = {
+        let key = key.clone();
+        move || {
+            ctx.error.with(|e| {
+                e.as_ref()
+                    .filter(|(k, _)| *k == key)
+                    .map(|(_, m)| m.clone())
+            })
+        }
+    };
+
+    let start_edit = {
+        let key = key.clone();
+        let area_id = area_id.clone();
+        move |_| {
+            if any_busy() {
+                return;
+            }
+            ctx.draft.set(original.clone());
+            ctx.error.set(None);
+            ctx.editing.set(Some(key.clone()));
+            focus_later(area_id.clone());
+        }
+    };
+    let cancel = {
+        let edit_id = edit_id.clone();
+        move || {
+            ctx.editing.set(None);
+            ctx.error.set(None);
+            focus_later(edit_id.clone());
+        }
+    };
+    let save = {
+        let key = key.clone();
+        let heading = heading.clone();
+        move || {
+            let sentences = sentences_from(&ctx.draft.get_untracked());
+            if sentences.is_empty() {
+                ctx.error
+                    .set(Some((key.clone(), "Write at least one sentence.".into())));
+                return;
+            }
+            ctx.run(key.clone(), heading.clone(), BlockAction::Save(sentences));
+        }
+    };
+    let revert = {
+        let key = key.clone();
+        let heading = heading.clone();
+        move |_| ctx.run(key.clone(), heading.clone(), BlockAction::Revert)
+    };
+    let confirm_note = {
+        let key = key.clone();
+        let heading = heading.clone();
+        move |_| ctx.run(key.clone(), heading.clone(), BlockAction::Confirm)
+    };
+
+    let keydown = {
+        let cancel = cancel.clone();
+        let save = save.clone();
+        move |ev: KeyboardEvent| {
+            if ev.key() == "Escape" {
+                ev.prevent_default();
+                cancel();
+            } else if ev.key() == "Enter" && (ev.ctrl_key() || ev.meta_key()) {
+                ev.prevent_default();
+                save();
+            }
+        }
+    };
+    let editor = {
+        let area_id = area_id.clone();
+        let hint_id = hint_id.clone();
+        let heading = heading.clone();
+        move || {
+            let cancel = cancel.clone();
+            let save = save.clone();
+            let keydown = keydown.clone();
+            view! {
+                <label class="visually-hidden" for=area_id.clone()>{format!("Text for {heading}, one sentence per line")}</label>
+                <textarea
+                    id=area_id.clone()
+                    class="block-textarea"
+                    rows=6
+                    aria-describedby=hint_id.clone()
+                    prop:value=ctx.draft.get_untracked()
+                    on:input=move |ev| ctx.draft.set(event_target_value(&ev))
+                    on:keydown=keydown
+                ></textarea>
+                <div id=hint_id.clone() class="block-edit-hints">
+                    <p class="block-hint">"One sentence per line. Don't add names or other personal details."</p>
+                    {move || ctx.demo.get().then(|| view! {
+                        <p class="block-hint demo-note">{DEMO_NOTE}</p>
+                    })}
+                </div>
+                <div class="block-edit-actions">
+                    <button type="button" class="button primary small"
+                        disabled=any_busy
+                        on:click=move |_| save()>
+                        {move || if is_busy.get() { "Saving…" } else { "Save" }}
+                    </button>
+                    <button type="button" class="button small"
+                        disabled=any_busy
+                        on:click=move |_| cancel()>"Cancel"</button>
+                </div>
+            }
+        }
+    };
+
+    let reader = move || {
+        let start_edit = start_edit.clone();
+        let revert = revert.clone();
+        let confirm_note = confirm_note.clone();
+        let text = text.clone();
+        let edit_id = edit_id.clone();
+        let heading = heading.clone();
+        view! {
+            <p class="block-body">{text}</p>
+            {confirm.then(|| view! {
+                <div class="block-confirm">
+                    <button type="button" class="button small"
+                        disabled=any_busy
+                        on:click=confirm_note>
+                        {move || if is_busy.get() { "Confirming…" } else { "Looks right" }}
+                    </button>
+                    <span class="block-hint">"Patients see general wording until this is confirmed."</span>
+                </div>
+            })}
+            {confirmed.then(|| view! {
+                <p class="block-hint">
+                    {if shown { "Confirmed. Patients will see this text." } else { "Confirmed." }}
+                </p>
+            })}
+            {(editable || edited).then(|| view! {
+                <div class="block-links">
+                    {editable.then(|| view! {
+                        <button type="button" class="link-button" id=edit_id.clone()
+                            aria-label=format!("Edit {heading}")
+                            disabled=any_busy
+                            on:click=start_edit>"Edit"</button>
+                    })}
+                    {edited.then(|| view! {
+                        <button type="button" class="link-button"
+                            disabled=any_busy
+                            on:click=revert>
+                            {move || if is_busy.get() { "Restoring…" } else { "Revert to generated text" }}
+                        </button>
+                    })}
+                </div>
+            })}
+        }
+    };
+
     view! {
-        <article class="block-card" class:unconfirmed=confirm>
+        <article id=card_id class="block-card" class:unconfirmed=confirm class:editing=is_editing tabindex="-1">
             <div class="block-head">
                 <h3 class="block-title">{block.heading}</h3>
                 <span class=pill_class>{pill_label}</span>
             </div>
-            <p class="block-body">{text}</p>
-            {confirm.then(|| view! {
-                <div class="block-confirm">
-                    <button type="button" class="button small" aria-disabled="true"
-                        title="Confirming note-based text arrives in M5">"Looks right"</button>
-                    <span class="block-hint">"Patients see general wording until this is confirmed."</span>
-                </div>
+            {move || if is_editing.get() { editor().into_any() } else { reader().into_any() }}
+            {move || error().map(|message| view! {
+                <p class="form-error" role="alert">{message}</p>
             })}
         </article>
     }
