@@ -1,0 +1,11 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 8081
+
+# During development, `trunk serve` forwards API calls to a running server
+# started with `cargo run -p dc-server`.
+[[proxy]]
+backend = "http://127.0.0.1:8080/api/"
