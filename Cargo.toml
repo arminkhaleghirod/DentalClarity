@@ -29,6 +29,8 @@ repository = "https://github.com/arminkhaleghirod/DentalClarity"
 dc-core = { path = "crates/dc-core" }
 dc-pms = { path = "crates/dc-pms" }
 dc-knowledge = { path = "crates/dc-knowledge" }
+dc-ai = { path = "crates/dc-ai" }
+dc-generation = { path = "crates/dc-generation" }
 
 anyhow = "1"
 async-trait = "0.1"

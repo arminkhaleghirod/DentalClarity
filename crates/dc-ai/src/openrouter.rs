@@ -32,7 +32,8 @@ impl OpenRouter {
     pub fn new(policy: ProviderPolicy, api_key: String) -> Result<Self> {
         policy.check_openrouter()?;
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            // Calls normally finish well inside this; a stuck call is retried.
+            .timeout(Duration::from_secs(90))
             .build()
             .map_err(|e| AiError::Request(e.to_string()))?;
         Ok(Self {

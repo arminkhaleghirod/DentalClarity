@@ -570,7 +570,21 @@ dependencies = [
 name = "dc-generation"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "dc-ai",
  "dc-core",
+ "dc-knowledge",
+ "dc-pms",
+ "dotenvy",
+ "futures",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.2",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -579,6 +593,7 @@ version = "0.1.0"
 dependencies = [
  "dc-core",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "toml",
 ]

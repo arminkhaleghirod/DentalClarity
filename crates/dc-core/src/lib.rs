@@ -11,9 +11,12 @@
 //! from.
 
 pub mod api;
+pub mod color;
+pub mod content;
 pub mod mode;
 pub mod money;
 pub mod plan;
+pub mod presentation;
 pub mod procedure;
 pub mod provenance;
 pub mod tooth;
