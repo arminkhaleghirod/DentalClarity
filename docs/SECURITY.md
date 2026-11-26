@@ -190,7 +190,7 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 |---|---|---|
 | PMS DB password | `secrets` row, AES-256-GCM with a data key | not used |
 | AWS credentials | same | not used |
-| OpenRouter key | refused in clinical mode | env var `DC_OPENROUTER_API_KEY` |
+| OpenRouter key | refused in clinical mode | env var `OPENROUTER_API_KEY` |
 | Data key | wrapped with DPAPI, machine scope [ARCH 5] | not used |
 | TLS private key, local CA key | file in data dir, ACL restricted | platform-managed |
 

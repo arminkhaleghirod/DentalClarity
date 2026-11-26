@@ -40,8 +40,13 @@ pub struct HttpConfig {
     /// Scheme, host and port browsers use to reach the app, e.g.
     /// `https://demo.example.org`. Used for the Origin check on writes.
     pub public_origin: String,
-    /// Reverse proxy whose `X-Forwarded-For` header is trusted for client IPs.
-    pub trusted_proxy: Option<IpAddr>,
+    /// Reverse proxies whose forwarding headers are trusted for client IPs.
+    /// One address or a comma-separated list of CIDR ranges.
+    pub trusted_proxy: Option<ProxyRanges>,
+    /// Header the trusted proxy sets to the client address, e.g.
+    /// `fly-client-ip`. Read only from trusted proxies. Without it, the
+    /// rightmost `X-Forwarded-For` entry is used.
+    pub client_ip_header: Option<String>,
     /// Send `Strict-Transport-Security`. Enable only with a certificate every
     /// client trusts; with a self-signed certificate it locks browsers out.
     pub hsts: bool,
@@ -77,6 +82,10 @@ impl Config {
             .map(|v| v.parse())
             .transpose()
             .context("DC_TRUSTED_PROXY")?;
+        let client_ip_header = var("DC_CLIENT_IP_HEADER").map(|h| h.trim().to_ascii_lowercase());
+        if client_ip_header.is_some() && trusted_proxy.is_none() {
+            bail!("DC_CLIENT_IP_HEADER needs DC_TRUSTED_PROXY, or any client could forge it");
+        }
         let hsts = matches!(var("DC_HSTS").as_deref(), Some("1" | "true" | "yes"));
         if mode == Mode::Clinical
             && !public_origin.starts_with("https://")
@@ -102,6 +111,7 @@ impl Config {
             http: HttpConfig {
                 public_origin,
                 trusted_proxy,
+                client_ip_header,
                 hsts,
             },
             data_dir: var("DC_DATA_DIR").unwrap_or_else(|| "data".into()).into(),
@@ -114,5 +124,88 @@ impl Config {
             text_model: var("DC_TEXT_MODEL").map(|m| m.trim().to_owned()),
             demo_monthly_budget_usd,
         })
+    }
+}
+
+/// A set of address ranges, parsed from `"10.0.0.1"` or `"fdaa::/16, 172.16.0.0/12"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRanges(Vec<(IpAddr, u8)>);
+
+impl ProxyRanges {
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        self.0
+            .iter()
+            .any(|(net, prefix)| in_range(*net, *prefix, ip))
+    }
+}
+
+fn in_range(net: IpAddr, prefix: u8, ip: IpAddr) -> bool {
+    match (net, ip) {
+        (IpAddr::V4(n), IpAddr::V4(a)) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(prefix))
+            };
+            u32::from(n) & mask == u32::from(a) & mask
+        }
+        (IpAddr::V6(n), IpAddr::V6(a)) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(prefix))
+            };
+            u128::from(n) & mask == u128::from(a) & mask
+        }
+        // An IPv4 peer seen as an IPv4-mapped IPv6 address.
+        (IpAddr::V4(_), IpAddr::V6(a)) => a
+            .to_ipv4_mapped()
+            .is_some_and(|v4| in_range(net, prefix, IpAddr::V4(v4))),
+        _ => false,
+    }
+}
+
+impl std::str::FromStr for ProxyRanges {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let mut ranges = Vec::new();
+        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (addr, prefix) = match part.split_once('/') {
+                Some((a, p)) => (a.parse::<IpAddr>()?, p.parse::<u8>()?),
+                None => {
+                    let a = part.parse::<IpAddr>()?;
+                    (a, if a.is_ipv4() { 32 } else { 128 })
+                }
+            };
+            let max = if addr.is_ipv4() { 32 } else { 128 };
+            if prefix > max {
+                bail!("prefix /{prefix} is too long for {addr}");
+            }
+            ranges.push((addr, prefix));
+        }
+        if ranges.is_empty() {
+            bail!("no address or range given");
+        }
+        Ok(ProxyRanges(ranges))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_single_addresses_and_ranges() {
+        let r: ProxyRanges = "10.0.0.1".parse().unwrap();
+        assert!(r.contains("10.0.0.1".parse().unwrap()));
+        assert!(!r.contains("10.0.0.2".parse().unwrap()));
+        let r: ProxyRanges = "fdaa::/16, 172.16.0.0/12".parse().unwrap();
+        assert!(r.contains("fdaa:0:1::2".parse().unwrap()));
+        assert!(r.contains("172.20.1.9".parse().unwrap()));
+        assert!(!r.contains("fdab::1".parse().unwrap()));
+        assert!(!r.contains("8.8.8.8".parse().unwrap()));
+        assert!("10.0.0.1/40".parse::<ProxyRanges>().is_err());
+        assert!("".parse::<ProxyRanges>().is_err());
     }
 }

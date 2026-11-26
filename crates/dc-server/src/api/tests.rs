@@ -78,6 +78,7 @@ async fn app_with_narration(
         http: Arc::new(HttpConfig {
             public_origin: ORIGIN.into(),
             trusted_proxy: None,
+            client_ip_header: None,
             hsts: false,
         }),
         db: db.clone(),

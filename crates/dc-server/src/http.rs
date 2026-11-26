@@ -142,22 +142,38 @@ fn clear_cookie(http: &HttpConfig, name: &str) -> HeaderValue {
 
 /// The client address.
 ///
-/// `X-Forwarded-For` is read only when the direct peer is the configured
-/// trusted proxy, and then only its rightmost entry, which the proxy itself
-/// appended. Entries to the left come from the client and can be forged. An
-/// unknown peer maps to `0.0.0.0`, which is never treated as local.
+/// Forwarding headers are read only when the direct peer is inside the
+/// trusted proxy ranges. Then the configured client-IP header (such as
+/// `fly-client-ip`) wins; otherwise the rightmost `X-Forwarded-For` entry,
+/// which the proxy itself appended, is used. Entries to the left come from
+/// the client and can be forged. An unknown peer maps to `0.0.0.0`, which is
+/// never treated as local.
 pub fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, http: &HttpConfig) -> IpAddr {
     let Some(peer) = peer else {
         return IpAddr::V4(Ipv4Addr::UNSPECIFIED);
     };
-    if http.trusted_proxy == Some(peer)
-        && let Some(forwarded) = headers
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .last()
+    let trusted = http
+        .trusted_proxy
+        .as_ref()
+        .is_some_and(|r| r.contains(peer));
+    if !trusted {
+        return peer;
+    }
+    if let Some(name) = &http.client_ip_header
+        && let Some(ip) = headers
+            .get(name.as_str())
+            .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok())
+    {
+        return ip;
+    }
+    if let Some(forwarded) = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .last()
+        .and_then(|v| v.trim().parse().ok())
     {
         return forwarded;
     }
@@ -214,6 +230,7 @@ mod tests {
         HttpConfig {
             public_origin: "http://127.0.0.1:8080".into(),
             trusted_proxy: proxy.map(|p| p.parse().unwrap()),
+            client_ip_header: None,
             hsts: false,
         }
     }
@@ -255,6 +272,28 @@ mod tests {
     }
 
     #[test]
+    fn client_ip_header_is_trusted_only_from_the_proxy_range() {
+        let cfg = HttpConfig {
+            public_origin: "https://demo.example.org".into(),
+            trusted_proxy: Some("fdaa::/16".parse().unwrap()),
+            client_ip_header: Some("fly-client-ip".into()),
+            hsts: false,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("fly-client-ip", "203.0.113.50".parse().unwrap());
+        let proxy: IpAddr = "fdaa:0:1:a7b::2".parse().unwrap();
+        let outsider: IpAddr = "198.51.100.9".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, Some(proxy), &cfg),
+            "203.0.113.50".parse::<IpAddr>().unwrap()
+        );
+        // A client connecting directly cannot choose its address with the header.
+        assert_eq!(client_ip(&headers, Some(outsider), &cfg), outsider);
+        // Without the header, the proxy falls back to X-Forwarded-For, then to the peer.
+        assert_eq!(client_ip(&HeaderMap::new(), Some(proxy), &cfg), proxy);
+    }
+
+    #[test]
     fn cookie_flags_follow_the_origin_scheme() {
         let plain = session_cookie(&http(None), "t");
         assert!(plain.to_str().unwrap().starts_with("dc_session=t;"));
@@ -262,6 +301,7 @@ mod tests {
         let tls = HttpConfig {
             public_origin: "https://demo.example.org".into(),
             trusted_proxy: None,
+            client_ip_header: None,
             hsts: false,
         };
         let secure = session_cookie(&tls, "t");

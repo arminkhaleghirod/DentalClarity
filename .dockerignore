@@ -1,0 +1,27 @@
+# Build output. The image builds the web app and server itself.
+target/
+crates/dc-web/dist/
+
+# Secrets and local configuration
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# Local data and working files
+data/
+.local/
+*.db
+*.db-shm
+*.db-wal
+
+# ClarityEval runs and the held-out split
+eval/runs/
+eval/heldout/
+
+# Repository and editor files
+.git/
+.github/
+.vscode/
+.idea/
