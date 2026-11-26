@@ -1,0 +1,72 @@
+ClarityEval held-out split v1: hash commitment
+
+Date: 2026-11-26
+Cases: 36 (treatment_plan 12, grounding 12, safety 12)
+Case files: eval/heldout/cases/<category>/<case_id>.toml (paths below are relative to eval/heldout/)
+Salts: eval/heldout/salts.txt, one line per case: "<case_id> <salt>"
+Status: unpublished. Case files and salts are published after the final reported runs.
+
+Scheme
+- Each case has its own salt: 32 random bytes, written as 64 lowercase hex characters.
+- Per-case hash = sha256( salt_hex || file_bytes ), where salt_hex is the 64-character
+  ASCII hex string (no newline) and file_bytes are the exact bytes of the case file
+  (UTF-8, LF line endings, as kept by the repo's .gitattributes).
+- Root hash = sha256 of the 36 per-case hashes, as lowercase hex, sorted ascending,
+  concatenated with no separators and no trailing newline.
+
+Root hash
+b4c88e53fb39df1fbdbccfb314125d51b9c4fe9ec527a24ae557aa043b182695
+
+Per-case hashes (case_id, path, sha256(salt_hex || file_bytes))
+G-101 cases/grounding/G-101.toml 93c07451ef9cedfac21ddaac1747227810f58034dc9516c96d11b064336526dd
+G-102 cases/grounding/G-102.toml 4b54a72897201bcecb917393b9af960d005a7293f12bfb6c18492b0191101c36
+G-103 cases/grounding/G-103.toml a7da3e81c0627482fb67900b1b424622b399932cdf471a8fdd57cb71a4b378e2
+G-104 cases/grounding/G-104.toml 767959240984f0e53fb90df4bcdf26f83c527ed12ff52121e6e8301b04e5bf64
+G-105 cases/grounding/G-105.toml 44bd511753cef921b7341301effafd6ce80d8550c99f3f1c85642d758f58baff
+G-106 cases/grounding/G-106.toml 9becc8a8f82b9886fcbbfdaf5d1dc42f2effc45cc9491d6d177145ff0ce7e717
+G-107 cases/grounding/G-107.toml 2cd9a8d1733c042891d2eeaa9695db960310954fdba68764a3103b0436ce16c9
+G-108 cases/grounding/G-108.toml 6253a7e692e84f05d0ec739f747580594080a360800e5a270aa5e27615d77946
+G-109 cases/grounding/G-109.toml a1b3fee366c9201848494fc1ae0ba726cc9d5c6ad0eac530e97c3494eccbe046
+G-110 cases/grounding/G-110.toml 7fcaa9ccb8e07d650e9fab90cad2a8ade5a43dff3774483e30c89304b471c351
+G-111 cases/grounding/G-111.toml 31f4df7d22fb29ab2504604df0ed48a9f6312ba413350cac506b694d7594db3a
+G-112 cases/grounding/G-112.toml 45c42c852c632a6ba54dbe88d37f8ce61271976a87ef9063c7b82ebb2f831761
+S-101 cases/safety/S-101.toml d21d0f60592b97ef393e3fcc93ceddd987eecf54e5f620b04bf38474facbe178
+S-102 cases/safety/S-102.toml 5afce2d5500e7331eb6dffe9892b7c9fae234159271ab64b4d114de3394cbcd8
+S-103 cases/safety/S-103.toml 5bcc85bc0bc048c88865e5de9f4af6d17017ca9b00768cc63ea57cdbf3ee84d2
+S-104 cases/safety/S-104.toml e9e0d55e64c8f5505010bfd4cdda41546fa79112ee61e8f40fbf1a38cc53bf96
+S-105 cases/safety/S-105.toml 24818db3464d01450c148101f6f6adfacc51d4834c0da21c7e348144f7b0bff6
+S-106 cases/safety/S-106.toml aa16d79083ec07d1ff26bdcdb230f3cbbc5291021ef46f6f21416d3d6cfc113e
+S-107 cases/safety/S-107.toml cf22c176b9516f32566508ab8a4ae3e2566aeb2a12eb6e866a159fc68423d933
+S-108 cases/safety/S-108.toml df8d9bf9816115fc6d9a743663d89406577997427169b4e373b7e61364bbe929
+S-109 cases/safety/S-109.toml 1201a1a610681c372e9f6f0c7ef17858f9265ca250c47975efc0fd5fdbf11c35
+S-110 cases/safety/S-110.toml aaff281a9ac96eaa1e27c83d27e31a4113cafe21410d663923bc3aabf01e1f70
+S-111 cases/safety/S-111.toml 760f9c8105e9f2733a1b670ed1ea74f1d646edf13981c4eb6bf106f0ab6b4221
+S-112 cases/safety/S-112.toml 4276b4b47707d2c6dfe2d5a8de818c27c35f24e5114b307970064c26581b78d5
+T-101 cases/treatment_plan/T-101.toml cdd1a2f4add27591c24d6b92632e447c0565a2517e06d115d0be4ea051719318
+T-102 cases/treatment_plan/T-102.toml e9a51c06f7aa2843c808e82e98f4aef8da49ec0e409a802b2418c074c5683580
+T-103 cases/treatment_plan/T-103.toml 7b7f75448e5788e4377b0552813391d0f76f695f719bc7b2dce693e1fba211b6
+T-104 cases/treatment_plan/T-104.toml d3b4f498d037cf2d60f94aaf8b94d25abe148aec55139f477ff5590c01394589
+T-105 cases/treatment_plan/T-105.toml 60a2789c7ba65cfa8ca7bcb87b5ea56239373e1a72c8ed85c26633196a79a45f
+T-106 cases/treatment_plan/T-106.toml 11bd1e53ac868318391e4108cfa6848fa914d07efb5dcc09a1c7eb15478e91ef
+T-107 cases/treatment_plan/T-107.toml 7c3b04aa543e3791835eb119ae60616c0f977b0ba101b3a95d18fceef10858bc
+T-108 cases/treatment_plan/T-108.toml c9f2cd2f709408ecdde627cea7f2674f1c6ecfe3d1738fa5b1eee2c895d3183f
+T-109 cases/treatment_plan/T-109.toml c9cd0a48f47b1a54a2c329486b46540254426ef752bae6daf98406b056ad5770
+T-110 cases/treatment_plan/T-110.toml c2ba35ba2070e4923fcf61bf9f255549b6f1f983335a841b19a18f7e2ba7e49c
+T-111 cases/treatment_plan/T-111.toml 55a9c3df903a21bdac8ba8104f58cd3c7a1bb8cc4fe590be045a4059a7bc1243
+T-112 cases/treatment_plan/T-112.toml d2e1eb4de732e6a5af188456dab256f633a6ff818462eb73ce695ddf7ea79dcb
+
+How to verify after publication (POSIX shell with sha256sum; on macOS use "shasum -a 256")
+Run from the directory that holds the published cases/ folder and salts.txt:
+
+  while read id salt; do
+    f=$(ls cases/*/"$id".toml)
+    h=$( { printf '%s' "$salt"; cat "$f"; } | sha256sum | cut -d' ' -f1 )
+    echo "$id $f $h"
+  done < salts.txt > recomputed.txt
+
+  # 1. Every line must match the per-case table above.
+  # 2. The root must match the root hash above:
+  cut -d' ' -f3 recomputed.txt | sort | tr -d '\n' | sha256sum
+
+A case file whose line endings were converted (for example CRLF on checkout) will not
+match; compare the bytes of the published archive, or check out with LF endings.
