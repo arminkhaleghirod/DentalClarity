@@ -47,7 +47,7 @@ Mode is fixed at startup and cannot change at runtime [C, ARCH 1].
 | AI providers | OpenRouter for all [C, D1] | Bedrock and Polly; OpenRouter adapter cannot be constructed [C, D2] |
 | Staff auth | visitor session created by `POST /api/visit`, no password | shared staff account with password |
 | Leave Present | no PIN [C, P8] | staff PIN [C, P8] |
-| TLS | terminated by the hosting platform | rustls in-process |
+| TLS | terminated by the hosting platform | rustls in-process (M9); until then a TLS proxy in front, see the startup check |
 | Secrets | env vars only | encrypted `secrets` table, DPAPI-wrapped key |
 | Limits | per-visitor rate limits, $25/month cap [C, D5] | practice-configured, login and PIN limits always on |
 | Setup wizard | disabled; config from env | first launch only, with the one-time setup code printed to the server console |
@@ -105,6 +105,7 @@ API responses carry `Cache-Control: no-store`. The `__Host-` prefix needs TLS. I
 | `POST /api/present/exit` (PIN) | 5 PIN tries per present session, counted before each check so parallel requests cannot exceed it; 10 exit requests per minute per present session and 30 per client address | after 5 wrong PINs the PIN is refused (`403 pin_disabled`) for that lock and only the staff password unlocks; the password is accepted at any time and its failures count toward the login backoff |
 | Global failed login count | over 50 failures in 15 min | one `login_failure_surge` audit event per 15 min; the banner on next staff login is Later (not implemented in M1) |
 | Other staff API | 300 per minute per session | `429` |
+| Present API (`/api/present/*`) | 300 per minute per present session | `429` |
 | `PUT /api/staff/presentations/{id}/blocks` (demo) | 60 saved edits per hour per visitor scope | `429` with `Retry-After` |
 | `POST /api/session/unlock` (clinical) | the sign-in limit and backoff: 5 per minute per client address, failures count toward the login backoff | `429` with `Retry-After`; a wrong password is `401 invalid_credentials` and is audited as `session_unlock_failed` |
 | `POST /api/staff/presentations/{id}/sections/{key}/regenerate` (demo) | 6 per hour per visitor scope and 20 per day per client address, counted from `regeneration_events` by each regeneration's own start time, so they survive a restart and the 24 h purge of the presentation; the rows move with the visitor scope when the token rotates and are deleted a day after they were written; one running job per visitor, shared with new presentations | `429 rate_limited` or `429 generation_in_progress`, with `Retry-After` |
@@ -117,12 +118,12 @@ A global login limit was dropped because a few devices could use it to block eve
 - Each purpose has its own limiter (sign-in, visitor creation, staff API, present API, present exit per session and per address, edits, narration per scope and per address, upstream speech calls overall and per address), so filling one cannot block another.
 - Limiter maps are capped at 10,000 keys. When a map is full, expired entries are pruned first. Maps keyed by client address then refuse new keys until entries expire. Maps keyed by a session or visitor scope, whose creation is already limited per address, drop their oldest entry instead, so new sessions keep working.
 - A demo visitor's edit and narration counts move to the new token when leaving Present mode or unlocking rotates the session. The move is remembered for an hour, and a narration charge resolves its scope at the time it is made, so the pre-warm task started under the old token keeps charging the visitor's new token.
-- Client address: `X-Forwarded-For` is read only when the direct peer equals `DC_TRUSTED_PROXY`, and then only the rightmost entry, which is the one the proxy appended. An unknown peer is treated as `0.0.0.0`, never as local.
+- Client address: forwarding headers are read only when the direct peer is inside `DC_TRUSTED_PROXY` (one address or a comma-separated list of CIDR ranges). The header named by `DC_CLIENT_IP_HEADER` (for example `fly-client-ip`) is used when set and present; otherwise only the rightmost `X-Forwarded-For` entry, which is the one the proxy appended. `DC_CLIENT_IP_HEADER` without `DC_TRUSTED_PROXY` is refused at startup. An unknown peer is treated as `0.0.0.0`, never as local.
 - Request bodies over 64 KiB are rejected. Malformed JSON gets an `ApiError` JSON body with code `bad_request`, without parser details.
 
 ### Audit events written
 
-`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. Also `session_unlocked` (with how), `session_unlock_failed`, `section_regeneration_started` and `section_released`. `present_started`, `present_exited`, `session_unlocked` and `section_released` are written in the same transaction as the change they record. For an exit or unlock this means nothing that can fail runs after the token rotation commits, so the browser always receives the new session cookie for a rotation that happened. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
+`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M3: `settings_changed`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. Also `session_unlocked` (with how), `session_unlock_failed`, `section_regeneration_started` and `section_released`. `present_started`, `present_exited`, `session_unlocked` and `section_released` are written in the same transaction as the change they record. For an exit or unlock this means nothing that can fail runs after the token rotation commits, so the browser always receives the new session cookie for a rotation that happened. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
 
 ## Present-mode isolation
 
@@ -146,24 +147,24 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | Endpoint group | Anonymous | Staff (unlocked) | Staff (locked) | Present session | Demo visitor |
 |---|---|---|---|---|---|
 | `GET /` static bundle, fonts, illustrations | A | A | A | A | A |
-| `GET /healthz` (no details) | A | A | A | A | A |
-| `/api/setup/*` | needs the one-time setup code; 403 after setup | 403 | 403 | 403 | disabled (404) |
+| `GET /api/health` (status, version and mode only) | A | A | A | A | A |
+| `POST /api/setup` | needs the one-time setup code; 403 after setup | 403 | 403 | 403 | disabled (404) |
 | `GET /api/session` (read-only) | A | A | A | A | A |
 | `POST /api/session/unlock` | 401 | 409 `not_locked` | A only when its present session ended; password in clinical | 401 | A when locked and its present session ended; no password |
 | `POST /api/visit` | 404 in clinical | 404 | 404 | 404 | A (demo only, Origin-checked, rate-limited) |
 | `POST /api/auth/login`, `logout` | A (login) | A (logout) | logout only | 403 | 404 |
-| `/api/staff/patients`, `plans` (read PMS) | 401 | A | 423 | 401 | A (synthetic, read-only) |
-| `/api/staff/presentations` create, edit, regenerate (`sections/:key/regenerate`), release (`sections/:key/release`), history | 401 | A | 423 | 401 | A, own visitor scope only |
+| `/api/staff/dashboard`, `patients`, `patients/:key` (read PMS) | 401 | A | 423 | 401 | A (synthetic, read-only) |
+| `/api/staff/presentations` list, view, create, edit (`blocks`, `blocks/revert`, `confirm-note`), regenerate (`sections/:key/regenerate`), release (`sections/:key/release`), history (planned) | 401 | A | 423 | 401 | A, own visitor scope only |
 | `/api/staff/jobs/:id` | 401 | A | 423 | 401 | A, own jobs only |
-| `/api/staff/presentations/:id/export` (PDF) | 401 | A | 423 | 401 | A, own scope |
+| `/api/staff/presentations/:id/export` (PDF, planned for M8) | 401 | A | 423 | 401 | A, own scope |
 | `/api/staff/presentations/:id/present` | 401 | A | 423 | 401 | A |
-| `/api/staff/qa` (read conversations) | 401 | A | 423 | 401 | own scope |
-| `/api/staff/analytics` | 401 | A | 423 | 401 | aggregate only |
-| `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 |
-| `/api/staff/secrets` (write-only) | 401 | A, write only, never returns values | 423 | 401 | 403 |
-| `/api/present/content`, `variant`, `audio/:key`, `narration?keys=` | 401 | 401 | 401 | A, bound version only | A, bound version only |
-| `/api/present/qa` | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
-| `/api/present/analytics` (engagement events) | 401 | 401 | 401 | A, write only | A, write only |
+| `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
+| `/api/staff/analytics` (planned for M8) | 401 | A | 423 | 401 | aggregate only |
+| `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 `demo_read_only` |
+| `/api/staff/secrets` (write-only, planned for M9) | 401 | A, write only, never returns values | 423 | 401 | 403 |
+| `/api/present/content`, `audio/:key`, `narration?keys=`, `variant` (planned for M7) | 401 | 401 | 401 | A, bound version only | A, bound version only |
+| `/api/present/qa` (planned for M7) | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
+| `/api/present/analytics` (engagement events, planned for M8) | 401 | 401 | 401 | A, write only | A, write only |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
 
 First-launch setup works as follows. When no staff account exists, the server prints a one-time setup code to its console at startup and notes in the log that a code was issued. The code is 12 characters from an unambiguous alphabet (about 60 bits). Wrong codes count toward the same per-address backoff as logins and are audited as `setup_code_rejected`. The earlier restriction to localhost was removed, because a local TLS proxy would make every client look local; the code is the gate.
@@ -276,11 +277,11 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Visitor isolation | presentations, edits, jobs and Q&A are scoped to the visitor id; the synthetic dataset is read-only and shared; visitor data is purged after 24 h |
 | New generations | 3 per hour per visitor, 10 per day per IP |
 | Section rewrites | 6 single-section regenerations per hour per visitor, 20 per day per IP; they share the one-running-job limit and the budget soft stop with new generations |
-| On-demand variants | 10 per hour per visitor |
-| Q&A | 20 questions per hour per visitor, 500 characters each |
+| On-demand variants | 10 per hour per visitor (planned for M7) |
+| Q&A | 20 questions per hour per visitor, 500 characters each (planned for M7) |
 | Staff edits | 2,000 characters per block, 400 per sentence; 60 saved edits per hour per visitor; text containing `{{` or `}}` is refused (`422 invalid_edit`), because placeholders are filled in after the length checks |
 | Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted per synthesized sentence on cache misses only (at least 50 characters each), never for merging a block or replaying a cached clip; `429 narration_quota`. One network may make 30 of the server's 120 upstream speech calls per minute (`429 narration_busy`). The block route `/api/present/narration` serves only keys that form one aligned part of one block of the present session's bound version: the block cut into parts of 12 sentences from its start, the last part shorter. That is how pre-warming and the patient screens ask, and it keeps each block to a few cached merged clips. Keys from two blocks, a run that starts or ends inside a part, or keys outside that version answer `404 audio_not_found`. A speech call that times out or returns an unusable reply counts against the budget at its full price and is retried once (as D12 does for text). Pre-warming on entering Present mode covers generated blocks only; staff-edited text is narrated only when played |
-| Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue with a visible position |
+| Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue (a visible queue position is not built yet) |
 | Budget | $25 per month, reservation-based guard, 80% soft stop on new generations (see [AI_PIPELINE.md](AI_PIPELINE.md)). Narration may spend at most 20% of the cap, tracked in `ai_usage.speech_cost_usd`; past it narration answers `503 budget_reached` while generation keeps working |
 | Uploads | none; no endpoint accepts files |
 | PMS | synthetic connector only; no DB credentials exist in the container |

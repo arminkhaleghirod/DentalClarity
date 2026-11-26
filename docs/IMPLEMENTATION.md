@@ -9,8 +9,8 @@ Milestones run from 2026-11-26 to the submission deadline on 2027-02-15. Dates a
 | M2 | Open Dental connector and schema-matched synthetic MySQL | 2026-12-10 |
 | M3 | Knowledge base entries, patient directory, settings and setup wizard | 2026-12-14 |
 | M4 | Generation pipeline, validators, review pass, persistent jobs | 2026-12-22 |
-| M5 | Editor, Present mode, patient screens, narration | 2027-01-10 |
-| M6 | Odontogram, procedure illustrations, journey and cost screens | 2027-01-10 |
+| M5 | Editor, Present mode, patient screens, narration | 2026-11-26 (done) |
+| M6 | Odontogram, procedure illustrations, journey and cost screens | 2026-11-26 (done) |
 | M7 | Languages, reading levels, Ask a question | 2027-01-17 |
 | M8 | PDF booklet, plan sync and versions, analytics | 2027-01-26 |
 | M9 | Bedrock and Polly path, Windows service and installer, hardening | 2027-02-02 |
@@ -63,8 +63,9 @@ Acceptance:
 - Settings: practice name, logo and brand colors. Setup wizard for first launch.
 
 Progress:
-- Done: patient directory (`GET /api/staff/patients`), patient page with the read-only plan table and totals (`GET /api/staff/patients/{key}`), and practice name and brand colors in Settings (`GET` and `PUT /api/staff/settings`, with a 4.5:1 contrast check on the brand color; read-only in the demo).
-- Open: knowledge entries, logo upload, and the multi-step setup wizard.
+- Done: patient directory (`GET /api/staff/patients`), patient page with the read-only plan table and totals (`GET /api/staff/patients/{key}`), and practice name and brand colors in Settings (`GET` and `PUT /api/staff/settings`, with a 4.5:1 contrast check on the brand color; both answer `403 demo_read_only` in the demo).
+- Done: 22 knowledge entries in `knowledge/entries/`, all `unreviewed`.
+- Open: more entries toward the 25 to 40 target, logo upload, and the multi-step setup wizard.
 
 ## M4 Generation pipeline
 
@@ -80,6 +81,7 @@ Progress:
 - Done: jobs in SQLite (migration 0003), at most 2 running at once, resumed after a restart without writing finished sections again (migration 0007). Final state is succeeded when every section passed, needs review when at least one passed, and failed when none did.
 - Done: demo controls. Presentations are scoped to the visitor session and purged after 24 hours; 3 new generations per hour per visitor, 10 per day per client address, 1 running job per visitor (all `429` with `Retry-After`); the monthly budget guard with the 80% soft stop.
 - Done: demo mode builds OpenRouter models from `OPENROUTER_API_KEY`, with `DC_TEXT_MODEL` as an override. Clinical mode answers `503 provider_not_configured` until M9.
+- Done: call timeouts and billing (DECISIONS D12). A text call with hidden reasoning times out after 120 s, others after 45 s; a call that times out or returns an unreadable reply is charged at its worst-case reservation and retried once.
 - Open: resume within a section (per stage), a visible queue position, the `ai_calls` table, the dated price table, and the timing benchmark.
 
 ## M5 Editor, Present mode and narration
@@ -92,10 +94,11 @@ Acceptance:
 
 Progress:
 - Done (server): Present mode. `POST /api/staff/presentations/{id}/present` locks the staff or visitor session and sets the present cookie; `GET /api/present/content` returns the patient view of the bound version; `GET /api/present/audio/{key}` serves narration for sentences of that version only; `POST /api/present/exit` unlocks with a rotated session token (PIN in clinical mode, password after 5 wrong PINs, nothing in demo mode). Migration 0004.
-- Done (server): a lock whose present session expired is lifted with `POST /api/session/unlock` (no password in demo mode, the staff password in clinical mode); `GET /api/session` reports it with `present_ended`, and staff routes answer `423 locked_present_ended`. Held sections can be written again one at a time (`.../sections/{key}/regenerate`) or released after the deterministic checks pass on the current text (`.../sections/{key}/release`). Migration 0007.
+- Done (server): a lock whose present session expired is lifted with `POST /api/session/unlock` (no password in demo mode, the staff password in clinical mode); `GET /api/session` reports it with `present_ended`, and staff routes answer `423 locked_present_ended`. Held sections can be written again one at a time (`.../sections/{key}/regenerate`) or released after the deterministic checks pass on the current text (`.../sections/{key}/release`). Migration 0007. The demo regeneration limits count rows in `regeneration_events` (migration 0008), so they survive a restart and the 24 h purge.
 - Done (server): the patient view shows ready sections only, staff text where it exists, and a note-derived block only after staff confirm it; until then the reason shows the knowledge base's common reasons and the objective is left out. Placeholders are filled locally and every sentence carries its audio key.
 - Done (server): staff edits (`PUT .../blocks`), revert (`POST .../blocks/revert`) and note confirmation (`POST .../confirm-note`), with the original text kept, the deterministic validators run as warnings, the demo edit limits, and audit events.
-- Narration: OpenRouter `/audio/speech` adapter (PCM wrapped as WAV), `audio_clips` cache under `artifacts/audio`, one upstream call per key, 400-character limit, spend counted in the monthly budget, optional pre-warm; clinical mode answers 503 until M9.
+- Done (web): the editor, the lock screen with Unlock, and the Regenerate section and Release to patient controls for held sections.
+- Narration: OpenRouter `/audio/speech` adapter (PCM wrapped as WAV), `audio_clips` cache under `artifacts/audio`, one upstream call per key, 400-character limit, spend counted in the monthly budget with a 20% share for speech; clinical mode answers 503 until M9. Each block plays as one merged clip from `GET /api/present/narration` with sentence offsets for the highlight, requested in aligned parts of 12 sentences. Entering Present pre-warms generated blocks. Demo quotas charge at least 50 characters per synthesized sentence and give one client address at most 30 of the 120 upstream calls per minute (DECISIONS E19).
 
 ## M6 Chart, illustrations, journey and costs
 
@@ -103,6 +106,10 @@ Acceptance:
 - Interactive odontogram following the rules in [UI_SPEC.md](UI_SPEC.md), including primary teeth and procedures with no tooth.
 - Original SVG illustrations for the procedure categories in the synthetic fixture.
 - Journey and cost screens rendered from snapshot data only.
+
+Progress:
+- Done: the interactive tooth chart, 22 original illustrations plus a fallback, and the journey and cost screens.
+- Done: page transitions with motion tokens that reduced motion turns off, and a layout that scales from tablet portrait to 2560 px wide screens.
 
 ## M7 Languages, reading levels and questions
 

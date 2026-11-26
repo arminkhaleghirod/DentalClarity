@@ -53,7 +53,7 @@ The job state machine and restart recovery are in ARCHITECTURE section 5. The de
 | S6 AI review | output plus the same facts, notes and KB the writer saw | `ReviewVerdict` | Reviewer error or timeout after retries: `NeedsReview(ReviewUnavailable)` | Per section, after S5 passes |
 | S7 Repair | previous output and its issues | New raw JSON, back to S5 | At most 2 repair rounds per section [P]. Still failing: `Failed` (deterministic) or `NeedsReview` (reviewer only) | Per section |
 | S8 Assemble | section results, cost blocks | `PresentationVersion` with `Block`s (`Provenance`, `ValidationState`); local placeholder substitution | Partial versions are stored with per-section state; the job ends `needs_review` if any section is not `Passed` | One per job |
-| S9 Variants and narration | approved English blocks | Translated `Variant`s, `AudioClip`s | A failed translated block is `Failed`; Present shows a "not available in this language yet" state and never mixes languages silently [C, brainstorm 5] | Per section for translation; per sentence for TTS, 8 at a time [P] |
+| S9 Variants and narration | approved English blocks | Translated `Variant`s, `AudioClip`s | A failed translated block is `Failed`; Present shows a "not available in this language yet" state and never mixes languages silently [C, brainstorm 5] | Per section for translation; per sentence for TTS, four clips at a time for one block request and two upstream calls at a time while pre-warming |
 
 Only S4, S6, S7, S9 and Q&A call a model. S0 to S3, S5 and S8 are deterministic and unit-tested with `FakeTextModel`.
 
@@ -101,11 +101,12 @@ Names (patient, guardian, provider, staff); PatNum or any PMS key; DOB or exact 
 
 1. Selection: only notes the connector links to a planned procedure in this plan, never the full chart. Which OD table and column hold that link is TBD (verify in M2).
 2. Stripping (`notes::sanitize`, deterministic):
-   - remove every name known to the snapshot (patient, guardian, providers, practice staff list), case-insensitive, on word boundaries;
-   - remove dates (numeric, ISO and month-name forms, in English and each curated-lexicon language), times, phone numbers, emails, URLs and any run of 5 or more digits;
-   - remove money (currency symbols, ISO codes, a number followed by a money word);
+   - remove every word of every name known to the snapshot (patient, guardian, providers, practice staff list), case-insensitive, word by word;
+   - remove dates: numeric forms with two or more separators (`11/18/2026`, `2026-11-18`), a month and day (`11/18`), English month names with the day and year next to them, and years from 1900 to 2099. "May" counts as a month only next to a day or year, because it is also a verb. Ranges and measurements such as `5-6` and `2.5` stay. Month names in other languages are not covered yet;
+   - remove times (`10:30`, `10am`), emails, URLs and any word with 5 or more digits, which covers phone and record numbers;
+   - remove words with a currency symbol (`$`, `€`, `£`);
    - collapse whitespace and truncate to 600 characters per note [P];
-   - if more than 30% of the characters were removed, or nothing is left, drop the note and use the `common_reasons` path.
+   - if more than 30% of the non-space characters were removed (measured before truncation), or nothing is left, drop the note and use the `common_reasons` path.
 3. Framing: the note goes inside `<clinical_note ref="p3">...</clinical_note>`, and the system prompt says it is untrusted data to summarize, never instructions.
 4. This stripping is best-effort minimization and is not de-identification. It does not meet HIPAA Safe Harbor or Expert Determination; free text can still identify someone through rare conditions, places or events. For that reason clinical-mode notes go only to the practice's own Bedrock account, and demo notes are synthetic. [C, D3, D10]
 5. Display: `why` text based on a note gets the "From clinical note" provenance label [C, U3]. The provider name in "From Dr. X's notes" is the local placeholder `{{provider_display_name}}`.
@@ -210,24 +211,24 @@ All live in `dc-generation::validate`. Each returns `Issue { code, path, severit
 | V2 | Refs match | `procedure_ref` equals the requested ref; `JourneyOut.phases` equals the snapshot phase refs, in order | Block |
 | V3 | Every cited id exists | parse each `SourceId`; `fact:*` is in the FactSheet, `note:pN` is a note sent in this request, `kb:e#p` is a passage sent in this request | Block |
 | V4 | Citation rules | `Documented` cites `note:<ref>`; `CommonReasons` cites no `note:*`; `objective` cites `note:*` | Block |
-| V5 | Tooth not altered or invented | regex for tooth mentions (`tooth #?\d{1,2}`, `tooth [A-T]`, quadrant and arch words from the language lexicon); each must match the cited procedure's `ToothRef` | Block |
+| V5 | Tooth not altered or invented | tooth mentions such as `#30`, `tooth 30`, `teeth 14 and 19` and `tooth K`; each must belong to a cited procedure, or to the plan when no procedure is cited. The letters I and A count only as `#I`, `tooth #A` or after "baby tooth", because they read as English words ("the tooth I had treated"). Quadrant and arch words are not checked yet | Block |
 | V6 | Code and category not altered | any `D\d{4}` in text must be this procedure's code (Block); words from other categories' synonym lists (Warn) | Block / Warn |
-| V7 | Sequence and timing not invented | no visit counts ("in three visits", "2 appointments"), relative times ("next week"), dates, weekdays or months | Block |
-| V8 | No numeric costs | reject currency symbols, ISO currency codes, money words with a number, and any digit run other than tooth numbers allowed by V5 | Block |
-| V9 | One sentence per `Sentence` | sentence bounds from `unicode-segmentation` (candidate crate, verify in M5) must give exactly 1 | Block |
+| V7 | Sequence and timing not invented | no weekdays, month names or relative days ("tomorrow", "next week", "this week"), and no count before a visit or time unit: number words ("three visits", "a few weeks"), digits of any length ("2 appointments", "90 minutes"), ranges ("2-3 weeks", "2 to 3 weeks", "one or two visits") and compounds ("30-minute"). "May" is not checked, because it is also a verb | Block |
+| V8 | No numeric costs | currency symbols (`$`, `€`, `£`) and a number followed by a money word ("dollars", "USD", "cents", "euros"). Other digit runs are not rejected yet | Block |
+| V9 | One sentence per `Sentence` | a sentence ends where `.`, `!` or `?` is followed by a space and a capital letter, except after "Dr", "Mr", "Mrs", "Ms", "e.g" and "i.e"; the count must be 1 | Block |
 | V10 | No diagnosis | lexicon patterns such as "you have <condition>", "you are diagnosed", "this means you have" | Block |
 | V11 | No guarantees | "guarantee", "will definitely", "100%", "permanently fix", "never fail", "pain-free" | Block |
 | V12 | No individual prognosis | "your tooth will last/fail", "you will lose", "in N years" | Block |
 | V13 | No pressure or urgency | "act now", "don't wait", "immediately", "as soon as possible", "before it's too late", "limited time", "you must". "Right away" is allowed because escalation advice uses it ("call the practice right away if bleeding does not stop") | Block |
 | V14 | No medication advice | drug and drug-class lexicon, dosage pattern `\d+ ?mg`, "take ..." imperatives | Block |
-| V15 | No URLs, HTML or Markdown | `<`, `>`, `](`, `http`, `www.`, backticks, leading `#` or `*` | Block |
-| V16 | Placeholders | only the allowed placeholders, well-formed `{{...}}`; translations keep the same multiset | Block |
-| V17 | Reading level, English | Flesch-Kincaid grade with our own syllable heuristic: simple 6 or lower, standard 8, detailed 11; max sentence length 20, 25, 30 words [P, tune in ClarityEval] | Warn; one repair, then pass with a note |
-| V18 | Reading level, other languages | mean sentence length and long-word ratio per level; no Flesch-Kincaid claims | Warn |
-| V19 | Language | detected language equals target (candidate crate `whatlang`, verify in M5); very short sentences skipped | Block for translations |
-| V20 | Translation parity | same sentence count per block; no new digits, URLs or placeholders | Block |
+| V15 | No URLs, HTML or Markdown | `<`, `>`, `](`, `http`, `www.`, backticks, `**`, leading `#` or `*` | Block |
+| V16 | Placeholders | only the allowed placeholders, well-formed `{{...}}`; translations keep the same multiset (with translation, M7) | Block |
+| V17 | Reading level, English | at most 20, 25 or 30 words per sentence for simple, standard and detailed. A Flesch-Kincaid grade with our own syllable heuristic (simple 6 or lower, standard 8, detailed 11) is planned [P, tune in ClarityEval] | Warn; warnings go to the writer with a reviewer's repair request and never hold a section by themselves |
+| V18 | Reading level, other languages (planned for M7) | mean sentence length and long-word ratio per level; no Flesch-Kincaid claims | Warn |
+| V19 | Language (planned for M7) | detected language equals target (candidate crate `whatlang`, verify in M5); very short sentences skipped | Block for translations |
+| V20 | Translation parity (planned for M7) | same sentence count per block; no new digits, URLs or placeholders | Block |
 
-Lexicons live in `crates/dc-generation/lexicon/<lang>.toml`. [P] English and Spanish are curated first. For other languages V10 to V14 run only on the English source, and the translation is checked by V16, V19, V20 and the AI reviewer. The staff UI labels those languages "not validated" [C, P9]. Lexicons produce false positives, for example "you have a cavity" taken from a note. They stay Block on purpose, and the repair prompt quotes the exact phrase.
+V1 to V17 are built; V18 to V20 arrive with translation in M7. The English lexicons are constants in `validate.rs` today. Moving them to `crates/dc-generation/lexicon/<lang>.toml` and curating Spanish next is planned [P]. For other languages V10 to V14 run only on the English source, and the translation is checked by V16, V19, V20 and the AI reviewer. The staff UI labels those languages "not validated" [C, P9]. Lexicons produce false positives, for example "you have a cavity" taken from a note. They stay Block on purpose, and the repair prompt quotes the exact phrase.
 
 ## AI review pass
 
@@ -252,11 +253,12 @@ The reviewer gets the same `FactSheetView`, notes and KB passages as the writer,
 |---|---|---|
 | any Block | not run | repair; after 2 rounds, `Failed` |
 | pass | `pass` | `Passed`, with `Provenance::Generated { checked: true }` |
-| pass | `revise` (minor or major issues) | repair with the reviewer's issues, then S5 and S6 again; after 2 rounds, `NeedsReview` with the issues |
-| pass | `block` or any `critical` issue | one repair; if still `block`, `NeedsReview` |
+| pass | `revise` with clarity or audience findings (R6, R7) or minor findings only | one repair with the reviewer's notes, then `Passed`; the notes stay in the attempt log |
+| pass | `revise` with a safety finding (R1 to R5, major) | repair with the reviewer's issues, then S5 and S6 again; after 2 rounds, `NeedsReview` with the issues |
+| pass | `block` or any `critical` issue | one repair; if still `block` or critical, `NeedsReview` |
 | pass | error, invalid JSON or timeout | `NeedsReview(ReviewUnavailable)` |
 
-A reviewer pass can never override a deterministic Block. A reviewer pass is not clinician approval, and the UI never presents it as one [C, brainstorm 9]. The 2-round repair budget is shared between S5 and S6 requests.
+Only a `block` verdict, a critical issue or a safety finding holds a section from patients. If a repair cannot reach the writer, the last draft that passed S5 is kept with its review result. A reviewer pass can never override a deterministic Block. A reviewer pass is not clinician approval, and the UI never presents it as one [C, brainstorm 9]. The 2-round repair budget is shared between S5 and S6 requests.
 
 ## Prompts
 
@@ -372,16 +374,16 @@ Deterministic handling around Q&A [P]:
 ### Narration [C, P10]
 
 - One TTS call per sentence, using the final placeholder-substituted text of a `Passed` or `StaffEdit` block. Sentence clips are cached per sentence, so an edit re-synthesizes only the sentences that changed.
-- A block plays as one clip: `GET /api/present/narration?keys=<k1>,<k2>,...` takes up to 12 consecutive sentence keys of one block (`MAX_NARRATION_SENTENCES`; a longer block plays as consecutive parts of 12). The server fetches or synthesizes the missing sentence clips four at a time, strips the WAV headers, joins the 16-bit PCM samples with 250 ms of silence between sentences and returns one WAV. `x-dc-sentence-offsets` lists each sentence's start in whole milliseconds computed from sample counts (e.g. `0,4120,8590`) and `x-dc-duration-ms` the length. The player highlights the sentence whose offset range holds the playback position, so the highlight is exact to the sentence and changes only at sentence boundaries. No word-level timing is claimed. The demo provider returns no timing marks (resolved in M5), and none are needed.
+- A block plays as one clip: `GET /api/present/narration?keys=<k1>,<k2>,...` takes the sentence keys of one aligned part of one block. The block is cut into parts of 12 sentences (`MAX_NARRATION_SENTENCES`) from its start, the last part shorter, and a request names exactly one part. Keys from two blocks, a run that starts or ends inside a part, or keys outside the bound version answer `404 audio_not_found` (DECISIONS E19). The server fetches or synthesizes the missing sentence clips four at a time, strips the WAV headers, joins the 16-bit PCM samples with 250 ms of silence between sentences and returns one WAV. `x-dc-sentence-offsets` lists each sentence's start in whole milliseconds computed from sample counts (e.g. `0,4120,8590`) and `x-dc-duration-ms` the length. The player highlights the sentence whose offset range holds the playback position, so the highlight is exact to the sentence and changes only at sentence boundaries. No word-level timing is claimed. The demo provider returns no timing marks (resolved in M5), and none are needed.
 - The merged clip is cached too, keyed by `narration::block_key` (SHA-256 of the ordered sentence keys and the pause length), in the same directory and table (`model` is `block:<model#voice>`), with its offsets stored after the WAV data in the file. Replays are instant, and merged clips count toward the cache size cap and cleanup. A merged clip stays playable after its sentence clips were cleaned up.
 - Endpoint (verified 2026-11-26): `POST https://openrouter.ai/api/v1/audio/speech` with JSON `{model, input, voice, response_format, provider}`. We send only the model, the sentence text, the voice, `response_format: "pcm"` and `provider.data_collection: "deny"`. The language is not a parameter; the model reads it from the text. The answer is raw audio bytes; errors are JSON with the usual status codes (402 credits, 429 rate limit, 502 upstream).
 - Format: `heygen/heygen-voice-1-turbo` offers only `pcm`, returned as `Content-Type: audio/pcm;rate=44100;channels=1` (16-bit little-endian). The adapter adds a WAV header, so clips are served as `audio/wav`, about 88 KB per second of speech. A 55-character test sentence took 1.3 s and gave 4.1 s of audio (361 KB).
 - Voice: the model has ten preset voices (`nadine`, `tabitha`, `bram`, `gareth`, `noelle`, `meredith`, `sabrina`, `lucian`, `weston`, `vincent`), listed at `GET /api/v1/audio/speech/models/heygen/heygen-voice-1-turbo`. The default is `meredith`, provisional until a listening test. `DC_SPEECH_VOICE` and `DC_SPEECH_MODEL` override the voice and model.
-- Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at that price in the same monthly `ai_usage` budget as text calls, and a clip is refused with `budget_reached` once the cap is reached. Cached clips keep playing.
+- Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at that price in the same monthly `ai_usage` budget as text calls. Narration may spend at most 20% of the cap (`ai_usage.speech_cost_usd`); past it a clip is refused with `503 budget_reached` while generation keeps working. A call that times out (after 30 s) or returns an unusable reply is charged at its full price, because the provider may have billed it (E19). Cached clips keep playing.
 - `AudioClip` key: `dc_core::present::audio_key(model#voice, lang, sentence_text)`, a SHA-256 over the three parts. Files live at `<data_dir>/artifacts/audio/<key>.wav`, with a row in `audio_clips` (key, language, model, bytes, mime, created_at, last_used_at).
-- Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and upstream calls are capped at 120 a minute for the server. Clinical mode has no speech provider until M9 and answers 503 `narration_unavailable`.
-- Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references; a GC for unreferenced files, using `last_used_at`, is not built yet.
-- Timing [P]: after S8, a low-priority `narrate` stage synthesizes the default variant, at-a-glance first. Other variants are synthesized on the first play of a section, and the play button shows progress. Narration is outside the 90 s target.
+- Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and a timeout or unusable reply is retried once. Upstream calls are capped at 120 a minute for the server, of which one client address may use 30 (`429 narration_busy`). In demo mode each synthesized sentence is charged at least 50 characters against the visitor and network quotas (see [SECURITY.md](SECURITY.md)). Clinical mode has no speech provider until M9 and answers 503 `narration_unavailable`.
+- Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references. A maintenance task every 10 minutes deletes clips not played within the retention period (24 h in demo mode, 30 days in clinical mode), then the least recently played clips while the cache is over 2 GB, then files with no row.
+- Timing [P]: after S8, a low-priority `narrate` stage synthesizes the default variant, at-a-glance first. Other variants are synthesized on the first play of a section, and the play button shows progress. Narration is outside the 90 s target. The `narrate` stage is not built; the pre-warm below fills the cache instead.
 - Pre-warm (built in M5): entering Present mode fills the cache block by block in screen order, two upstream calls at a time, generated blocks only, and builds each block's merged clip, so the first play is usually instant. A cold block shows "Preparing audio" until the merged clip arrives.
 - No model rewrites text for speech. Normalization is deterministic: expand our tooth-ref labels into words and drop placeholder braces. The demo provider has no pronunciation lexicon (resolved in M5), so dental terms are read as written.
 - TTS gets no patient name (the greeting is not narrated with the name) and no costs outside the `costs` section, whose sentences are rendered locally. [P]

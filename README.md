@@ -47,7 +47,7 @@ flowchart LR
 2. Each procedure code is mapped to a category in the knowledge base, a set of plain-language passages with cited sources.
 3. A language model writes each section (at a glance, journey, one per procedure, next steps) from the locked facts, the matching knowledge passages and a sanitized excerpt of the linked clinical note. Every sentence names its source.
 4. Deterministic validators check the output: schema, references, cited sources, tooth numbers, codes, timing, costs, and wording that would diagnose, promise outcomes, pressure the patient or give medication advice.
-5. A second model call reviews each section against the same facts and sources. Sections that fail either step are repaired up to twice, then held.
+5. A second model call reviews each section against the same facts and sources. A section is repaired up to twice. One that still fails a deterministic check is marked failed, and one with an open safety finding from the review is held for staff.
 6. Staff review the result in the editor. Text derived from the clinical note stays hidden from the patient until a staff member confirms it.
 7. Staff press Present and hand over the device. The patient browses the plan; the staff session stays locked on the server until they exit.
 

@@ -585,7 +585,7 @@ cargo run -p clarityeval -- report eval/runs/<run_id>
 | `--cases-dir PATH` | Read cases from another directory (the split field in each case must still match). |
 | `--final` | Confirms a final held-out run. The runner then reads `eval/commitments/heldout-v1.txt`, records its root hash in the manifest and, with `eval/heldout/salts.txt`, checks every case file against its committed hash. It also checks with git that the commitment file is committed and unmodified. A missing commitment, a missing salts file, a hash mismatch or an uncommitted or modified commitment file stops the run unless `--allow-missing-commitment` is given, and the report flags it. |
 | `--models a,b,c` | Exact OpenRouter model ids. Each runs the full pipeline with that model as writer and reviewer. `--model` still works. |
-| `--reviewer MODEL` | Use one reviewer model for every pipeline system. |
+| `--reviewer MODEL` | Use one reviewer model for every pipeline system (default: the writer). `--reviewer-model` still works. |
 | `--baseline` | Adds `baseline:<model>` for each model (below). |
 | `--baseline-variant rules\|naive` | Baseline prompt: `rules` (v2, default) states the writer prompt's content rules; `naive` (v1) is the original short prompt. |
 | `--judge MODEL`, `--judge-reasoning` | LLM judge, one call per patient-visible section (below). |
@@ -596,6 +596,8 @@ cargo run -p clarityeval -- report eval/runs/<run_id>
 | `--max-cost-usd` | No new case starts once systems plus judge have spent this much (default 1.0). The decision is made once per case, so every system covers the same cases. |
 | `--bootstrap N`, `--bootstrap-seed S` | Bootstrap resamples and seed for the report (default 10000 and 20261204), recorded in the manifest. |
 | `--config FILE` | A TOML file with the same settings, so a run can be repeated from one file. Command-line flags win. |
+| `--dry-run` | Offline: a scripted model answers every call. No key and no cost. |
+| `--root PATH` | Repository root. Defaults to the nearest ancestor holding `eval/canary.txt`. |
 
 A config file for the final run looks like this:
 
@@ -618,7 +620,7 @@ model = "vendor/model-b"
 reasoning = "none"          # per-model override, for models without a reasoning setting
 ```
 
-Run it with `cargo run -p clarityeval -- run --config eval/configs/final-heldout-v1.toml --final`.
+Save it as, for example, `eval/configs/final-heldout-v1.toml` (no config files are committed yet) and run it with `cargo run -p clarityeval -- run --config eval/configs/final-heldout-v1.toml --final`.
 
 ### Systems and routing
 

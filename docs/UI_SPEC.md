@@ -140,7 +140,7 @@ Shadows. The t2 system is flat; borders do the work (C). Allowed shadows (P exce
 | `--shadow-float` | `0 6px 20px rgba(16, 24, 40, 0.18)` | Floating Ask button, toasts |
 | `--shadow-overlay` | `0 12px 32px rgba(16, 24, 40, 0.16)` | Drawer in overlay mode, modals |
 
-Motion (P): `--dur-fast` 120 ms, `--dur-base` 200 ms, easing `cubic-bezier(.2,0,0,1)`. With `prefers-reduced-motion: reduce`, all durations become 0 except opacity fades of at most 150 ms, progress bars jump instead of animating, and the drawer appears without sliding.
+Motion (P): `--dur-fast` 120 ms, `--dur-base` 200 ms, `--dur-slow` 320 ms; easings `--ease-standard` `cubic-bezier(.2,0,0,1)`, `--ease-emphasized` `cubic-bezier(.05,.7,.1,1)` for entrances and `--ease-exit` `cubic-bezier(.3,0,.8,.15)`; distances `--motion-rise` 6 px, `--motion-slide` 16 px and scales `--motion-scale` .97, `--press-scale` .98. With `prefers-reduced-motion: reduce`, the distances become 0 and the scales 1, `--dur-fast` becomes 0 and the other durations at most 150 ms, so only opacity fades remain. Progress bars jump instead of animating, and the drawer appears without sliding.
 
 ### 2.4 Contrast checks (WCAG 2.2 AA)
 
@@ -177,10 +177,10 @@ Brand override validation (P, FR-SETUP-02): on save, the server checks `--brand-
 
 | Surface | Target | Notes | Origin |
 |---|---|---|---|
-| Staff | 1280×800 desktop, minimum width 1180 | Sidebar 210 px; below 1180 the sidebar collapses to 64 px icons with tooltips | C / P |
+| Staff | 1280×800 desktop, minimum width 1180 | Sidebar 210 to 240 px, scaling with the viewport; below 1180 the sidebar collapses to 68 px icons with tooltips. Below 1100 the two-column screens stack. Content max-width 1840 px | C / P |
 | Patient | iPad landscape 1180×820 | Header 76 px, page padding 28 px | C |
 | Patient | iPad portrait 820×1180 | Rules in §5.11 | P |
-| Patient | Desktop or chairside monitor up to 1920 | Content max-width 1180 px, centered | P |
+| Patient | Desktop or chairside monitor up to 2560 | Content max-width grows from 1180 px to 1880 px with the viewport, centered; type and spacing scale with it | P |
 
 Touch targets in patient UI are at least 44×44 px (nav tabs 40 px tall inside a 4 px padded group, giving a 48 px hit area; buttons 44 to 52 px). Staff targets are at least 32 px tall with 8 px spacing; Present is 42 px (C/P).
 
