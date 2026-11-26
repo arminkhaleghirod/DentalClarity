@@ -546,7 +546,7 @@
 }
 
 .p-play-button {
-  transition: filter var(--dur-base) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+  transition: background-color var(--dur-base) var(--ease-standard);
   width: 44px;
   height: 44px;
   flex: none;
@@ -571,11 +571,12 @@
 }
 
 .p-play-button:hover:not([aria-disabled="true"]) {
-  filter: brightness(1.15);
+  background: color-mix(in srgb, var(--brand-primary) 85%, white);
 }
 
-/* Scale the glyph, not the button: a transform on the button would make it
-   the containing block of the ::after target and shrink it mid-click. */
+/* Scale the glyph and tint the background instead of transforming or
+   filtering the button: either would make the button the containing block of
+   the ::after click target and shrink it to the button. */
 .p-play-button:active:not([aria-disabled="true"]) > span {
   transform: scale(0.88);
 }
