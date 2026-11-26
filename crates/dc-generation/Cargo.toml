@@ -1,0 +1,11 @@
+[package]
+name = "dc-generation"
+description = "Presentation generation pipeline and validators for DentalClarity."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dc-core.workspace = true

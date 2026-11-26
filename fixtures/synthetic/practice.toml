@@ -1,0 +1,346 @@
+# Synthetic practice for the public demo, tests and ClarityEval development.
+#
+# Every person, plan, note and amount in this file is invented. Do not add
+# real patient data here or anywhere else in the repository.
+#
+# Amounts are in cents. Procedure descriptions are the practice's own short
+# names, not CDT descriptor text.
+
+[practice]
+name = "Maple Grove Family Dental"
+
+[[patients]]
+key = "10482"
+first_name = "Daniel"
+last_name = "Okafor"
+age = 42
+language = "en"
+appointment = "08:30"
+
+[[patients.plans]]
+key = "tp-10482-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10482-1"
+code = "D3330"
+description = "Root canal, molar"
+tooth = "30"
+phase = 1
+fee = 115000
+insurance_est = 69000
+patient_est = 46000
+note = "#30 deep caries into pulp, symptomatic. Recommend RCT, buildup, crown."
+
+[[patients.plans.procedures]]
+id = "pl-10482-2"
+code = "D2950"
+description = "Core buildup"
+tooth = "30"
+phase = 1
+fee = 31000
+insurance_est = 18600
+patient_est = 12400
+
+[[patients.plans.procedures]]
+id = "pl-10482-3"
+code = "D2740"
+description = "Crown, porcelain"
+tooth = "30"
+phase = 1
+fee = 138000
+insurance_est = 69000
+patient_est = 69000
+
+[[patients.plans.procedures]]
+id = "pl-10482-4"
+code = "D2392"
+description = "Composite filling, 2 surfaces, back tooth"
+tooth = "14"
+surfaces = "MO"
+phase = 2
+fee = 26500
+insurance_est = 21200
+patient_est = 5300
+
+[[patients.plans.procedures]]
+id = "pl-10482-5"
+code = "D2391"
+description = "Composite filling, 1 surface, back tooth"
+tooth = "19"
+surfaces = "O"
+phase = 2
+fee = 21000
+insurance_est = 16800
+patient_est = 4200
+
+[[patients.plans.procedures]]
+id = "pl-10482-6"
+code = "D1110"
+description = "Adult cleaning"
+phase = 2
+fee = 13500
+insurance_est = 13500
+patient_est = 0
+
+[[patients]]
+key = "10517"
+first_name = "Maria Elena"
+last_name = "Ruiz"
+age = 67
+language = "es"
+appointment = "09:15"
+
+[[patients.plans]]
+key = "tp-10517-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10517-1"
+code = "D6010"
+description = "Implant placement"
+tooth = "19"
+phase = 1
+fee = 210000
+insurance_est = 84000
+patient_est = 126000
+note = "#19 missing since extraction 2024. Bone width adequate on CBCT. Plan implant, then crown after healing."
+
+[[patients.plans.procedures]]
+id = "pl-10517-2"
+code = "D6065"
+description = "Implant crown, porcelain"
+tooth = "19"
+phase = 2
+fee = 165000
+insurance_est = 66000
+patient_est = 99000
+
+[[patients]]
+key = "10603"
+first_name = "Leo"
+last_name = "Tran"
+age = 8
+language = "vi"
+appointment = "10:00"
+guardian = true
+
+[[patients.plans]]
+key = "tp-10603-1"
+name = "Active"
+provider = "Dr. Nguyen"
+
+[[patients.plans.procedures]]
+id = "pl-10603-1"
+code = "D1351"
+description = "Sealant"
+tooth = "3"
+phase = 1
+fee = 5500
+insurance_est = 5500
+patient_est = 0
+
+[[patients.plans.procedures]]
+id = "pl-10603-2"
+code = "D1351"
+description = "Sealant"
+tooth = "14"
+phase = 1
+fee = 5500
+insurance_est = 5500
+patient_est = 0
+
+[[patients.plans.procedures]]
+id = "pl-10603-3"
+code = "D1351"
+description = "Sealant"
+tooth = "19"
+phase = 1
+fee = 5500
+insurance_est = 5500
+patient_est = 0
+
+[[patients.plans.procedures]]
+id = "pl-10603-4"
+code = "D2391"
+description = "Composite filling, 1 surface, back tooth"
+tooth = "K"
+surfaces = "O"
+phase = 1
+fee = 17500
+insurance_est = 14000
+patient_est = 3500
+
+[[patients.plans.procedures]]
+id = "pl-10603-5"
+code = "D2392"
+description = "Composite filling, 2 surfaces, back tooth"
+tooth = "T"
+surfaces = "DO"
+phase = 1
+fee = 22000
+insurance_est = 17600
+patient_est = 4400
+
+[[patients]]
+key = "10655"
+first_name = "Priya"
+last_name = "Shah"
+age = 35
+language = "en"
+appointment = "11:30"
+
+[[patients.plans]]
+key = "tp-10655-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10655-1"
+code = "D4341"
+description = "Deep cleaning, 4+ teeth per quadrant"
+phase = 1
+fee = 24000
+insurance_est = 19200
+patient_est = 4800
+note = "Generalized 5-6 mm pockets with bleeding on probing, UR and LR. SRP by quadrant."
+
+[[patients.plans.procedures]]
+id = "pl-10655-2"
+code = "D4341"
+description = "Deep cleaning, 4+ teeth per quadrant"
+phase = 1
+fee = 24000
+insurance_est = 19200
+patient_est = 4800
+
+[[patients.plans.procedures]]
+id = "pl-10655-3"
+code = "D4910"
+description = "Gum maintenance visit"
+phase = 2
+fee = 16500
+# Insurance estimate not yet calculated in the PMS; stays unknown.
+
+[[patients]]
+key = "10702"
+first_name = "Walter"
+last_name = "Brooks"
+age = 71
+language = "en"
+appointment = "13:45"
+
+[[patients.plans]]
+key = "tp-10702-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10702-1"
+code = "D7140"
+description = "Extraction, erupted tooth"
+tooth = "3"
+phase = 1
+fee = 22500
+insurance_est = 18000
+patient_est = 4500
+note = "#3 fractured below gumline, nonrestorable."
+
+[[patients.plans.procedures]]
+id = "pl-10702-2"
+code = "D5213"
+description = "Partial denture, upper, cast metal"
+phase = 2
+fee = 185000
+insurance_est = 92500
+patient_est = 92500
+
+[[patients]]
+key = "10744"
+first_name = "Samuel"
+last_name = "Ortiz"
+age = 54
+language = "en"
+appointment = "14:30"
+
+[[patients.plans]]
+key = "tp-10744-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10744-1"
+code = "D6240"
+description = "Bridge pontic, porcelain"
+tooth = "13"
+phase = 1
+fee = 125000
+insurance_est = 62500
+patient_est = 62500
+
+[[patients.plans.procedures]]
+id = "pl-10744-2"
+code = "D6750"
+description = "Bridge crown, porcelain"
+tooth = "12"
+phase = 1
+fee = 130000
+insurance_est = 65000
+patient_est = 65000
+
+[[patients.plans.procedures]]
+id = "pl-10744-3"
+code = "D6750"
+description = "Bridge crown, porcelain"
+tooth = "14"
+phase = 1
+fee = 130000
+insurance_est = 65000
+patient_est = 65000
+
+[[patients]]
+key = "10790"
+first_name = "Ruth"
+last_name = "Abernathy"
+age = 81
+language = "en"
+appointment = "15:15"
+
+[[patients.plans]]
+key = "tp-10790-1"
+name = "Active"
+provider = "Dr. Patel"
+
+[[patients.plans.procedures]]
+id = "pl-10790-1"
+code = "D7210"
+description = "Surgical extraction"
+tooth = "2"
+phase = 1
+fee = 38500
+insurance_est = 30800
+patient_est = 7700
+
+# Patient without an appointment today, reachable through search only.
+[[patients]]
+key = "10811"
+first_name = "Grace"
+last_name = "Holloway"
+age = 29
+language = "en"
+
+[[patients.plans]]
+key = "tp-10811-1"
+name = "Active"
+provider = "Dr. Nguyen"
+
+[[patients.plans.procedures]]
+id = "pl-10811-1"
+code = "D9944"
+description = "Night guard, hard"
+phase = 1
+fee = 52000
+insurance_est = 0
+patient_est = 52000
