@@ -566,10 +566,6 @@
   border-radius: 12px;
 }
 
-.p-play-label {
-  cursor: pointer;
-}
-
 .p-play-button[aria-disabled="true"] {
   opacity: 0.45;
 }
@@ -578,8 +574,10 @@
   filter: brightness(1.15);
 }
 
-.p-play-button:active:not([aria-disabled="true"]) {
-  transform: scale(0.94);
+/* Scale the glyph, not the button: a transform on the button would make it
+   the containing block of the ::after target and shrink it mid-click. */
+.p-play-button:active:not([aria-disabled="true"]) > span {
+  transform: scale(0.88);
 }
 
 .p-play-button > span {
