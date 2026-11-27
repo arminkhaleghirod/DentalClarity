@@ -576,9 +576,14 @@ cargo run -p clarityeval -- report eval/runs/<run_id>
 
 # Rerun a finished run's infrastructure failures, then rewrite its report.
 cargo run -p clarityeval -- retry eval/runs/<run_id>
+
+# Draw the ClarityEval score chart from a run's results.json (light and dark SVGs).
+cargo run -p clarityeval -- chart eval/runs/<run_id>
 ```
 
 `retry` reruns each presentation whose latest attempt is an infrastructure failure (a run error, or a transport error in any requested section), with the systems, seeds, endpoints, judge and cost cap recorded in the run's manifest (DECISIONS E21). Every call waits out rate limits, timeouts and empty replies with backoff, and the recorder logs each attempt. A reply that stopped at the output limit before writing any answer counts as the model's output: the rerun passes it on as an empty answer, which the scorer fails. New attempts go into `results.jsonl` next to the failures they replace, and the manifest records each pass and its commit. The report scores the latest attempt and lists the replaced ones under "Reruns". `--rounds N` (default 3) sets how many passes it makes over what still fails; it exits with an error if any failure is left. `--live <model>` (repeatable) sends a `:batch` model's rerun calls on the live route instead, for a batch queue too slow to wait for; the results keep the run's model id and the report names the models moved. It refuses a run that has not finished, unless `--stopped` says its process was stopped: then it rebuilds the manifest's costs from the recorded results and also runs the presentations the run never recorded.
+
+`chart` reads `results.json`, computes each system's ClarityEval score (DECISIONS E22) and writes `docs/clarityeval-score-light.svg` and `docs/clarityeval-score-dark.svg`, or the paths `--out` names. The README shows them. Run it again after `report` rewrites the results.
 
 `report` re-scores every presentation against the case files in the run's cases directory (or `--cases-dir`). It stops with an error when those cases do not load. `--no-rescore` keeps the stored scores instead, and the report then lists every presentation it did not re-score. `--bootstrap` and `--bootstrap-seed` default to the values the run recorded, so a re-scored report matches the one `run` wrote.
 

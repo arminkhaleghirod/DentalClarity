@@ -9,6 +9,7 @@
 pub mod baseline;
 pub mod batch;
 pub mod case;
+pub mod chart;
 pub mod claude_cli;
 pub mod dryrun;
 pub mod judge;

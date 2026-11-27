@@ -6,7 +6,7 @@ use clarityeval::baseline::Variant;
 use clarityeval::case::{self, LoadedCase, Split};
 use clarityeval::report::{self, Bootstrap};
 use clarityeval::systems::{self, RunConfig, SeedMode};
-use clarityeval::{lint, read_canary, repo_root, runner};
+use clarityeval::{chart, lint, read_canary, repo_root, runner};
 use dc_ai::ReasoningEffort;
 use dc_knowledge::KnowledgeBase;
 use std::path::{Path, PathBuf};
@@ -166,6 +166,14 @@ enum Command {
         /// from what it recorded and run the presentations it never did.
         #[arg(long)]
         stopped: bool,
+    },
+    /// Draw the ClarityEval score chart (DECISIONS E22) from a run's
+    /// results.json as two SVGs, `<out>-light.svg` and `<out>-dark.svg`.
+    Chart {
+        run_dir: PathBuf,
+        /// Output path without the theme suffix.
+        #[arg(long, default_value = "docs/clarityeval-score")]
+        out: PathBuf,
     },
 }
 
@@ -388,6 +396,30 @@ async fn main() -> Result<()> {
                 eprintln!("warning: {w}");
             }
             println!("wrote {}", dir.display());
+            Ok(())
+        }
+        Command::Chart { run_dir, out } => {
+            let run_dir = resolve(&root, &run_dir);
+            let path = run_dir.join("results.json");
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {} (run `report` first)", path.display()))?;
+            let results: serde_json::Value = serde_json::from_str(&text)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            let bars = chart::bars(&results)?;
+            if bars.is_empty() {
+                bail!(
+                    "{} has no system with judge scores to chart",
+                    path.display()
+                );
+            }
+            let cases = results["systems"][0]["presentations"].as_u64().unwrap_or(0) as usize;
+            let out = resolve(&root, &out);
+            for (theme, suffix) in [(chart::Theme::Light, "light"), (chart::Theme::Dark, "dark")] {
+                let file = PathBuf::from(format!("{}-{suffix}.svg", out.display()));
+                std::fs::write(&file, chart::svg(&bars, cases, theme))
+                    .with_context(|| format!("writing {}", file.display()))?;
+                println!("wrote {}", file.display());
+            }
             Ok(())
         }
         Command::Report {
