@@ -151,6 +151,14 @@ enum Command {
         #[arg(long)]
         no_rescore: bool,
     },
+    /// Rerun a finished run's infrastructure failures with its own settings,
+    /// keep both attempts, and rewrite the report (DECISIONS E21).
+    Retry {
+        run_dir: PathBuf,
+        /// Passes over the remaining failures.
+        #[arg(long, default_value_t = 3)]
+        rounds: usize,
+    },
 }
 
 fn load_from(dir: &Path) -> Result<Vec<LoadedCase>> {
@@ -362,6 +370,7 @@ async fn main() -> Result<()> {
             };
             let dir = runner::run(&root, &loaded, &kb, &opts).await?;
             let (manifest, results) = report::load_results(&dir)?;
+            let results = report::current(&results);
             let b = Bootstrap::from_manifest(&manifest);
             let mut summary = report::summarize(&manifest, &results, &[], b);
             report::finish(&mut summary, &root, &dir, Vec::new());
@@ -381,7 +390,8 @@ async fn main() -> Result<()> {
             no_rescore,
         } => {
             let run_dir = resolve(&root, &run_dir);
-            let (manifest, mut results) = report::load_results(&run_dir)?;
+            let (manifest, results) = report::load_results(&run_dir)?;
+            let mut results = report::current(&results);
             let dir = match (&cases_dir, &manifest.cases_dir) {
                 (Some(d), _) => resolve(&root, d),
                 (None, Some(d)) => resolve(&root, Path::new(d)),
@@ -418,6 +428,39 @@ async fn main() -> Result<()> {
             for w in report::warnings(&summary) {
                 eprintln!("warning: {w}");
             }
+            Ok(())
+        }
+        Command::Retry { run_dir, rounds } => {
+            let run_dir = resolve(&root, &run_dir);
+            let (manifest, _) = report::load_results(&run_dir)?;
+            let dir = match &manifest.cases_dir {
+                Some(d) => resolve(&root, Path::new(d)),
+                None => case::split_dir(&root, manifest.split),
+            };
+            let cases = load_from(&dir)?;
+            let left = runner::retry(&root, &cases, &kb, &run_dir, rounds).await?;
+            let (manifest, results) = report::load_results(&run_dir)?;
+            let mut results = report::current(&results);
+            let changed = report::rescore(&mut results, &cases, &kb);
+            let not_rescored = report::not_rescored(&results, &cases);
+            let mut summary = report::summarize(
+                &manifest,
+                &results,
+                &changed,
+                Bootstrap::from_manifest(&manifest),
+            );
+            report::finish(&mut summary, &root, &run_dir, not_rescored);
+            report::write(&run_dir, &summary, &results)?;
+            for w in report::warnings(&summary) {
+                eprintln!("warning: {w}");
+            }
+            if left > 0 {
+                bail!("{left} presentations are still infrastructure failures; run retry again");
+            }
+            println!(
+                "no infrastructure failures left; report rewritten in {}",
+                run_dir.display()
+            );
             Ok(())
         }
     }

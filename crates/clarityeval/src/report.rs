@@ -40,6 +40,16 @@ pub fn load_results(dir: &Path) -> Result<(Manifest, Vec<CaseResult>)> {
     Ok((manifest, results))
 }
 
+/// The latest attempt of each system on each case. `retry` appends later
+/// attempts next to the infrastructure failures they replace; the report
+/// scores only the latest and lists the replaced ones under "Reruns".
+pub fn current(results: &[CaseResult]) -> Vec<CaseResult> {
+    crate::runner::latest_attempts(results)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
 /// Recomputes metrics and patient-visible scores in place; returns case ids
 /// whose case file changed since the run.
 pub fn rescore(
@@ -1467,6 +1477,54 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
         );
     }
 
+    // Reruns of infrastructure failures (DECISIONS E21).
+    if !summary.manifest.reruns.is_empty() {
+        let _ = writeln!(md, "\n## Reruns\n");
+        let _ = writeln!(
+            md,
+            "Presentations that failed for infrastructure reasons were rerun with `clarityeval \
+             retry`, which keeps the run's systems, seeds, endpoints and judge and waits out \
+             transport errors. Both attempts are in `results.jsonl`; the figures above use the \
+             latest. A reply that stopped at the output limit before any answer counts as the \
+             model's output, not as a transport error.\n"
+        );
+        for (i, p) in summary.manifest.reruns.iter().enumerate() {
+            let _ = writeln!(
+                md,
+                "- Pass {}: {} to {}, code {}{}; {} presentations rerun, {} still failed; ${:.4}.",
+                i + 1,
+                p.started_at,
+                p.finished_at.as_deref().unwrap_or("unfinished"),
+                p.git_commit.as_deref().map_or("unknown", short),
+                if p.git_dirty == Some(true) {
+                    " (uncommitted changes)"
+                } else {
+                    ""
+                },
+                p.presentations.len(),
+                p.still_failed,
+                p.cost_usd
+            );
+        }
+        let replaced: Vec<&CaseResult> = results.iter().filter(|r| r.attempt > 1).collect();
+        if !replaced.is_empty() {
+            let _ = writeln!(
+                md,
+                "\n| System | Case | Attempt | Replaced failure |\n|---|---|---|---|"
+            );
+            for r in replaced {
+                let _ = writeln!(
+                    md,
+                    "| `{}` | {} | {} | {} |",
+                    r.system_label(),
+                    r.case_id,
+                    r.attempt,
+                    r.replaces.as_deref().unwrap_or("").replace('|', "/")
+                );
+            }
+        }
+    }
+
     // How to rerun.
     let _ = writeln!(md, "\n## How to rerun\n");
     let _ = writeln!(
@@ -1577,6 +1635,8 @@ mod tests {
             passed: false,
             critical_failures: 0,
             error: None,
+            attempt: 1,
+            replaces: None,
         }
     }
 
@@ -1734,6 +1794,41 @@ mod tests {
         let j = summary.systems[0].judge.as_ref().unwrap();
         assert_eq!((j.presentations_unjudged, j.judge_failures), (1, 1));
         assert!(j.critical_per_presentation.is_none());
+    }
+
+    #[test]
+    fn the_latest_attempt_replaces_an_infrastructure_failure() {
+        let clean = include_str!("../tests/fixtures/G-002_clean.json");
+        let failed = transport_failed(result("G-002", SystemKind::Pipeline, clean, 4000, 0.002));
+        let mut retried = result("G-002", SystemKind::Pipeline, clean, 4000, 0.002);
+        retried.attempt = 2;
+        retried.replaces = Some(crate::runner::failure_reason(&failed));
+        let other = result("G-002", SystemKind::Baseline, clean, 4000, 0.002);
+        let all = vec![failed, other, retried];
+        let now = current(&all);
+        assert_eq!(now.len(), 2);
+        assert_eq!(now[0].attempt, 2);
+        assert_eq!(now[1].system_kind, SystemKind::Baseline);
+        assert!(
+            all[2]
+                .replaces
+                .as_deref()
+                .unwrap()
+                .contains("could not be reached")
+        );
+        let mut m = manifest();
+        m.reruns.push(crate::runner::Rerun {
+            started_at: "s".into(),
+            finished_at: Some("f".into()),
+            git_commit: None,
+            git_dirty: None,
+            presentations: vec!["pipeline:test/model G-002".into()],
+            still_failed: 0,
+            cost_usd: 0.0,
+        });
+        let summary = summarize(&m, &now, &[], Bootstrap::default());
+        let md = render(&summary, &now);
+        assert!(md.contains("## Reruns") && md.contains("| 2 |"));
     }
 
     #[test]

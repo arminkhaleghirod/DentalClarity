@@ -157,7 +157,14 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ChoiceMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
+
+/// Error text for a reply that stopped at the output limit before any answer,
+/// usually because hidden reasoning used the whole budget. The model did run;
+/// ClarityEval scores it as an empty answer rather than a transport failure.
+pub const OUTPUT_LIMIT_NO_ANSWER: &str = "output limit reached before any answer";
 
 #[derive(Debug, Deserialize)]
 struct ChoiceMessage {
@@ -264,12 +271,20 @@ pub fn parse_reply(
 ) -> Result<TextResponse> {
     let parsed: ChatResponse =
         serde_json::from_value(reply).map_err(|e| AiError::BadResponse(e.to_string()))?;
-    let content = parsed
-        .choices
-        .into_iter()
-        .next()
+    let choice = parsed.choices.into_iter().next();
+    let cut_off = choice
+        .as_ref()
+        .is_some_and(|c| c.finish_reason.as_deref() == Some("length"));
+    let content = choice
         .and_then(|c| c.message.content)
-        .ok_or_else(|| AiError::BadResponse("no message content".into()))?;
+        .filter(|c| !(cut_off && c.trim().is_empty()))
+        .ok_or_else(|| {
+            AiError::BadResponse(if cut_off {
+                OUTPUT_LIMIT_NO_ANSWER.into()
+            } else {
+                "no message content".into()
+            })
+        })?;
     let usage = parsed.usage.map_or_else(Usage::default, |u| Usage {
         input_tokens: u.prompt_tokens.unwrap_or(0),
         output_tokens: u.completion_tokens.unwrap_or(0),
@@ -336,6 +351,16 @@ mod tests {
         assert_eq!(body["model"], "a/b");
         assert!(body.get("temperature").is_none());
         assert_eq!(body["service_tier"], "flex");
+    }
+
+    #[test]
+    fn names_a_reply_cut_off_before_any_answer() {
+        let reply = |finish: &str, content: serde_json::Value| json!({"choices": [{"message": {"content": content}, "finish_reason": finish}]});
+        let err = parse_reply(reply("length", serde_json::Value::Null), "m", 0).unwrap_err();
+        assert!(err.to_string().contains(OUTPUT_LIMIT_NO_ANSWER));
+        let err = parse_reply(reply("stop", serde_json::Value::Null), "m", 0).unwrap_err();
+        assert!(err.to_string().contains("no message content"));
+        assert!(parse_reply(reply("length", json!("partial")), "m", 0).is_ok());
     }
 
     #[test]

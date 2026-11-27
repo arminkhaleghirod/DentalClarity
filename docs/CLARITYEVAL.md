@@ -358,7 +358,7 @@ Limits stated in the paper and app docs:
 - Proportions use the Wilson interval on the pooled counts, widened to the cluster-bootstrap interval where that is wider, so units that share a plan do not narrow it. Rates (violations per 100 presentations or sentences, judge flags) use the cluster bootstrap; a rate with no events gets the rule-of-three upper bound 3/n instead of a zero-width interval. Costs use the cluster bootstrap.
 - Model differences: paired cluster bootstrap on the same cases; report the difference and its CI. With multiple pairwise comparisons, Holm-adjust any p-values reported; prefer CIs.
 - Always report n per cell (cases, outputs, raters). Cells with n < 10 are shown, marked with †, and not ranked.
-- Infrastructure failures (a run error, or a transport error in any requested section) are counted, not scored. The other system's presentation of the same case for the same model is left out with it, so paired and unpaired figures cover the same cases. The report gives both counts.
+- Infrastructure failures (a run error, or a transport error in any requested section) are counted, not scored. The other system's presentation of the same case for the same model is left out with it, so paired and unpaired figures cover the same cases. The report gives both counts. `clarityeval retry` reruns them before the results are written up, so a final report has none; both attempts are kept and listed (DECISIONS E21).
 - Models whose CIs overlap are reported as not distinguishable and are not ranked.
 - Dentist-subset results are descriptive (≈12 items per finalist model). No ranking claims from them.
 - No cherry-picking: every frozen-config run is reported, including failed or excluded ones with reasons.
@@ -552,7 +552,7 @@ Fallbacks: if dentists cannot review by 02-04, publish LLM-judge results labelle
 
 ## Running the benchmark
 
-The runner lives in `crates/clarityeval`. It covers `validate`, `run` and `report`; the other commands in section 14.1 are not built yet. `run` compares systems: the full DentalClarity pipeline for each model and, with `--baseline`, a plain-prompt baseline for each model. Reads `OPENROUTER_API_KEY` from the environment or `.env`.
+The runner lives in `crates/clarityeval`. It covers `validate`, `run`, `report` and `retry`; the other commands in section 14.1 are not built yet. `run` compares systems: the full DentalClarity pipeline for each model and, with `--baseline`, a plain-prompt baseline for each model. Reads `OPENROUTER_API_KEY` from the environment or `.env`.
 
 ```sh
 # Lint every case (dev, plus held-out if present locally). No network.
@@ -573,7 +573,12 @@ cargo run -p clarityeval -- run --split heldout --final \
 
 # Re-score a run offline with the current scorers; rewrites report.md and results.json.
 cargo run -p clarityeval -- report eval/runs/<run_id>
+
+# Rerun a finished run's infrastructure failures, then rewrite its report.
+cargo run -p clarityeval -- retry eval/runs/<run_id>
 ```
+
+`retry` reruns each presentation whose latest attempt is an infrastructure failure (a run error, or a transport error in any requested section), with the systems, seeds, endpoints, judge and cost cap recorded in the run's manifest (DECISIONS E21). Every call waits out rate limits, timeouts and empty replies with backoff, and the recorder logs each attempt. A reply that stopped at the output limit before writing any answer counts as the model's output: the rerun passes it on as an empty answer, which the scorer fails. New attempts go into `results.jsonl` next to the failures they replace, and the manifest records each pass and its commit. The report scores the latest attempt and lists the replaced ones under "Reruns". `--rounds N` (default 3) sets how many passes it makes over what still fails; it exits with an error if any failure is left. It refuses a run that has not finished.
 
 `report` re-scores every presentation against the case files in the run's cases directory (or `--cases-dir`). It stops with an error when those cases do not load. `--no-rescore` keeps the stored scores instead, and the report then lists every presentation it did not re-score. `--bootstrap` and `--bootstrap-seed` default to the values the run recorded, so a re-scored report matches the one `run` wrote.
 

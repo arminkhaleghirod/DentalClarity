@@ -14,6 +14,7 @@ pub mod dryrun;
 pub mod judge;
 pub mod lint;
 pub mod meta;
+pub mod persist;
 pub mod report;
 pub mod runner;
 pub mod score;

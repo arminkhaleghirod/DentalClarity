@@ -252,6 +252,17 @@ pub struct CaseResult {
     pub passed: bool,
     pub critical_failures: usize,
     pub error: Option<String>,
+    /// 1 for the run itself; `retry` appends later attempts of the same
+    /// system on the same case, and the report scores the latest.
+    #[serde(default = "first_attempt")]
+    pub attempt: u32,
+    /// For a later attempt: the infrastructure failure it replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+}
+
+fn first_attempt() -> u32 {
+    1
 }
 
 impl CaseResult {
@@ -391,6 +402,23 @@ pub struct Manifest {
     /// `rules` (v2) or `naive` (v1), when the baseline ran.
     #[serde(default)]
     pub baseline_variant: Option<String>,
+    /// Each `clarityeval retry` pass over this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reruns: Vec<Rerun>,
+}
+
+/// One `clarityeval retry` pass: which code reran which presentations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rerun {
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub git_commit: Option<String>,
+    pub git_dirty: Option<bool>,
+    /// `<system> <case id>` for each presentation rerun.
+    pub presentations: Vec<String>,
+    /// How many of them were still infrastructure failures afterwards.
+    pub still_failed: usize,
+    pub cost_usd: f64,
 }
 
 fn legacy_format() -> u32 {
@@ -1044,6 +1072,7 @@ pub async fn run(
         baseline_variant: opts
             .baseline
             .then(|| opts.baseline_variant.as_str().to_owned()),
+        reruns: Vec::new(),
     };
     write_manifest(&dir, &manifest)?;
 
@@ -1067,6 +1096,7 @@ pub async fn run(
         judge_reasoning: opts.judge_reasoning,
         baseline_variant: opts.baseline_variant,
         spent: spent.clone(),
+        persistent: false,
     };
     // Live-route presentations run `concurrency` at a time, so their latency
     // is measured under a steady load. Flex-tier presentations get their own
@@ -1222,6 +1252,8 @@ struct JobContext<'a> {
     judge_reasoning: Option<ReasoningEffort>,
     baseline_variant: baseline::Variant,
     spent: Arc<Mutex<f64>>,
+    /// Wait out transport errors (`retry` only; see `persist`).
+    persistent: bool,
 }
 
 /// The baseline's single call, with the pipeline's three transport retries.
@@ -1264,6 +1296,12 @@ async fn run_job(
         })
         .with_spend(ctx.spent.clone()),
     );
+    // The recorder sits inside the retry wrapper, so every attempt is logged.
+    let model: Arc<dyn TextModel> = if ctx.persistent {
+        Arc::new(crate::persist::Persistent::new(recorder.clone()))
+    } else {
+        recorder.clone()
+    };
 
     let snapshot = if !case.task.kind.runnable() {
         error = Some(format!(
@@ -1286,9 +1324,9 @@ async fn run_job(
         match system.kind {
             SystemKind::Pipeline => {
                 let models = Models {
-                    writer: recorder.clone(),
+                    writer: model.clone(),
                     writer_model: system.writer_model.clone(),
-                    reviewer: recorder.clone(),
+                    reviewer: model.clone(),
                     reviewer_model: reviewer_model.clone(),
                     reasoning: choice.reasoning,
                 };
@@ -1326,8 +1364,7 @@ async fn run_job(
                     temperature: system.params.temperature,
                     reasoning: choice.reasoning,
                 };
-                let rec: Arc<dyn TextModel> = recorder.clone();
-                match baseline_call(&rec, request).await {
+                match baseline_call(&model, request).await {
                     Ok(reply) => {
                         sections = baseline::split_reply(
                             &reply.content,
@@ -1433,7 +1470,275 @@ async fn run_job(
         visible,
         judgments,
         error,
+        attempt: 1,
+        replaces: None,
     }
+}
+
+/// Why `r` counts as an infrastructure failure, for the rerun record.
+pub fn failure_reason(r: &CaseResult) -> String {
+    if let Some(e) = &r.error {
+        return e.clone();
+    }
+    r.sections
+        .iter()
+        .filter(|s| s.transport_error())
+        .flat_map(|s| s.reasons.iter().chain(&s.attempt_log))
+        .find(|m| m.contains("could not be reached"))
+        .cloned()
+        .unwrap_or_else(|| "no score".into())
+}
+
+/// The latest attempt of each system on each case, in first-seen order.
+pub fn latest_attempts(results: &[CaseResult]) -> Vec<&CaseResult> {
+    let mut best: HashMap<(String, String), usize> = HashMap::new();
+    let mut order = Vec::new();
+    for (i, r) in results.iter().enumerate() {
+        let key = (r.system_label(), r.case_id.clone());
+        match best.get(&key) {
+            None => {
+                order.push(key.clone());
+                best.insert(key, i);
+            }
+            Some(&j) if results[j].attempt <= r.attempt => {
+                best.insert(key, i);
+            }
+            Some(_) => {}
+        }
+    }
+    order.iter().map(|k| &results[best[k]]).collect()
+}
+
+async fn rerun_job(
+    ctx: &JobContext<'_>,
+    loaded: &LoadedCase,
+    system: &SystemSpec,
+    choice: &ModelChoice,
+    previous: u32,
+    why: String,
+) -> CaseResult {
+    eprintln!(
+        "retry: {} {} (attempt {})",
+        system.label,
+        loaded.case.case_id,
+        previous + 1
+    );
+    let mut r = run_job(ctx, loaded, system, choice).await;
+    r.attempt = previous + 1;
+    r.replaces = Some(why);
+    r
+}
+
+/// Reruns each presentation in `dir` whose latest attempt is an
+/// infrastructure failure, for up to `rounds` passes (DECISIONS E21). The
+/// systems, seeds, temperature handling, endpoints, judge and cost cap come
+/// from the manifest; the code is the checkout's, recorded per pass. Every
+/// call waits out transport errors (`persist`). New attempts are appended to
+/// `results.jsonl` next to the ones they replace. Returns how many
+/// presentations are still infrastructure failures.
+pub async fn retry(
+    root: &Path,
+    cases: &[LoadedCase],
+    kb: &KnowledgeBase,
+    dir: &Path,
+    rounds: usize,
+) -> Result<usize> {
+    let (mut manifest, mut all) = crate::report::load_results(dir)?;
+    if manifest.finished_at.is_none() {
+        bail!(
+            "the run in {} has not finished; retry once it has",
+            dir.display()
+        );
+    }
+    let variant: baseline::Variant = match &manifest.baseline_variant {
+        Some(v) => serde_json::from_value(Value::String(v.clone()))?,
+        None => baseline::Variant::default(),
+    };
+    let plans: Vec<(SystemSpec, ModelChoice)> = manifest
+        .systems
+        .iter()
+        .map(|s| {
+            (
+                s.clone(),
+                ModelChoice {
+                    model: s.writer_model.clone(),
+                    reviewer: s.reviewer_model.clone(),
+                    reasoning: s.params.reasoning,
+                },
+            )
+        })
+        .collect();
+    let mut models: Vec<String> = Vec::new();
+    let mut seeds: BTreeMap<String, Option<u64>> = BTreeMap::new();
+    let mut no_temperature: BTreeMap<String, bool> = BTreeMap::new();
+    for (s, _) in &plans {
+        for m in s.routing.keys() {
+            if !models.contains(m) {
+                models.push(m.clone());
+            }
+        }
+        if s.kind == SystemKind::Pipeline || !seeds.contains_key(&s.writer_model) {
+            seeds.insert(s.writer_model.clone(), s.params.seed);
+            no_temperature.insert(s.writer_model.clone(), !s.params.temperature_sent);
+        }
+    }
+    let judge_model = manifest.judge.as_ref().map(|j| j.model.clone());
+    let judge_reasoning = manifest.judge.as_ref().and_then(|j| j.reasoning);
+    if let Some(j) = &manifest.judge {
+        seeds.entry(j.model.clone()).or_insert(j.seed);
+    }
+    let spent = Arc::new(Mutex::new(manifest.total_cost_usd));
+    let clients = if manifest.dry_run {
+        let fake: Arc<dyn TextModel> = Arc::new(crate::dryrun::ScriptedModel);
+        Clients {
+            pipeline: fake.clone(),
+            baseline: fake.clone(),
+            judge: fake,
+        }
+    } else {
+        build_clients(
+            root,
+            &models,
+            judge_model.as_deref(),
+            &seeds,
+            &no_temperature,
+            &manifest.endpoints,
+            &batch::Budget {
+                spent: spent.clone(),
+                cap: manifest.max_cost_usd,
+            },
+        )?
+    };
+    let run_id = manifest.run_id.clone();
+    let ctx = JobContext {
+        run_id: &run_id,
+        kb,
+        clients: &clients,
+        judge: judge_model.as_deref(),
+        judge_reasoning,
+        baseline_variant: variant,
+        spent: spent.clone(),
+        persistent: true,
+    };
+    let concurrency = manifest.concurrency.max(1);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("results.jsonl"))?;
+
+    for _ in 0..rounds {
+        let failed: Vec<(String, String, u32, String)> = latest_attempts(&all)
+            .into_iter()
+            .filter(|r| crate::report::infra_failure(r))
+            .map(|r| {
+                (
+                    r.system_label(),
+                    r.case_id.clone(),
+                    r.attempt,
+                    failure_reason(r),
+                )
+            })
+            .collect();
+        if failed.is_empty() {
+            break;
+        }
+        if *spent.lock().expect("spent lock") >= manifest.max_cost_usd {
+            bail!(
+                "cost cap ${:.2} reached; nothing rerun",
+                manifest.max_cost_usd
+            );
+        }
+        let mut jobs = Vec::new();
+        for (label, case_id, attempt, why) in &failed {
+            let loaded = cases
+                .iter()
+                .find(|c| &c.case.case_id == case_id)
+                .with_context(|| format!("case {case_id} is not in the cases directory"))?;
+            let stored = all
+                .iter()
+                .find(|r| &r.case_id == case_id)
+                .map(|r| r.case_sha256.as_str());
+            if stored != Some(loaded.sha256.as_str()) {
+                bail!("case {case_id} changed since the run; it cannot be rerun");
+            }
+            let (system, choice) = plans
+                .iter()
+                .find(|(s, _)| &s.label == label)
+                .map(|(s, c)| (s, c))
+                .with_context(|| format!("system {label} is not in the manifest"))?;
+            jobs.push((loaded, system, choice, *attempt, why.clone()));
+        }
+        eprintln!("retry: rerunning {} presentations", jobs.len());
+        let (git_commit, git_dirty) = meta::git_state(root);
+        let mut pass = Rerun {
+            started_at: meta::rfc3339(SystemTime::now()),
+            finished_at: None,
+            git_commit,
+            git_dirty,
+            presentations: failed
+                .iter()
+                .map(|(l, c, _, _)| format!("{l} {c}"))
+                .collect(),
+            still_failed: 0,
+            cost_usd: 0.0,
+        };
+        // The same pools as `run`: live and flex `concurrency` at a time,
+        // batch and subscription all at once.
+        let (flex, rest): (Vec<_>, Vec<_>) = jobs
+            .into_iter()
+            .partition(|j| systems::route_of(&j.1.writer_model) == Route::Flex);
+        let (timed, untimed): (Vec<_>, Vec<_>) = rest
+            .into_iter()
+            .partition(|j| systems::route_of(&j.1.writer_model).timed());
+        let untimed_n = untimed.len().max(1);
+        let ctx = &ctx;
+        let mut stream = futures::stream::select(
+            futures::stream::select(
+                futures::stream::iter(timed)
+                    .map(|(l, s, c, a, w)| rerun_job(ctx, l, s, c, a, w))
+                    .buffer_unordered(concurrency),
+                futures::stream::iter(flex)
+                    .map(|(l, s, c, a, w)| rerun_job(ctx, l, s, c, a, w))
+                    .buffer_unordered(concurrency),
+            ),
+            futures::stream::iter(untimed)
+                .map(|(l, s, c, a, w)| rerun_job(ctx, l, s, c, a, w))
+                .buffer_unordered(untimed_n),
+        );
+        let mut fresh = Vec::new();
+        while let Some(result) = stream.next().await {
+            let cost = result.cost_usd.unwrap_or(0.0);
+            let judge_cost: f64 = result.judgments.iter().filter_map(|j| j.cost_usd).sum();
+            manifest.total_cost_usd += cost;
+            manifest.judge_cost_usd += judge_cost;
+            pass.cost_usd += cost;
+            let failed_again = crate::report::infra_failure(&result);
+            pass.still_failed += usize::from(failed_again);
+            eprintln!(
+                "retry: {} {} attempt {}: {}",
+                result.system,
+                result.case_id,
+                result.attempt,
+                if failed_again {
+                    format!("still failed ({})", failure_reason(&result))
+                } else {
+                    "scored".into()
+                }
+            );
+            serde_json::to_writer(&mut file, &result)?;
+            file.write_all(b"\n")?;
+            file.flush()?;
+            fresh.push(result);
+        }
+        drop(stream);
+        all.extend(fresh);
+        pass.finished_at = Some(meta::rfc3339(SystemTime::now()));
+        manifest.reruns.push(pass);
+        write_manifest(dir, &manifest)?;
+    }
+    Ok(latest_attempts(&all)
+        .into_iter()
+        .filter(|r| crate::report::infra_failure(r))
+        .count())
 }
 
 #[cfg(test)]
