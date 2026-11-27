@@ -36,7 +36,7 @@ Screen: press Present. Show At a glance with the tooth chart, play narration for
 
 Screen: the ClarityEval report table from docs/RESULTS.md.
 
-"We measured this with ClarityEval, a held-out benchmark of 36 synthetic cases, committed by hash before the run. Compared with the same model given the same rules in a single prompt, the pipeline showed `TBD` unsafe or unsupported statements to patients per 100 presentations, against `TBD` for the baseline, at about `TBD` cents per presentation."
+"We measured this with ClarityEval, a held-out benchmark of 36 synthetic cases, committed by hash before the run. Compared with the same model given the same rules in a single prompt, the pipeline showed no unsafe or unsupported statements to patients in 36 presentations, against 36 per 100 presentations for the baseline, at well under one cent per presentation."
 
 ## 2:50 to 3:05, limits and close
 
@@ -49,4 +49,3 @@ Screen: README, the clinical use section, then the logo.
 - Generate the Daniel Okafor presentation before recording so the progress view can be cut short. Record one live generation separately for the 0:45 segment.
 - Starting Present pre-warms narration for every generated block. Wait a few seconds after pressing Present before playing, and play any staff-edited block once beforehand.
 - Leave the browser zoom at 100% and hide bookmarks and extensions.
-- Fill in the `TBD` figures from the final held-out run before recording the evaluation segment.

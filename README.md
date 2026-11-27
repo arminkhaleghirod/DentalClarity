@@ -90,7 +90,12 @@ ClarityEval is the benchmark that measures how well current models do the jobs D
 
 Cases are synthetic. The dev split in `eval/cases/dev/` is public and used for prompt tuning. The held-out split is kept out of the repository until the final runs; its salted hash commitment is published in [eval/commitments/heldout-v1.txt](eval/commitments/heldout-v1.txt) so anyone can check later that the cases were not changed.
 
-Results: see docs/RESULTS.md (in progress).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/clarityeval-score-dark.svg">
+  <img src="docs/clarityeval-score-light.svg" alt="ClarityEval score out of 100 for 13 models, each run with the DentalClarity pipeline and with a single prompt. Every DentalClarity system scores between 85 and 94; the single-prompt baselines score between 54 and 92." width="100%">
+</picture>
+
+The ClarityEval score combines four measures from the final held-out run; [DECISIONS.md](docs/DECISIONS.md) E22 defines it. Full results, with intervals for each measure, are in [docs/RESULTS.md](docs/RESULTS.md).
 
 The method is described in [docs/CLARITYEVAL.md](docs/CLARITYEVAL.md).
 

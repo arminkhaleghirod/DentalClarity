@@ -1,6 +1,6 @@
 # AI for Medicine submission
 
-Draft of the written description for the AI for Medicine hackathon. Figures marked `TBD` are filled in from the final held-out ClarityEval run ([RESULTS.md](RESULTS.md)) and are not estimates.
+Draft of the written description for the AI for Medicine hackathon. Figures come from the final held-out ClarityEval run ([RESULTS.md](RESULTS.md)) and are not estimates.
 
 - Live demo: https://dentalclarity-demo.fly.dev (no sign-in, synthetic data)
 - Code: https://github.com/arminkhaleghirod/DentalClarity
@@ -57,8 +57,10 @@ ClarityEval measures what a patient would actually read.
 
 | System | Violating sentences per 100 presentations | Sections not shown | $ per presentation | Latency p50 |
 |---|---|---|---|---|
-| Pipeline, `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
-| Baseline, `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
+| Pipeline, DeepSeek v4.1 Flash | 0.0 [0.0, 8.3] | 9% | $0.0063 | n/a (batch route) |
+| Baseline, DeepSeek v4.1 Flash | 36.1 [16.7, 61.1] | 0% | $0.0005 | n/a (batch route) |
+
+DeepSeek v4.1 Flash is the app's default model. Across all 13 models tested, the pipeline showed no violating sentence for 10 and at most 5.6 per 100 presentations, against 2.8 to 105.6 for the baselines; for 10 of the 13 the paired difference excludes zero.
 
 Full tables, intervals and per-category results: [RESULTS.md](RESULTS.md).
 
