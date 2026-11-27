@@ -36,7 +36,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -405,6 +405,9 @@ pub struct Manifest {
     /// Each `clarityeval retry` pass over this run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reruns: Vec<Rerun>,
+    /// When `retry --stopped` closed a run whose process had been stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<String>,
 }
 
 /// One `clarityeval retry` pass: which code reran which presentations.
@@ -419,6 +422,16 @@ pub struct Rerun {
     /// How many of them were still infrastructure failures afterwards.
     pub still_failed: usize,
     pub cost_usd: f64,
+    /// Batch models this pass sent on the live route instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live: Vec<String>,
+    /// How many of the presentations the stopped run had never recorded.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unrecorded: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn legacy_format() -> u32 {
@@ -667,6 +680,25 @@ struct Clients {
 /// Per-call timeout on the flex tier, which may queue a request before serving it.
 const FLEX_TIMEOUT_S: u64 = 600;
 
+/// The route a call takes: a batch model named in `live` goes out live.
+fn effective_route(model: &str, live: &[String]) -> Route {
+    match systems::route_of(model) {
+        Route::Batch if live.iter().any(|l| l == model) => Route::Live,
+        r => r,
+    }
+}
+
+/// The id sent upstream for `model`: a batch model named in `live` loses
+/// its `:batch` suffix.
+fn live_id<'a>(model: &'a str, live: &[String]) -> &'a str {
+    if effective_route(model, live) == Route::Live {
+        model.strip_suffix(batch::SUFFIX).unwrap_or(model)
+    } else {
+        model
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_clients(
     root: &Path,
     models: &[String],
@@ -675,6 +707,7 @@ fn build_clients(
     no_temperature: &BTreeMap<String, bool>,
     endpoints: &BTreeMap<String, EndpointSnapshot>,
     budget: &batch::Budget,
+    live: &[String],
 ) -> Result<Clients> {
     let _ = dotenvy::from_path(root.join(".env"));
     let needs_key = models
@@ -694,7 +727,7 @@ fn build_clients(
     let mut make = |m: &str, timeout: Option<u64>| -> Result<Arc<dyn TextModel>> {
         let seed = seeds.get(m).copied().flatten();
         let omit_temperature = no_temperature.get(m).copied().unwrap_or(false);
-        match systems::route_of(m) {
+        match effective_route(m, live) {
             Route::Subscription => Ok(Arc::new(ClaudeCli::new(slots.clone())?)),
             Route::Batch => {
                 if let Some(c) = batches.get(m) {
@@ -716,10 +749,18 @@ fn build_clients(
                 Ok(c)
             }
             route @ (Route::Live | Route::Flex) => {
+                // A batch model moved to live keeps its id in the results and
+                // is sent upstream under its live id with live routing.
+                let upstream = live_id(m, live);
+                let routing = if upstream == m {
+                    systems::routing_for(m)
+                } else {
+                    systems::routing_for(upstream)
+                };
                 let mut c = OpenRouter::new(ProviderPolicy::for_mode(Mode::Demo), key.clone())?
-                    .with_routing(systems::routing_for(m))
+                    .with_routing(routing)
                     .with_seed(seed)
-                    .with_upstream_model(systems::upstream_model(m))
+                    .with_upstream_model(systems::upstream_model(upstream))
                     .without_temperature(omit_temperature);
                 let mut timeout = timeout;
                 if route == Route::Flex {
@@ -946,6 +987,7 @@ pub async fn run(
                 spent: spent.clone(),
                 cap: opts.max_cost_usd,
             },
+            &[],
         )?
     };
 
@@ -1052,6 +1094,7 @@ pub async fn run(
         total_cost_usd: 0.0,
         judge_cost_usd: 0.0,
         stopped_early: None,
+        stopped_at: None,
         seed: Some(opts.seed),
         seed_mode: Some(opts.seed_mode),
         seed_notes,
@@ -1515,7 +1558,7 @@ async fn rerun_job(
     system: &SystemSpec,
     choice: &ModelChoice,
     previous: u32,
-    why: String,
+    why: Option<String>,
 ) -> CaseResult {
     eprintln!(
         "retry: {} {} (attempt {})",
@@ -1525,7 +1568,7 @@ async fn rerun_job(
     );
     let mut r = run_job(ctx, loaded, system, choice).await;
     r.attempt = previous + 1;
-    r.replaces = Some(why);
+    r.replaces = why;
     r
 }
 
@@ -1542,13 +1585,18 @@ pub async fn retry(
     kb: &KnowledgeBase,
     dir: &Path,
     rounds: usize,
+    live: &[String],
+    stopped: bool,
 ) -> Result<usize> {
     let (mut manifest, mut all) = crate::report::load_results(dir)?;
-    if manifest.finished_at.is_none() {
-        bail!(
-            "the run in {} has not finished; retry once it has",
+    match (manifest.finished_at.is_some(), stopped) {
+        (false, false) => bail!(
+            "the run in {} has not finished; retry once it has, or pass --stopped if its process was stopped",
             dir.display()
-        );
+        ),
+        (true, true) => bail!("--stopped: the run in {} finished", dir.display()),
+        (true, false) => {}
+        (false, true) => close_stopped(&mut manifest, &all),
     }
     let variant: baseline::Variant = match &manifest.baseline_variant {
         Some(v) => serde_json::from_value(Value::String(v.clone()))?,
@@ -1568,6 +1616,13 @@ pub async fn retry(
             )
         })
         .collect();
+    for l in live {
+        if systems::route_of(l) != Route::Batch
+            || !plans.iter().any(|(s, _)| s.routing.contains_key(l))
+        {
+            bail!("--live {l}: not a batch model of this run");
+        }
+    }
     let mut models: Vec<String> = Vec::new();
     let mut seeds: BTreeMap<String, Option<u64>> = BTreeMap::new();
     let mut no_temperature: BTreeMap<String, bool> = BTreeMap::new();
@@ -1607,6 +1662,7 @@ pub async fn retry(
                 spent: spent.clone(),
                 cap: manifest.max_cost_usd,
             },
+            live,
         )?
     };
     let run_id = manifest.run_id.clone();
@@ -1626,7 +1682,8 @@ pub async fn retry(
         .open(dir.join("results.jsonl"))?;
 
     for _ in 0..rounds {
-        let failed: Vec<(String, String, u32, String)> = latest_attempts(&all)
+        let missing = unrecorded(&manifest, &all);
+        let mut failed: Vec<(String, String, u32, Option<String>)> = latest_attempts(&all)
             .into_iter()
             .filter(|r| crate::report::infra_failure(r))
             .map(|r| {
@@ -1634,10 +1691,11 @@ pub async fn retry(
                     r.system_label(),
                     r.case_id.clone(),
                     r.attempt,
-                    failure_reason(r),
+                    Some(failure_reason(r)),
                 )
             })
             .collect();
+        failed.extend(missing.iter().map(|(l, c)| (l.clone(), c.clone(), 0, None)));
         if failed.is_empty() {
             break;
         }
@@ -1653,10 +1711,11 @@ pub async fn retry(
                 .iter()
                 .find(|c| &c.case.case_id == case_id)
                 .with_context(|| format!("case {case_id} is not in the cases directory"))?;
-            let stored = all
+            let stored = manifest
+                .cases
                 .iter()
-                .find(|r| &r.case_id == case_id)
-                .map(|r| r.case_sha256.as_str());
+                .find(|c| &c.case_id == case_id)
+                .map(|c| c.sha256.as_str());
             if stored != Some(loaded.sha256.as_str()) {
                 bail!("case {case_id} changed since the run; it cannot be rerun");
             }
@@ -1680,15 +1739,17 @@ pub async fn retry(
                 .collect(),
             still_failed: 0,
             cost_usd: 0.0,
+            live: live.to_vec(),
+            unrecorded: missing.len(),
         };
         // The same pools as `run`: live and flex `concurrency` at a time,
         // batch and subscription all at once.
         let (flex, rest): (Vec<_>, Vec<_>) = jobs
             .into_iter()
-            .partition(|j| systems::route_of(&j.1.writer_model) == Route::Flex);
+            .partition(|j| effective_route(&j.1.writer_model, live) == Route::Flex);
         let (timed, untimed): (Vec<_>, Vec<_>) = rest
             .into_iter()
-            .partition(|j| systems::route_of(&j.1.writer_model).timed());
+            .partition(|j| effective_route(&j.1.writer_model, live).timed());
         let untimed_n = untimed.len().max(1);
         let ctx = &ctx;
         let mut stream = futures::stream::select(
@@ -1738,12 +1799,76 @@ pub async fn retry(
     Ok(latest_attempts(&all)
         .into_iter()
         .filter(|r| crate::report::infra_failure(r))
-        .count())
+        .count()
+        + unrecorded(&manifest, &all).len())
+}
+
+/// Closes a run whose process was stopped before it wrote its final
+/// manifest: the costs and returned models come from what it recorded.
+fn close_stopped(manifest: &mut Manifest, all: &[CaseResult]) {
+    let now = meta::rfc3339(SystemTime::now());
+    manifest.stopped_at = Some(now.clone());
+    manifest.finished_at = Some(now);
+    manifest.total_cost_usd = all.iter().filter_map(|r| r.cost_usd).sum();
+    manifest.judge_cost_usd = all
+        .iter()
+        .flat_map(|r| &r.judgments)
+        .filter_map(|j| j.cost_usd)
+        .sum();
+    let mut returned = BTreeSet::new();
+    let mut routes = BTreeSet::new();
+    for c in all.iter().flat_map(|r| &r.calls) {
+        returned.extend(c.model_returned.clone());
+        routes.extend(c.provider_route.clone());
+    }
+    manifest.models_returned = returned.into_iter().collect();
+    manifest.provider_routes = routes.into_iter().collect();
+}
+
+/// `(system, case id)` for each presentation a stopped run never recorded.
+/// A run that stopped at its cost cap left them out on purpose, so they are
+/// not counted.
+fn unrecorded(manifest: &Manifest, all: &[CaseResult]) -> Vec<(String, String)> {
+    if manifest.stopped_at.is_none() || manifest.stopped_early.is_some() {
+        return vec![];
+    }
+    let have: BTreeSet<(String, &str)> = all
+        .iter()
+        .map(|r| (r.system_label(), r.case_id.as_str()))
+        .collect();
+    let mut out = Vec::new();
+    for s in &manifest.systems {
+        for c in &manifest.cases {
+            if !have.contains(&(s.label.clone(), c.case_id.as_str())) {
+                out.push((s.label.clone(), c.case_id.clone()));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_named_batch_models_go_live() {
+        let live = vec!["z-ai/glm-5.3-flash:batch".to_owned()];
+        assert_eq!(
+            effective_route("z-ai/glm-5.3-flash:batch", &live),
+            Route::Live
+        );
+        assert_eq!(
+            live_id("z-ai/glm-5.3-flash:batch", &live),
+            "z-ai/glm-5.3-flash"
+        );
+        assert_eq!(effective_route("z-ai/glm-5.3:batch", &live), Route::Batch);
+        assert_eq!(live_id("z-ai/glm-5.3:batch", &live), "z-ai/glm-5.3:batch");
+        assert_eq!(
+            effective_route("openai/gpt-6-luna:flex", &live),
+            Route::Flex
+        );
+    }
 
     #[test]
     fn reads_the_commitment_root() {

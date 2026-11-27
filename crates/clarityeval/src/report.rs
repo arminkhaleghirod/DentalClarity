@@ -1480,6 +1480,14 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
     // Reruns of infrastructure failures (DECISIONS E21).
     if !summary.manifest.reruns.is_empty() {
         let _ = writeln!(md, "\n## Reruns\n");
+        if let Some(t) = &summary.manifest.stopped_at {
+            let _ = writeln!(
+                md,
+                "The run's process was stopped before every presentation was recorded; \
+                 `clarityeval retry --stopped` closed it at {t} from what it had recorded and \
+                 ran the rest.\n"
+            );
+        }
         let _ = writeln!(
             md,
             "Presentations that failed for infrastructure reasons were rerun with `clarityeval \
@@ -1489,9 +1497,21 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
              model's output, not as a transport error.\n"
         );
         for (i, p) in summary.manifest.reruns.iter().enumerate() {
+            let live = if p.live.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; sent live instead of by batch: {}",
+                    p.live
+                        .iter()
+                        .map(|m| format!("`{}`", systems::display_model(m)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             let _ = writeln!(
                 md,
-                "- Pass {}: {} to {}, code {}{}; {} presentations rerun, {} still failed; ${:.4}.",
+                "- Pass {}: {} to {}, code {}{}; {} presentations rerun, {} still failed; ${:.4}{live}.",
                 i + 1,
                 p.started_at,
                 p.finished_at.as_deref().unwrap_or("unfinished"),
@@ -1505,6 +1525,13 @@ pub fn render(summary: &Summary, results: &[CaseResult]) -> String {
                 p.still_failed,
                 p.cost_usd
             );
+            if p.unrecorded > 0 {
+                let _ = writeln!(
+                    md,
+                    "  {} of them were never recorded by the stopped run and ran here for the first time.",
+                    p.unrecorded
+                );
+            }
         }
         let replaced: Vec<&CaseResult> = results.iter().filter(|r| r.attempt > 1).collect();
         if !replaced.is_empty() {
@@ -1825,10 +1852,15 @@ mod tests {
             presentations: vec!["pipeline:test/model G-002".into()],
             still_failed: 0,
             cost_usd: 0.0,
+            live: vec!["test/model:batch".into()],
+            unrecorded: 1,
         });
+        m.stopped_at = Some("t".into());
         let summary = summarize(&m, &now, &[], Bootstrap::default());
         let md = render(&summary, &now);
         assert!(md.contains("## Reruns") && md.contains("| 2 |"));
+        assert!(md.contains("sent live instead of by batch: `test/model`"));
+        assert!(md.contains("retry --stopped") && md.contains("1 of them were never recorded"));
     }
 
     #[test]

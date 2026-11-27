@@ -158,6 +158,14 @@ enum Command {
         /// Passes over the remaining failures.
         #[arg(long, default_value_t = 3)]
         rounds: usize,
+        /// A `:batch` model of the run to send on the live route instead
+        /// (repeatable). The results keep the run's model id.
+        #[arg(long)]
+        live: Vec<String>,
+        /// The run's process was stopped before it finished: close the run
+        /// from what it recorded and run the presentations it never did.
+        #[arg(long)]
+        stopped: bool,
     },
 }
 
@@ -430,7 +438,12 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Retry { run_dir, rounds } => {
+        Command::Retry {
+            run_dir,
+            rounds,
+            live,
+            stopped,
+        } => {
             let run_dir = resolve(&root, &run_dir);
             let (manifest, _) = report::load_results(&run_dir)?;
             let dir = match &manifest.cases_dir {
@@ -438,7 +451,7 @@ async fn main() -> Result<()> {
                 None => case::split_dir(&root, manifest.split),
             };
             let cases = load_from(&dir)?;
-            let left = runner::retry(&root, &cases, &kb, &run_dir, rounds).await?;
+            let left = runner::retry(&root, &cases, &kb, &run_dir, rounds, &live, stopped).await?;
             let (manifest, results) = report::load_results(&run_dir)?;
             let mut results = report::current(&results);
             let changed = report::rescore(&mut results, &cases, &kb);
