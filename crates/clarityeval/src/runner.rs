@@ -1642,7 +1642,9 @@ pub async fn retry(
     if let Some(j) = &manifest.judge {
         seeds.entry(j.model.clone()).or_insert(j.seed);
     }
-    let spent = Arc::new(Mutex::new(manifest.total_cost_usd));
+    // The cap counts money spent, as in `run`: the subscription route's
+    // list-price estimates are left out.
+    let spent = Arc::new(Mutex::new(spent_so_far(&all)));
     let clients = if manifest.dry_run {
         let fake: Arc<dyn TextModel> = Arc::new(crate::dryrun::ScriptedModel);
         Clients {
@@ -1801,6 +1803,24 @@ pub async fn retry(
         .filter(|r| crate::report::infra_failure(r))
         .count()
         + unrecorded(&manifest, &all).len())
+}
+
+/// Money the recorded results spent, without the subscription route's
+/// list-price estimates (see [`billed`]).
+fn spent_so_far(all: &[CaseResult]) -> f64 {
+    all.iter()
+        .map(|r| {
+            r.calls
+                .iter()
+                .map(|c| billed(c.provider_route.as_deref(), c.cost_usd))
+                .chain(
+                    r.judgments
+                        .iter()
+                        .map(|j| billed(j.provider_route.as_deref(), j.cost_usd)),
+                )
+                .sum::<f64>()
+        })
+        .sum()
 }
 
 /// Closes a run whose process was stopped before it wrote its final
