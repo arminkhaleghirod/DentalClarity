@@ -7,10 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Read-only Open Dental connector over MySQL. See docs/OPENDENTAL.md.
+opendental = ["dep:sqlx"]
+
 [dependencies]
 async-trait.workspace = true
 dc-core.workspace = true
 serde.workspace = true
+sqlx = { workspace = true, optional = true, features = ["mysql", "tls-rustls-aws-lc-rs-native-roots"] }
 thiserror.workspace = true
 toml.workspace = true
 

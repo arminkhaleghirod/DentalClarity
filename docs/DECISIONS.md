@@ -2,7 +2,7 @@
 
 This is the authoritative list of product and technical decisions. Every other planning doc must agree with it. Confirmed means the project owner decided it. Proposed means engineering chose it and it can change if evidence warrants. When a decision changes, edit it here first.
 
-Last updated: 2026-11-26
+Last updated: 2026-11-28
 
 ## Product
 
@@ -37,6 +37,8 @@ Last updated: 2026-11-26
 | D10 | Prompts carry an allowlist of typed fields. Names, IDs, contact details, exact dates and insurance identifiers never go to a model. Personalization placeholders (e.g. `{{patient_first_name}}`) are substituted locally. Masking alone is not called de-identification. | Confirmed |
 | D11 | Demo text calls route to PrimeIntellect first on OpenRouter, falling back to other fast providers on errors. Only providers that support every parameter we send, do not store or train on prompts, and run 8-bit or better weights are used. Chosen by benchmark on 2026-11-26. | Confirmed |
 | D12 | A text call with hidden reasoning times out after 120 s, other text calls after 45 s; speech calls time out after 30 s (E19). A call that times out or returns an unreadable reply counts against the budget at its worst-case reservation, because the provider may have billed it, and is retried once. Connection errors, 429 and 5xx keep three attempts. | Confirmed |
+| D13 | The Open Dental connector reads active and inactive treatment plans (`treatplan.TPStatus` 1 and 2) through `treatplanattach`, with procedures whose `procedurelog.ProcStatus` is treatment planned (1, or 8 for inactive). Saved plans (status 0, frozen `proctp` copies) are not listed yet. A procedure is scheduled when its `AptNum` points to a scheduled appointment. The phase is the procedure's priority definition (`treatplanattach.Priority`, then `procedurelog.Priority`): its name when the name is a number, else its position in the priority list. Quadrant and arch come from `Surf` when the procedure code's treatment area is quadrant or arch. A tooth number outside 1 to 32 and A to T fails the snapshot instead of showing no tooth. The fee is `ProcFee` times units; the insurance estimate is the sum over the procedure's `claimproc` Estimate rows of `InsEstTotal` or its override; the patient estimate is fee minus discount, insurance estimate and estimated write-off. No estimate row, a capitation estimate, or a negative patient estimate makes both estimates unknown. The note is the newest `procnote` row for the procedure. The provider is the one on most of the plan's procedures, shown by `PreferredName` or as "Dr." and the last name, and left out for hygienists and non-person providers. A patient under 18 is a guardian presentation. Search, plans and the recommended list cover patients with `PatStatus` 0 only, and "today" is the database server's date. These rules come from the published 24.1 schema and stay Proposed until checked against a live install (M2). | Proposed |
+| D14 | The server picks the connector with `DC_PMS` (`synthetic` or `opendental`). Demo mode refuses `opendental`. Credentials come from `DC_OPENDENTAL_*` environment variables until the encrypted `secrets` table lands. At startup the connector refuses a MySQL user whose grants include anything other than `SELECT` and `USAGE`, and every connection runs `SET SESSION TRANSACTION READ ONLY`. A database host other than this machine needs TLS (`required` or stricter). Server certificates are checked against the operating system's trust store, or a CA file given in `DC_OPENDENTAL_TLS_CA`. | Proposed |
 
 ## Engineering
 

@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use dc_core::Mode;
 use dc_knowledge::KnowledgeBase;
+use dc_pms::PmsConnector;
 use dc_pms::synthetic::SyntheticConnector;
-use dc_server::config::Config;
+#[cfg(feature = "opendental")]
+use dc_server::config::DbTls;
+use dc_server::config::{Config, OpenDentalConfig, PmsConfig};
 use dc_server::generation::Generation;
 use dc_server::jobs::{self, Jobs};
 use dc_server::limits::Limits;
@@ -26,10 +29,25 @@ async fn main() -> Result<()> {
     }
     let config = Config::from_env()?;
     let db = storage::open(&config.data_dir).await?;
-    // Until the Open Dental connector lands (M2), both modes read the
-    // synthetic practice. Clinical mode with synthetic data is a training setup.
-    let pms =
-        SyntheticConnector::from_path(&config.fixture).context("loading synthetic practice")?;
+    // Clinical mode with the synthetic practice is a training setup.
+    let (pms, fixture_practice_name): (Arc<dyn PmsConnector>, Option<String>) = match &config.pms {
+        PmsConfig::Synthetic => {
+            let pms = SyntheticConnector::from_path(&config.fixture)
+                .context("loading synthetic practice")?;
+            let name = pms.practice_name().to_owned();
+            (Arc::new(pms), Some(name))
+        }
+        PmsConfig::OpenDental(od) => (open_dental(od).await?, None),
+    };
+    tracing::info!(
+        connector = pms.name(),
+        "practice management connector ready"
+    );
+    let default_practice_name = config
+        .practice_name
+        .clone()
+        .or(fixture_practice_name)
+        .unwrap_or_else(|| "Your practice".into());
     let kb = KnowledgeBase::load(&config.knowledge_dir).context("loading the knowledge base")?;
     tracing::info!(entries = kb.entries().count(), "knowledge base loaded");
     let generation = Generation::from_env(
@@ -79,8 +97,8 @@ async fn main() -> Result<()> {
         mode: config.mode,
         http: Arc::new(config.http.clone()),
         db: db.clone(),
-        default_practice_name: pms.practice_name().to_owned(),
-        pms: Arc::new(pms),
+        default_practice_name,
+        pms,
         codes: Arc::new(kb.codes.clone()),
         kb: Arc::new(kb),
         generation: generation.map(Arc::new),
@@ -154,6 +172,39 @@ async fn main() -> Result<()> {
     })
     .await?;
     Ok(())
+}
+
+/// Connects to Open Dental as the read-only user (DECISIONS D14).
+#[cfg(feature = "opendental")]
+async fn open_dental(od: &OpenDentalConfig) -> Result<Arc<dyn PmsConnector>> {
+    use dc_pms::opendental::{MySqlConnectOptions, MySqlSslMode, OpenDentalConnector};
+
+    let ssl_mode = match od.tls {
+        DbTls::Disabled => MySqlSslMode::Disabled,
+        DbTls::Preferred => MySqlSslMode::Preferred,
+        DbTls::Required => MySqlSslMode::Required,
+        DbTls::VerifyCa => MySqlSslMode::VerifyCa,
+        DbTls::VerifyIdentity => MySqlSslMode::VerifyIdentity,
+    };
+    let mut options = MySqlConnectOptions::new()
+        .host(&od.host)
+        .port(od.port)
+        .database(&od.database)
+        .username(&od.user)
+        .password(&od.password)
+        .ssl_mode(ssl_mode);
+    if let Some(ca) = &od.tls_ca {
+        options = options.ssl_ca(ca);
+    }
+    let connector = OpenDentalConnector::connect(options)
+        .await
+        .with_context(|| format!("connecting to Open Dental at {}:{}", od.host, od.port))?;
+    Ok(Arc::new(connector))
+}
+
+#[cfg(not(feature = "opendental"))]
+async fn open_dental(_: &OpenDentalConfig) -> Result<Arc<dyn PmsConnector>> {
+    anyhow::bail!("this build has no Open Dental connector; rebuild with the opendental feature")
 }
 
 async fn staff_account_exists(db: &sqlx::SqlitePool) -> Result<bool> {

@@ -25,6 +25,47 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  opendental:
+    # Connector contract tests against the synthetic Open Dental database in
+    # fixtures/opendental, on MySQL and on MariaDB.
+    name: Open Dental connector (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: ["mysql:8.0", "mariadb:10.11"]
+    services:
+      db:
+        image: ${{ matrix.db }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MARIADB_ROOT_PASSWORD: ci-root
+        ports:
+          - 3306:3306
+    env:
+      DC_TEST_MYSQL_URL: mysql://dentalclarity_ro:synthetic-test-only@127.0.0.1:3306/opendental
+      DC_TEST_MYSQL_ADMIN_URL: mysql://root:ci-root@127.0.0.1:3306/opendental
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Wait for the database
+        run: |
+          for i in $(seq 1 60); do
+            mysql -h 127.0.0.1 -u root -pci-root -e 'SELECT 1' && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Load the synthetic Open Dental database
+        run: |
+          for f in schema seed readonly_user; do
+            mysql -h 127.0.0.1 -u root -pci-root < fixtures/opendental/$f.sql
+          done
+      - run: cargo clippy -p dc-pms --features opendental --all-targets -- -D warnings
+      - run: cargo test -p dc-pms --features opendental
+
   web:
     name: Web app
     runs-on: ubuntu-latest
