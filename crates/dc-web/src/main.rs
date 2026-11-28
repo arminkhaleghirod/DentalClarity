@@ -15,6 +15,7 @@ mod poll;
 mod present;
 mod presentations;
 mod progress;
+mod questions;
 mod session;
 mod settings;
 mod shell;

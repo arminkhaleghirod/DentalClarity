@@ -1,0 +1,425 @@
+/*
+ * "Ask a question": the floating button and drawer in Present mode
+ * (UI_SPEC 4.13), and the read-only list of patient questions in the
+ * staff editor.
+ */
+
+/* Floating button */
+
+.p-ask-button {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 30;
+  height: 52px;
+  padding: 0 20px 0 13px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--brand-primary);
+  color: var(--brand-on-primary);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.18);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  transition:
+    filter var(--dur-base) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-base) var(--ease-standard);
+}
+
+.present .p-ask-button {
+  color: var(--brand-on-primary);
+}
+
+.p-ask-button:hover {
+  filter: brightness(1.12);
+}
+
+.p-ask-button:active {
+  transform: scale(var(--press-scale));
+}
+
+.p-ask-button.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.p-ask-bubble {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: var(--brand-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+/* Drawer */
+
+.p-ask-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 34;
+  background: rgba(16, 24, 40, 0.18);
+  animation: dc-fade-in var(--dur-base) var(--ease-standard) backwards;
+}
+
+.p-ask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 35;
+  width: 340px;
+  max-width: 100%;
+  background: #ffffff;
+  border-left: 1px solid #e4e7ec;
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
+  display: flex;
+  flex-direction: column;
+  animation: p-ask-in var(--dur-slow) var(--ease-emphasized) backwards;
+}
+
+.p-ask-backdrop.is-closing {
+  animation: dc-fade-out var(--dur-base) var(--ease-exit) both;
+  pointer-events: none;
+}
+
+.p-ask.is-closing {
+  animation: p-ask-out var(--dur-base) var(--ease-exit) both;
+}
+
+@keyframes p-ask-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--motion-slide));
+  }
+}
+
+@keyframes p-ask-out {
+  to {
+    opacity: 0;
+    transform: translateX(var(--motion-slide));
+  }
+}
+
+.p-ask-handle {
+  display: none;
+}
+
+.p-ask-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px 10px 18px;
+}
+
+.p-ask-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.p-ask-close {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475467;
+}
+
+.p-ask-close:hover {
+  background: #f2f4f7;
+}
+
+.p-ask-notice {
+  margin: 0 18px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.p-ask-demo {
+  font-weight: 600;
+}
+
+.p-ask-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.p-ask-question {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 9px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--brand-primary);
+  color: #ffffff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+
+.p-ask-answer {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 14px 14px 14px 4px;
+  background: #f2f4f7;
+  color: #344054;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.p-ask-urgent {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #f8dcdc;
+  background: #fdefef;
+  color: #b42318;
+  font-weight: 600;
+}
+
+.p-ask-source {
+  font-size: 12px;
+  color: #667085;
+}
+
+.p-ask-suggest {
+  font-size: 14px;
+}
+
+.p-ask-typing {
+  align-self: flex-start;
+  padding: 12px 14px;
+  border-radius: 14px 14px 14px 4px;
+  background: #f2f4f7;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.p-ask-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #667085;
+  animation: p-ask-dot 1.2s ease-in-out infinite;
+}
+
+.p-ask-dot:nth-child(3) {
+  animation-delay: 0.15s;
+}
+
+.p-ask-dot:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+@keyframes p-ask-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+.p-ask-form {
+  padding: 8px 18px 18px;
+  border-top: 1px solid #f0f2f5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.p-ask-error {
+  min-height: 0;
+  font-size: 14px;
+  color: #b42318;
+}
+
+.p-ask-error:empty {
+  display: none;
+}
+
+.p-ask-unavailable,
+.p-ask-left {
+  font-size: 13px;
+  color: #475467;
+}
+
+.p-ask-row {
+  display: flex;
+  gap: 8px;
+}
+
+.p-ask-input {
+  flex: 1;
+  min-height: 46px;
+  max-height: 140px;
+  padding: 12px;
+  border: 1px solid #868e9c;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 15px;
+  resize: vertical;
+}
+
+.p-ask-input::placeholder {
+  color: #667085;
+}
+
+.p-ask-input:focus-visible {
+  border-color: var(--brand-primary);
+}
+
+.p-ask-input:disabled {
+  background: #f5f7fa;
+}
+
+.p-ask-send {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border: 0;
+  border-radius: 10px;
+  background: var(--brand-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.present .p-ask-send {
+  color: #ffffff;
+}
+
+.p-ask-send:disabled,
+.p-ask-send[aria-disabled="true"] {
+  opacity: 0.6;
+}
+
+/* Phones and narrow portrait: a bottom sheet at 70% height. */
+@media (max-width: 760px) {
+  .p-ask {
+    top: auto;
+    left: 0;
+    width: 100%;
+    height: 70vh;
+    border-left: 0;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .p-ask-handle {
+    display: block;
+    width: 40px;
+    height: 4px;
+    margin: 8px auto 0;
+    border-radius: 2px;
+    background: #d0d5dd;
+  }
+
+  .p-ask-button {
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p-ask,
+  .p-ask.is-closing {
+    animation-name: dc-fade-in;
+  }
+
+  .p-ask.is-closing {
+    animation-name: dc-fade-out;
+  }
+
+  .p-ask-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* Staff editor: patient questions */
+
+.qa-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qa-empty {
+  font-size: var(--text-sm);
+  color: var(--color-text-subtle);
+}
+
+.qa-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qa-turn {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+
+.qa-turn.is-urgent {
+  border-color: var(--status-review-border);
+  background: var(--status-review-bg);
+}
+
+.qa-meta,
+.qa-outcome {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.qa-question {
+  margin: 0;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.qa-answer,
+.qa-suggest,
+.qa-urgent {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.qa-urgent {
+  color: var(--status-review-fg);
+  font-weight: 600;
+}

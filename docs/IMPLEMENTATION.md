@@ -118,6 +118,13 @@ Acceptance:
 - Reading level control on every patient screen.
 - Ask a question drawer with grounding, refusals, escalation wording and the notice that the practice can read the conversation.
 
+Progress:
+- Ask a question is built (DECISIONS E23): `GET` and `POST /api/present/qa` answer from the bound version's patient-visible text, the fact sheet without money and the knowledge base, with citations checked and V1, V3 and V5 to V16 on every answer. Declined answers carry a question for the dental team; failing answers show the fixed fallback.
+- Urgent questions get the fixed escalation text before any model call, also when the budget is used up or no provider exists, and flag the presentation for staff.
+- The drawer in Present mode has the notice that the practice can read the conversation, focus trapping, Escape to close and polite announcements. Staff read the conversation on the presentation page (`GET /api/staff/presentations/{id}/questions`).
+- Conversations are stored in `qa_conversations` (migration 0011), purged with demo presentations and after 30 days. Demo limits and the budget apply.
+- Not done yet: translated answers and reading-level variants (with translation), and opening the drawer prefilled from the "Questions you might ask" cards.
+
 ## M8 Booklet, sync and analytics
 
 Acceptance:

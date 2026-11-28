@@ -3,6 +3,7 @@
 
 use dc_core::api::ApiError;
 use dc_core::present::{ExitPresentResponse, PatientView, SENTENCE_OFFSETS_HEADER};
+use dc_core::qa::{AskRequest, AskResponse, QaConversation};
 use gloo_net::http::{Request, Response};
 use leptos::wasm_bindgen::JsCast;
 use serde::Serialize;
@@ -85,6 +86,26 @@ pub async fn content() -> Result<PatientView, Failure> {
 pub async fn exit(body: &ExitBody) -> Result<ExitPresentResponse, Failure> {
     let response = Request::post("/api/present/exit")
         .json(body)
+        .map_err(network)?
+        .send()
+        .await
+        .map_err(network)?;
+    finish(response).await
+}
+
+/// This present session's questions so far, the notice and the limits.
+pub async fn questions() -> Result<QaConversation, Failure> {
+    let response = Request::get("/api/present/qa")
+        .send()
+        .await
+        .map_err(network)?;
+    finish(response).await
+}
+
+/// Asks one question about the presentation.
+pub async fn ask(question: String) -> Result<AskResponse, Failure> {
+    let response = Request::post("/api/present/qa")
+        .json(&AskRequest { question })
         .map_err(network)?
         .send()
         .await

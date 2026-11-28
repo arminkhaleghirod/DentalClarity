@@ -202,6 +202,12 @@ pub struct Limits {
     pub narration_scope: WindowLimiter,
     /// Synthesized narration characters per client address.
     pub narration_address: WindowLimiter,
+    /// Questions asked per present session.
+    pub qa_session: WindowLimiter,
+    /// Questions asked per demo visitor scope.
+    pub qa_scope: WindowLimiter,
+    /// Questions asked per client address in demo mode.
+    pub qa_address: WindowLimiter,
     /// Where each rotated demo scope went, and when. Work started under the
     /// old token, such as the narration pre-warm, resolves its scope here at
     /// charge time, so it keeps charging the visitor after an exit or unlock.
@@ -228,6 +234,9 @@ impl Default for Limits {
             edits: WindowLimiter::evicting(),
             narration_scope: WindowLimiter::evicting(),
             narration_address: WindowLimiter::default(),
+            qa_session: WindowLimiter::evicting(),
+            qa_scope: WindowLimiter::evicting(),
+            qa_address: WindowLimiter::default(),
             scope_moves: Mutex::default(),
         }
     }
@@ -235,11 +244,12 @@ impl Default for Limits {
 
 impl Limits {
     /// Carries per-scope usage over when a demo visitor's token rotates on
-    /// leaving Present mode, so leaving does not reset the edit and
-    /// narration quotas.
+    /// leaving Present mode, so leaving does not reset the edit, narration
+    /// and question quotas.
     pub fn transfer_scope(&self, from: &str, to: &str) {
         self.edits.transfer(from, to);
         self.narration_scope.transfer(from, to);
+        self.qa_scope.transfer(from, to);
         let now = Instant::now();
         let mut moves = self.scope_moves.lock().expect("scope lock");
         if moves.len() >= MAX_KEYS {

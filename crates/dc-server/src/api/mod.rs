@@ -5,6 +5,7 @@ mod auth;
 mod edits;
 mod present;
 mod presentations;
+mod qa;
 mod review;
 mod staff;
 #[cfg(test)]
@@ -46,6 +47,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
             "/presentations/{id}/sections/{section_key}/release",
             post(review::release),
         )
+        .route("/presentations/{id}/questions", get(qa::staff_questions))
         .route("/jobs/{id}", get(presentations::job))
         .route_layer(from_fn_with_state(state.clone(), security::require_session));
 
@@ -54,6 +56,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/content", get(present::content))
         .route("/audio/{key}", get(present::audio))
         .route("/narration", get(present::narration))
+        .route("/qa", get(qa::conversation).post(qa::ask))
         .route("/exit", post(present::exit))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));
 

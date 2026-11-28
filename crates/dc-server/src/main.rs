@@ -105,6 +105,11 @@ async fn main() -> Result<()> {
             if let Err(err) = sessions::purge_expired(&db).await {
                 tracing::warn!(%err, "session purge failed");
             }
+            match dc_server::qa::purge_expired(&db).await {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "deleted expired patient questions"),
+                Err(err) => tracing::warn!(%err, "patient question purge failed"),
+            }
             if demo {
                 match jobs::purge_demo_data(&db).await {
                     Ok(0) => {}
