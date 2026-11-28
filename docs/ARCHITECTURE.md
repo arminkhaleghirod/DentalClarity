@@ -84,7 +84,7 @@ pub trait PmsConnector: Send + Sync {
 ```
 
 - **synthetic**: loads `fixtures/synthetic/*.toml` into memory. It is the only connector in demo mode and is also used by tests and the eval.
-- **opendental** (cargo feature): sqlx MySQL over a read-only user. Queries live in one module with tests run against the synthetic MySQL schema. Table semantics (`treatplan`, `proctp`, `procedurelog`, `procedurecode`, `claimproc`, `patient`, `appointment`) must be verified against the target OD version before being relied on; see the M2 checklist in [IMPLEMENTATION.md](IMPLEMENTATION.md).
+- **opendental** (cargo feature): sqlx MySQL over a read-only user. Queries live in one module with tests run against the synthetic MySQL schema. Table semantics (`treatplan`, `proctp`, `procedurelog`, `procedurecode`, `claimproc`, `patient`, `appointment`) must be verified against the target OD version before being relied on; see the M2 checklist in [IMPLEMENTATION.md](IMPLEMENTATION.md). The current reading of each table, from the published schema, is in [OPENDENTAL.md](OPENDENTAL.md).
 - Recommended patients (proposed default): patients with an appointment today or in the next N days and an active treatment plan with unscheduled planned procedures, ordered by appointment time.
 
 ## 5. Server (dc-server)

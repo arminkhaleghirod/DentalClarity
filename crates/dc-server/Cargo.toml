@@ -11,6 +11,11 @@ repository.workspace = true
 name = "dentalclarity"
 path = "src/main.rs"
 
+[features]
+default = ["opendental"]
+# The read-only Open Dental connector for clinical mode.
+opendental = ["dc-pms/opendental"]
+
 [dependencies]
 anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std"] }

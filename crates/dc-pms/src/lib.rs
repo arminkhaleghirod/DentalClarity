@@ -2,8 +2,11 @@
 //!
 //! Every connector is read-only. The [`synthetic`] connector serves the
 //! fictional practice in `fixtures/synthetic` and is the only connector
-//! allowed in demo mode. The Open Dental connector is added in milestone M2.
+//! allowed in demo mode. The [`opendental`] connector (cargo feature
+//! `opendental`) reads an Open Dental MySQL database over a read-only user.
 
+#[cfg(feature = "opendental")]
+pub mod opendental;
 pub mod synthetic;
 
 use async_trait::async_trait;

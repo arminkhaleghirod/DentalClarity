@@ -14,7 +14,10 @@ use std::path::PathBuf;
 /// | `DC_CLIENT_IP_HEADER` | unset (needs `DC_TRUSTED_PROXY`)   |
 /// | `DC_HSTS`           | `false`                               |
 /// | `DC_DATA_DIR`       | `./data`                              |
+/// | `DC_PMS`            | `synthetic`                           |
 /// | `DC_FIXTURE`        | `fixtures/synthetic/practice.toml`    |
+/// | `DC_PRACTICE_NAME`  | the fixture's name, or `Your practice` |
+/// | `DC_OPENDENTAL_*`   | see [`OpenDentalConfig`]              |
 /// | `DC_KNOWLEDGE_DIR`  | `knowledge`                           |
 /// | `DC_TEXT_MODEL`     | app-managed default (demo only)       |
 /// | `DC_DEMO_MONTHLY_BUDGET_USD` | `25`                         |
@@ -27,7 +30,10 @@ pub struct Config {
     pub bind: SocketAddr,
     pub http: HttpConfig,
     pub data_dir: PathBuf,
+    pub pms: PmsConfig,
     pub fixture: PathBuf,
+    /// Shown until a practice name is saved in settings.
+    pub practice_name: Option<String>,
     pub knowledge_dir: PathBuf,
     /// Override of the demo text model id for writer and reviewer.
     pub text_model: Option<String>,
@@ -116,15 +122,151 @@ impl Config {
                 hsts,
             },
             data_dir: var("DC_DATA_DIR").unwrap_or_else(|| "data".into()).into(),
+            pms: PmsConfig::from_vars(mode, var)?,
             fixture: var("DC_FIXTURE")
                 .unwrap_or_else(|| "fixtures/synthetic/practice.toml".into())
                 .into(),
+            practice_name: var("DC_PRACTICE_NAME").map(|n| n.trim().to_owned()),
             knowledge_dir: var("DC_KNOWLEDGE_DIR")
                 .unwrap_or_else(|| "knowledge".into())
                 .into(),
             text_model: var("DC_TEXT_MODEL").map(|m| m.trim().to_owned()),
             demo_monthly_budget_usd,
         })
+    }
+}
+
+/// Which practice management system the server reads (DECISIONS D14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PmsConfig {
+    /// The fictional practice in `DC_FIXTURE`.
+    Synthetic,
+    /// An Open Dental database, clinical mode only.
+    OpenDental(OpenDentalConfig),
+}
+
+/// Connection to the Open Dental database over a read-only MySQL user.
+///
+/// | Variable                 | Default                                 |
+/// |--------------------------|-----------------------------------------|
+/// | `DC_OPENDENTAL_HOST`     | `127.0.0.1`                             |
+/// | `DC_OPENDENTAL_PORT`     | `3306`                                  |
+/// | `DC_OPENDENTAL_DATABASE` | `opendental`                            |
+/// | `DC_OPENDENTAL_USER`     | required                                |
+/// | `DC_OPENDENTAL_PASSWORD` | required                                |
+/// | `DC_OPENDENTAL_TLS`      | `preferred` on this machine, else `verify-identity` |
+/// | `DC_OPENDENTAL_TLS_CA`   | unset (the operating system's trust store) |
+#[derive(Clone, PartialEq, Eq)]
+pub struct OpenDentalConfig {
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+    pub tls: DbTls,
+    pub tls_ca: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for OpenDentalConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenDentalConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &"[redacted]")
+            .field("tls", &self.tls)
+            .field("tls_ca", &self.tls_ca)
+            .finish()
+    }
+}
+
+/// TLS for the database connection, with MySQL's names for the modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbTls {
+    Disabled,
+    Preferred,
+    Required,
+    VerifyCa,
+    VerifyIdentity,
+}
+
+impl std::str::FromStr for DbTls {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(
+            match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+                "disabled" => DbTls::Disabled,
+                "preferred" => DbTls::Preferred,
+                "required" => DbTls::Required,
+                "verify-ca" => DbTls::VerifyCa,
+                "verify-identity" => DbTls::VerifyIdentity,
+                other => bail!(
+                    "unknown TLS mode {other:?}; use disabled, preferred, required, verify-ca or verify-identity"
+                ),
+            },
+        )
+    }
+}
+
+fn is_local_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+impl PmsConfig {
+    pub fn from_vars(mode: Mode, var: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let choice = var("DC_PMS").unwrap_or_else(|| "synthetic".into());
+        match choice.trim().to_ascii_lowercase().as_str() {
+            "synthetic" => Ok(PmsConfig::Synthetic),
+            "opendental" => {
+                if mode == Mode::Demo {
+                    bail!(
+                        "demo mode reads the synthetic practice only; DC_PMS=opendental needs DC_MODE=clinical"
+                    );
+                }
+                let host = var("DC_OPENDENTAL_HOST")
+                    .unwrap_or_else(|| "127.0.0.1".into())
+                    .trim()
+                    .to_owned();
+                let local = is_local_host(&host);
+                let tls = match var("DC_OPENDENTAL_TLS") {
+                    Some(v) => v.parse().context("DC_OPENDENTAL_TLS")?,
+                    None if local => DbTls::Preferred,
+                    None => DbTls::VerifyIdentity,
+                };
+                if !local && matches!(tls, DbTls::Disabled | DbTls::Preferred) {
+                    bail!(
+                        "the Open Dental database at {host} is on another machine, so DC_OPENDENTAL_TLS must be required, verify-ca or verify-identity"
+                    );
+                }
+                Ok(PmsConfig::OpenDental(OpenDentalConfig {
+                    port: var("DC_OPENDENTAL_PORT")
+                        .map(|p| p.trim().parse())
+                        .transpose()
+                        .context("DC_OPENDENTAL_PORT")?
+                        .unwrap_or(3306),
+                    host,
+                    database: var("DC_OPENDENTAL_DATABASE")
+                        .unwrap_or_else(|| "opendental".into())
+                        .trim()
+                        .to_owned(),
+                    user: var("DC_OPENDENTAL_USER")
+                        .context("DC_OPENDENTAL_USER is required with DC_PMS=opendental")?
+                        .trim()
+                        .to_owned(),
+                    password: var("DC_OPENDENTAL_PASSWORD")
+                        .context("DC_OPENDENTAL_PASSWORD is required with DC_PMS=opendental")?,
+                    tls,
+                    tls_ca: var("DC_OPENDENTAL_TLS_CA").map(PathBuf::from),
+                }))
+            }
+            other => bail!("DC_PMS must be synthetic or opendental, got {other:?}"),
+        }
     }
 }
 
@@ -208,5 +350,68 @@ mod tests {
         assert!(!r.contains("8.8.8.8".parse().unwrap()));
         assert!("10.0.0.1/40".parse::<ProxyRanges>().is_err());
         assert!("".parse::<ProxyRanges>().is_err());
+    }
+
+    fn pms(mode: Mode, vars: &[(&str, &str)]) -> Result<PmsConfig> {
+        let vars: std::collections::HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        PmsConfig::from_vars(mode, |name| vars.get(name).cloned())
+    }
+
+    const CREDENTIALS: [(&str, &str); 3] = [
+        ("DC_PMS", "opendental"),
+        ("DC_OPENDENTAL_USER", "dentalclarity_ro"),
+        ("DC_OPENDENTAL_PASSWORD", "example-password"),
+    ];
+
+    #[test]
+    fn synthetic_is_the_default_connector() {
+        assert_eq!(pms(Mode::Demo, &[]).unwrap(), PmsConfig::Synthetic);
+        assert_eq!(pms(Mode::Clinical, &[]).unwrap(), PmsConfig::Synthetic);
+        assert!(pms(Mode::Clinical, &[("DC_PMS", "dentrix")]).is_err());
+    }
+
+    #[test]
+    fn demo_mode_refuses_open_dental() {
+        let err = pms(Mode::Demo, &CREDENTIALS).unwrap_err();
+        assert!(err.to_string().contains("demo mode"), "{err}");
+    }
+
+    #[test]
+    fn open_dental_needs_credentials() {
+        assert!(pms(Mode::Clinical, &CREDENTIALS[..2]).is_err());
+        assert!(pms(Mode::Clinical, &[CREDENTIALS[0], CREDENTIALS[2]]).is_err());
+        let PmsConfig::OpenDental(od) = pms(Mode::Clinical, &CREDENTIALS).unwrap() else {
+            panic!("expected Open Dental");
+        };
+        assert_eq!(
+            (od.host.as_str(), od.port, od.database.as_str()),
+            ("127.0.0.1", 3306, "opendental")
+        );
+        assert_eq!(od.tls, DbTls::Preferred);
+        assert!(!format!("{od:?}").contains("example-password"));
+    }
+
+    #[test]
+    fn remote_databases_need_tls() {
+        let remote = |tls: Option<&str>| {
+            let mut vars = CREDENTIALS.to_vec();
+            vars.push(("DC_OPENDENTAL_HOST", "od-server.practice.lan"));
+            if let Some(tls) = tls {
+                vars.push(("DC_OPENDENTAL_TLS", tls));
+            }
+            pms(Mode::Clinical, &vars)
+        };
+        let Ok(PmsConfig::OpenDental(od)) = remote(None) else {
+            panic!("expected Open Dental");
+        };
+        assert_eq!(od.tls, DbTls::VerifyIdentity);
+        assert!(remote(Some("required")).is_ok());
+        assert!(remote(Some("verify_ca")).is_ok());
+        assert!(remote(Some("preferred")).is_err());
+        assert!(remote(Some("disabled")).is_err());
+        assert!(remote(Some("sometimes")).is_err());
     }
 }

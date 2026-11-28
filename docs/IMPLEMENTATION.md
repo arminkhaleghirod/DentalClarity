@@ -55,6 +55,15 @@ Checklist to verify before relying on any query:
 - Procedure notes and how a note links to a planned procedure.
 - Appointment tables for the recommended-patient list.
 
+Progress:
+- Done: the `opendental` feature on `dc-pms` (sqlx MySQL with rustls). The connector refuses a user with any privilege besides `SELECT`, and every connection runs `SET SESSION TRANSACTION READ ONLY` (DECISIONS D14). All SQL is in `crates/dc-pms/src/opendental/queries.rs`.
+- Done: every checklist item answered from the published Open Dental 24.1 schema, with sources, in [OPENDENTAL.md](OPENDENTAL.md), and the reading rules in DECISIONS D13. The written-down target range is 24.1 and later 24.x on MySQL 5.7 or 8.0 or MariaDB 10.x; it is untested.
+- Done: the synthetic Open Dental database in `fixtures/opendental` (schema subset, seed mirroring the TOML fixture plus rows that must be left out, and the read-only user with column-level grants). The connector contract tests in `crates/dc-pms/tests/contract.rs` run against the TOML connector always and against the synthetic database when `DC_TEST_MYSQL_URL` is set; a CI job loads the seed into MySQL 8.0 and MariaDB 10.11 and runs them.
+- Done: server selection with `DC_PMS=opendental` in clinical mode only, credentials from `DC_OPENDENTAL_*`, and TLS required for a database on another host.
+- Open: a first green run of the MySQL and MariaDB CI job. The MySQL contract tests have not run yet; they were written without a local database.
+- Open: verify every checklist answer against a real Open Dental install with the demo database, then confirm the version range. Until then the D13 rules stay Proposed.
+- Open: saved plans (`proctp`), the patient's preferred name, the statement timeout and polling load limits, and moving the password into the encrypted `secrets` table.
+
 ## M3 Knowledge base and staff screens
 
 Acceptance:

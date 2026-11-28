@@ -187,7 +187,7 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 | 3. Self-signed with a browser warning | none | discouraged; trains staff to click through warnings. Allowed only for evaluation |
 
 - The certificate needs a SAN for the stable hostname or IP the tablets use. Renewal reminder 30 days before expiry. [P]
-- The Open Dental MySQL connection is local when DentalClarity runs on the OD server. If it runs on a separate host, MySQL TLS is required; whether the target OD MySQL/MariaDB setup supports it is TBD (verify in M2).
+- The Open Dental MySQL connection is local when DentalClarity runs on the OD server. If it runs on a separate host, MySQL TLS is required: the server refuses `DC_OPENDENTAL_TLS` below `required` for another host, and checks certificates against the operating system's trust store or `DC_OPENDENTAL_TLS_CA` [D14]. Whether the target OD MySQL/MariaDB setup serves TLS is still TBD (verify in M2 on a live install).
 - Demo mode: TLS terminates at the hosting platform (D6 is still open).
 
 ## Secrets at rest
@@ -207,24 +207,31 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 
 ## Open Dental least-privilege user
 
-[C, D7] DentalClarity only reads. The example below is a starting point. Verify the table list against the target OD version (M2), and add column-level grants on `patient` to leave out fields not needed (for example SSN and address) once the column names are confirmed.
+[C, D7] DentalClarity only reads. These are the grants the connector needs for the tables and columns it reads in the Open Dental 24.1 schema ([OPENDENTAL.md](OPENDENTAL.md)). They are checked against the synthetic database in CI and are not yet verified against a live install (M2). Column-level grants leave out identifiers the app does not need, such as `patient.SSN`, addresses and `procnote.Signature`. `fixtures/opendental/readonly_user.sql` is the same script for the test database.
 
 ```sql
--- Example only. Verify table list against OD version (M2).
 CREATE USER 'dentalclarity_ro'@'<dentalclarity-host>' IDENTIFIED BY '<generated, 24+ chars>';
-GRANT SELECT ON opendental.patient       TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.treatplan     TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.proctp        TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.procedurelog  TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.procedurecode TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.claimproc     TO 'dentalclarity_ro'@'<dentalclarity-host>';
-GRANT SELECT ON opendental.appointment   TO 'dentalclarity_ro'@'<dentalclarity-host>';
--- Tables for linked procedure notes, provider display names and phase/priority
--- definitions: TBD (verify in M2).
+GRANT SELECT (PatNum, LName, FName, PatStatus, Birthdate, Language)
+  ON opendental.patient TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT (ProvNum, LName, PreferredName, IsSecondary, IsNotPerson)
+  ON opendental.provider TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT (ProcNoteNum, ProcNum, EntryDateTime, Note)
+  ON opendental.procnote TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT (AptNum, PatNum, AptStatus, AptDateTime)
+  ON opendental.appointment TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT (DefNum, Category, ItemOrder, ItemName)
+  ON opendental.definition TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT ON opendental.treatplan       TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT ON opendental.treatplanattach TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT ON opendental.procedurelog    TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT ON opendental.procedurecode   TO 'dentalclarity_ro'@'<dentalclarity-host>';
+GRANT SELECT ON opendental.claimproc       TO 'dentalclarity_ro'@'<dentalclarity-host>';
 ```
 
 - Host-restricted (`'@<host>'`, never `'%'`). No `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `FILE`, `PROCESS` or `SUPER`.
-- The connector also opens its connection with `SET SESSION TRANSACTION READ ONLY` as a second guard.
+- The connector refuses to start when `SHOW GRANTS` lists anything besides `SELECT` and `USAGE`, a grant option or a role grant [D14].
+- Every connection runs `SET SESSION TRANSACTION READ ONLY` as a second guard.
+- `proctp` is not granted: saved plans are not read yet [D13].
 - Query load limits (polling interval, statement timeout) are set in M2 after measuring on a real OD install.
 
 ## Data minimization and retention
