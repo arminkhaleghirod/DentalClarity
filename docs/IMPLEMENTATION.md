@@ -118,6 +118,11 @@ Acceptance:
 - Reading level control on every patient screen.
 - Ask a question drawer with grounding, refusals, escalation wording and the notice that the practice can read the conversation.
 
+Progress:
+- Done (server): language and reading level variants derived from the approved English text, one translator call per section with one repair round, the translation reviewer, and the checks V18 to V20 (DECISIONS E23). Cached in `section_variants` per version, section, language, level and source hash (migration 0010). `POST /api/present/variant` starts a variant and `GET /api/present/content?language=&level=` reads it; both take the presentation and version from the present session. Narration keys follow the derived text. Demo limits of 10 new variants per visitor per hour and 30 per network per day (`variant_events`); spend counts in the monthly budget; no provider means `503 provider_not_configured`.
+- Done (web): a language select and an "Aa" reading level control in the patient header on every screen, plus the inline control on procedure detail. Switching keeps the screen, shows placeholder lines on sections being prepared, and labels sections that stay in English. Untested languages say "Not reviewed".
+- Not done: the Ask a question drawer, translated screen labels, section titles and cost sentences, and a native-speaker review of any language.
+
 ## M8 Booklet, sync and analytics
 
 Acceptance:
