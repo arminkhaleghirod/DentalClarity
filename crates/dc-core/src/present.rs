@@ -75,6 +75,10 @@ pub struct PracticeBrand {
     pub primary: String,
     /// `#RRGGBB`, used for "your teeth" highlights.
     pub highlight: String,
+    /// `GET /api/present/logo` with a version, when the practice uploaded a
+    /// logo. Without one the header shows the name's initial.
+    #[serde(default)]
+    pub logo_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

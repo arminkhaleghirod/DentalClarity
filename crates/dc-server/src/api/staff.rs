@@ -254,7 +254,7 @@ fn patient_not_found() -> Failure {
 
 /// Demo visitors cannot read or change settings (docs/SECURITY.md). The demo
 /// web app shows the defaults instead.
-fn reject_demo(state: &AppState) -> Result<(), Failure> {
+pub(super) fn reject_demo(state: &AppState) -> Result<(), Failure> {
     if state.mode == Mode::Demo {
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
@@ -274,6 +274,9 @@ pub(super) async fn load_settings(state: &AppState) -> Result<PracticeSettings, 
         brand_highlight: settings::get(&state.db, settings::BRAND_HIGHLIGHT)
             .await?
             .unwrap_or_else(|| DEFAULT_BRAND_HIGHLIGHT.into()),
+        logo_url: crate::logo::version(&state.db)
+            .await?
+            .map(|v| super::logo::staff_url(&v)),
     })
 }
 
@@ -299,11 +302,14 @@ pub async fn put_settings(
     settings::set(&mut *tx, settings::BRAND_HIGHLIGHT, &valid.brand_highlight).await?;
     tx.commit().await?;
     audit::record(&state.db, "staff", "settings_changed", "").await?;
-    Ok(Json(valid))
+    Ok(Json(PracticeSettings {
+        logo_url: load_settings(&state).await?.logo_url,
+        ..valid
+    }))
 }
 
 /// Trims the name, upper-cases the colors, and checks every rule.
-fn validate_settings(request: &PracticeSettings) -> Result<PracticeSettings, String> {
+pub(super) fn validate_settings(request: &PracticeSettings) -> Result<PracticeSettings, String> {
     let practice_name = request.practice_name.trim();
     if practice_name.is_empty() || practice_name.chars().count() > 100 {
         return Err("Enter the practice name (up to 100 characters).".into());
@@ -326,6 +332,7 @@ fn validate_settings(request: &PracticeSettings) -> Result<PracticeSettings, Str
         practice_name: practice_name.to_owned(),
         brand_primary: primary.to_ascii_uppercase(),
         brand_highlight: highlight.to_ascii_uppercase(),
+        logo_url: None,
     })
 }
 

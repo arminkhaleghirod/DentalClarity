@@ -421,6 +421,7 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
         name,
         primary,
         highlight,
+        logo_url,
     } = brand;
     Effect::new(move |_| {
         if let Some(el) = root.get() {
@@ -496,7 +497,11 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
                 <a class="p-skip" href="#p-main">"Skip to content"</a>
                 <header class="p-header">
                     <div class="p-brand">
-                        <div class="p-logo" aria-hidden="true">{logo}</div>
+                        // The practice name follows, so the image is decorative.
+                        {match logo_url.filter(|u| u.starts_with("/api/present/logo")) {
+                            Some(src) => view! { <img class="p-logo p-logo-image" src=src alt="" /> }.into_any(),
+                            None => view! { <div class="p-logo" aria-hidden="true">{logo}</div> }.into_any(),
+                        }}
                         <div class="p-brand-text">
                             <div class="p-brand-name">{name}</div>
                             {demo.then(|| view! { <div class="p-demo-note">"Demo with made-up patients"</div> })}

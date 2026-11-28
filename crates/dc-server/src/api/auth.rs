@@ -14,7 +14,10 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use dc_core::Mode;
-use dc_core::api::{LoginRequest, SessionInfo, SessionState, SetupRequest, UnlockSessionRequest};
+use dc_core::api::{
+    DEFAULT_BRAND_HIGHLIGHT, DEFAULT_BRAND_PRIMARY, LoginRequest, PracticeSettings, SessionInfo,
+    SessionState, SetupRequest, UnlockSessionRequest,
+};
 use std::net::IpAddr;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
@@ -209,6 +212,40 @@ async fn check_staff_password(
     Ok(())
 }
 
+/// Checks the one-time setup code for `POST /api/setup` and
+/// `POST /api/setup/check`. Refused in demo mode and once an account
+/// exists. Every try passes the sign-in limit first, and a wrong code adds
+/// to the same per-address backoff as a wrong password.
+pub(super) async fn verify_setup_code(
+    state: &AppState,
+    ip: IpAddr,
+    sent: &str,
+) -> Result<(), Failure> {
+    if state.mode == Mode::Demo {
+        return Err(not_in_this_mode());
+    }
+    if staff_account_exists(state).await? {
+        return Err(Failure::new(
+            StatusCode::FORBIDDEN,
+            "already_set_up",
+            "DentalClarity is already set up.",
+        ));
+    }
+    check_attempt(state, ip)?;
+    let expected = state.setup_code.lock().expect("setup code lock").clone();
+    let code_ok =
+        expected.is_some_and(|code| bool::from(code.as_bytes().ct_eq(sent.trim().as_bytes())));
+    if !code_ok {
+        record_failure(state, ip, "setup_code_rejected").await?;
+        return Err(Failure::new(
+            StatusCode::FORBIDDEN,
+            "bad_setup_code",
+            "That setup code is not correct. It is printed in the server console when DentalClarity starts.",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/setup`: creates the shared staff account on first launch.
 /// Requires the one-time setup code printed in the server console, so a
 /// device on the network cannot claim a fresh install.
@@ -217,34 +254,23 @@ pub async fn setup(
     ClientIp(ip): ClientIp,
     JsonBody(request): JsonBody<SetupRequest>,
 ) -> Result<Response, Failure> {
-    if state.mode == Mode::Demo {
-        return Err(not_in_this_mode());
-    }
-    if staff_account_exists(&state).await? {
-        return Err(Failure::new(
-            StatusCode::FORBIDDEN,
-            "already_set_up",
-            "DentalClarity is already set up.",
-        ));
-    }
-    check_attempt(&state, ip)?;
-    let expected = state.setup_code.lock().expect("setup code lock").clone();
-    let code_ok = expected.is_some_and(|code| {
-        bool::from(code.as_bytes().ct_eq(request.setup_code.trim().as_bytes()))
-    });
-    if !code_ok {
-        record_failure(&state, ip, "setup_code_rejected").await?;
-        return Err(Failure::new(
-            StatusCode::FORBIDDEN,
-            "bad_setup_code",
-            "That setup code is not correct. It is printed in the server console when DentalClarity starts.",
-        ));
-    }
+    verify_setup_code(&state, ip, &request.setup_code).await?;
 
-    let practice = request.practice_name.trim();
-    if practice.is_empty() || practice.chars().count() > 100 {
-        return Err(invalid("Enter the practice name (up to 100 characters)."));
-    }
+    // Colors left out keep the defaults; both go through the Settings checks.
+    let branding = super::staff::validate_settings(&PracticeSettings {
+        practice_name: request.practice_name.clone(),
+        brand_primary: request
+            .brand_primary
+            .clone()
+            .unwrap_or_else(|| DEFAULT_BRAND_PRIMARY.into()),
+        brand_highlight: request
+            .brand_highlight
+            .clone()
+            .unwrap_or_else(|| DEFAULT_BRAND_HIGHLIGHT.into()),
+        logo_url: None,
+    })
+    .map_err(|message| Failure::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid", message))?;
+    let practice = branding.practice_name.as_str();
     check_password(&request.password, practice).map_err(invalid)?;
     check_pin(&request.pin).map_err(invalid)?;
 
@@ -273,10 +299,24 @@ pub async fn setup(
         ));
     }
     settings::set(&mut *tx, settings::PRACTICE_NAME, practice).await?;
+    if request.brand_primary.is_some() || request.brand_highlight.is_some() {
+        settings::set(&mut *tx, settings::BRAND_PRIMARY, &branding.brand_primary).await?;
+        settings::set(
+            &mut *tx,
+            settings::BRAND_HIGHLIGHT,
+            &branding.brand_highlight,
+        )
+        .await?;
+    }
     tx.commit().await?;
     *state.setup_code.lock().expect("setup code lock") = None;
     state.limits.login_backoff.record_success(ip);
-    audit::record(&state.db, &ip.to_string(), "setup_completed", "").await?;
+    let detail = if request.acknowledged {
+        "notices acknowledged"
+    } else {
+        ""
+    };
+    audit::record(&state.db, &ip.to_string(), "setup_completed", detail).await?;
 
     signed_in(&state, practice.to_owned()).await
 }

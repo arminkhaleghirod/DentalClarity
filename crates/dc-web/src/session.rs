@@ -1,10 +1,11 @@
-//! The session gate: setup, sign-in and lock screens shown before the workspace.
+//! The session gate: sign-in and lock screens shown before the workspace.
+//! The first-launch wizard lives in `setup.rs`.
 
 use crate::api;
 use crate::icons::Logo;
 use crate::motion::restore_focus;
 use dc_core::Mode;
-use dc_core::api::{SessionInfo, SessionState, SetupRequest};
+use dc_core::api::{SessionInfo, SessionState};
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::leptos_dom::helpers::set_interval_with_handle;
 use leptos::prelude::*;
@@ -150,78 +151,6 @@ pub fn SignIn(practice_name: String) -> impl IntoView {
                     {move || if busy.get() { "Signing in…" } else { "Sign in" }}
                 </button>
             </form>
-        </AuthCard>
-    }
-}
-
-#[component]
-pub fn Setup() -> impl IntoView {
-    let code = RwSignal::new(String::new());
-    let practice = RwSignal::new(String::new());
-    let password = RwSignal::new(String::new());
-    let confirm = RwSignal::new(String::new());
-    let pin = RwSignal::new(String::new());
-    let busy = RwSignal::new(false);
-    let error = RwSignal::new(None::<String>);
-
-    let on_submit = move |ev: SubmitEvent| {
-        ev.prevent_default();
-        if password.get_untracked() != confirm.get_untracked() {
-            error.set(Some("The two passwords don't match.".into()));
-            return;
-        }
-        let request = SetupRequest {
-            setup_code: code.get_untracked(),
-            practice_name: practice.get_untracked(),
-            password: password.get_untracked(),
-            pin: pin.get_untracked(),
-        };
-        submit(
-            busy,
-            error,
-            move || async move { api::setup(&request).await },
-        );
-    };
-
-    view! {
-        <AuthCard title="Set up DentalClarity"
-            subtitle="Create the shared staff account for this practice. You can change branding and connections later in Settings.".to_owned()>
-            <form class="form" on:submit=on_submit>
-                <label class="field">
-                    <span>"Setup code"</span>
-                    <input type="text" autocomplete="off" autocapitalize="characters" required
-                        spellcheck="false" bind:value=code />
-                    <small>"Printed in the server console when DentalClarity first starts."</small>
-                </label>
-                <label class="field">
-                    <span>"Practice name"</span>
-                    <input type="text" autocomplete="organization" required maxlength="100"
-                        bind:value=practice />
-                </label>
-                <label class="field">
-                    <span>"Staff password"</span>
-                    <input type="password" autocomplete="new-password" required minlength="12"
-                        bind:value=password />
-                    <small>"At least 12 characters. A short phrase works well."</small>
-                </label>
-                <label class="field">
-                    <span>"Confirm password"</span>
-                    <input type="password" autocomplete="new-password" required bind:value=confirm />
-                </label>
-                <label class="field">
-                    <span>"Staff PIN"</span>
-                    <input type="password" inputmode="numeric" autocomplete="off" required
-                        pattern="[0-9]{6,8}" minlength="6" maxlength="8" bind:value=pin />
-                    <small>"6 to 8 digits. Used to leave Present mode after handing a patient the tablet."</small>
-                </label>
-                <FormError error />
-                <button class="button primary" type="submit" disabled=move || busy.get()>
-                    {move || if busy.get() { "Setting up…" } else { "Create account" }}
-                </button>
-            </form>
-            <p class="auth-note">
-                "One shared account is a prototype limit. Real clinical use needs individual staff accounts; see the README."
-            </p>
         </AuthCard>
     }
 }

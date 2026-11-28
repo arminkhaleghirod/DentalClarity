@@ -2562,3 +2562,11 @@
     display: none;
   }
 }
+
+/* An uploaded logo sits on white so any logo colors read on any brand color. */
+.p-logo.p-logo-image {
+  padding: 3px;
+  background: #ffffff;
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  object-fit: contain;
+}

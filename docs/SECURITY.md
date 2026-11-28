@@ -119,11 +119,11 @@ A global login limit was dropped because a few devices could use it to block eve
 - Limiter maps are capped at 10,000 keys. When a map is full, expired entries are pruned first. Maps keyed by client address then refuse new keys until entries expire. Maps keyed by a session or visitor scope, whose creation is already limited per address, drop their oldest entry instead, so new sessions keep working.
 - A demo visitor's edit and narration counts move to the new token when leaving Present mode or unlocking rotates the session. The move is remembered for an hour, and a narration charge resolves its scope at the time it is made, so the pre-warm task started under the old token keeps charging the visitor's new token.
 - Client address: forwarding headers are read only when the direct peer is inside `DC_TRUSTED_PROXY` (one address or a comma-separated list of CIDR ranges). The header named by `DC_CLIENT_IP_HEADER` (for example `fly-client-ip`) is used when set and present; otherwise only the rightmost `X-Forwarded-For` entry, which is the one the proxy appended. `DC_CLIENT_IP_HEADER` without `DC_TRUSTED_PROXY` is refused at startup. An unknown peer is treated as `0.0.0.0`, never as local.
-- Request bodies over 64 KiB are rejected. Malformed JSON gets an `ApiError` JSON body with code `bad_request`, without parser details.
+- Request bodies over 64 KiB are rejected, except on the logo upload route, whose limit is 1 MiB plus one byte so a slightly larger file gets `413 logo_too_large` with a readable message. Malformed JSON gets an `ApiError` JSON body with code `bad_request`, without parser details.
 
 ### Audit events written
 
-`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M3: `settings_changed`. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. Also `session_unlocked` (with how), `session_unlock_failed`, `section_regeneration_started` and `section_released`. `present_started`, `present_exited`, `session_unlocked` and `section_released` are written in the same transaction as the change they record. For an exit or unlock this means nothing that can fail runs after the token rotation commits, so the browser always receives the new session cookie for a rotation that happened. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
+`setup_completed`, `setup_code_rejected`, `login`, `login_failed`, `logout` and `login_failure_surge`. From M3: `settings_changed` (detail `logo uploaded` or `logo removed` for the logo), and `setup_completed` carries `notices acknowledged` when the wizard's three acknowledgments were ticked. A wrong code at `POST /api/setup/check` is audited as `setup_code_rejected`, as at setup. From M5: `present_started`, `present_exited` (with how it unlocked), `present_exit_pin_failed`, `present_pin_disabled`, `present_exit_password_failed`, `block_edited`, `block_reverted` and `note_confirmed`. Also `session_unlocked` (with how), `session_unlock_failed`, `section_regeneration_started` and `section_released`. `present_started`, `present_exited`, `session_unlocked` and `section_released` are written in the same transaction as the change they record. For an exit or unlock this means nothing that can fail runs after the token rotation commits, so the browser always receives the new session cookie for a rotation that happened. The actor is the client address, `staff`, `visitor` or `server`. Details name only DentalClarity ids, section keys and block fields. Events hold no patient data and no edited text.
 
 ## Present-mode isolation
 
@@ -149,6 +149,7 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `GET /` static bundle, fonts, illustrations | A | A | A | A | A |
 | `GET /api/health` (status, version and mode only) | A | A | A | A | A |
 | `POST /api/setup` | needs the one-time setup code; 403 after setup | 403 | 403 | 403 | disabled (404) |
+| `POST /api/setup/check` (setup wizard connection check, stores nothing) | needs the one-time setup code, same limit and backoff as setup; 403 after setup | 403 | 403 | 403 | disabled (404) |
 | `GET /api/session` (read-only) | A | A | A | A | A |
 | `POST /api/session/unlock` | 401 | 409 `not_locked` | A only when its present session ended; password in clinical | 401 | A when locked and its present session ended; no password |
 | `POST /api/visit` | 404 in clinical | 404 | 404 | 404 | A (demo only, Origin-checked, rate-limited) |
@@ -161,13 +162,15 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
 | `/api/staff/analytics` (planned for M8) | 401 | A | 423 | 401 | aggregate only |
 | `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 `demo_read_only` |
+| `/api/staff/settings/logo` (`GET`, `PUT` upload, `DELETE`) | 401 | A; writes need the CSRF token | 423 | 401 | 403 `demo_read_only` |
 | `/api/staff/secrets` (write-only, planned for M9) | 401 | A, write only, never returns values | 423 | 401 | 403 |
 | `/api/present/content`, `audio/:key`, `narration?keys=`, `variant` (planned for M7) | 401 | 401 | 401 | A, bound version only | A, bound version only |
+| `GET /api/present/logo` | 401 | 401 | 401 | A | A (the demo has no logo, 404) |
 | `/api/present/qa` (planned for M7) | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
 | `/api/present/analytics` (engagement events, planned for M8) | 401 | 401 | 401 | A, write only | A, write only |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
 
-First-launch setup works as follows. When no staff account exists, the server prints a one-time setup code to its console at startup and notes in the log that a code was issued. The code is 12 characters from an unambiguous alphabet (about 60 bits). Wrong codes count toward the same per-address backoff as logins and are audited as `setup_code_rejected`. The earlier restriction to localhost was removed, because a local TLS proxy would make every client look local; the code is the gate.
+First-launch setup works as follows. When no staff account exists, the server prints a one-time setup code to its console at startup and notes in the log that a code was issued. The code is 12 characters from an unambiguous alphabet (about 60 bits). Wrong codes count toward the same per-address backoff as logins and are audited as `setup_code_rejected`. The setup wizard's connection check (`POST /api/setup/check`) checks the code under the same rules and stores nothing, so it is no easier to guess the code there than at `POST /api/setup`. It reports only whether the practice records connector answered and whether a text provider is configured, never patient data or connection details. The earlier restriction to localhost was removed, because a local TLS proxy would make every client look local; the code is the gate.
 
 Secrets are write-only through the API. The settings page shows "set" and the time it was last changed, never the value.
 
@@ -264,7 +267,20 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 - Validator V15 rejects HTML, Markdown and URLs in model output. Reference links come only from KB entries, which allow `https` URLs only.
 - PDF: text goes to Typst through the JSON data model and is placed as content strings, never evaluated as Typst markup. Test fixtures include Typst control characters (`#`, `$`, `[`, `]`).
 - Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-<hash of each inline script in the embedded index.html>'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. Trunk loads the WASM through one inline module script, so the server computes its hash at startup from the embedded `index.html` and no `'unsafe-inline'` is needed. `media-src` allows `blob:` because the patient screens fetch a block's narration (to read its sentence offsets) and play the bytes from an object URL; a page can only make object URLs for data it already holds.
+- A response that sets its own `Content-Security-Policy` keeps it. Only the practice logo does this (see [File uploads](#file-uploads)).
 - Also sent: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`, `Cross-Origin-Opener-Policy: same-origin`, and `Cache-Control: no-store` on `/api`.
+
+## File uploads
+
+[P, DECISIONS E24]
+
+The practice logo is the only file the server accepts. `PUT /api/staff/settings/logo` takes the file as the request body, needs a clinical staff session and the CSRF token, and is refused in the demo.
+
+- Size: at most 1 MB. PNG and JPEG are also limited to 4096 px per side, read from the file header.
+- Type: decided from the bytes. A PNG needs its signature and an `IHDR` chunk first; a JPEG needs its start marker and a frame header before the first scan. Anything else is treated as SVG and has to pass the SVG checks. The browser's file name and `Content-Type` are ignored, and the stored type is the detected one.
+- SVG: the file is never rewritten, only accepted or refused whole. It must be UTF-8 XML with an `svg` root in the SVG namespace; a DTD is refused, which also rules out entity expansion. Every element must be one of `svg`, `g`, `defs`, `title`, `desc`, `metadata`, `symbol`, `use`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `text`, `tspan`, `linearGradient`, `radialGradient`, `stop`, `pattern`, `clipPath` or `mask`, so `script`, `style`, `foreignObject`, `image`, `a`, animation and elements in other namespaces are refused. No attribute may start with `on`. `href` and `xlink:*` values must start with `#`. No attribute value may contain `javascript:`, `data:`, `@import`, `expression(` or a `url(` that does not point at `#`. Processing instructions are refused anywhere. The contents of `metadata`, which is never drawn, are not inspected apart from processing instructions.
+- Storage: one row in the SQLite `practice_logo` table (migration 0013), with a SHA-256 that versions the logo URLs.
+- Serving: only to a staff session (`GET /api/staff/settings/logo`) or a present session (`GET /api/present/logo`), with the stored type, `X-Content-Type-Options: nosniff`, `Content-Disposition: inline` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, so a logo opened directly cannot run script or load anything. The web app draws it only with `<img>`, where SVG script never runs.
 
 ## Demo abuse controls
 
@@ -283,7 +299,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted per synthesized sentence on cache misses only (at least 50 characters each), never for merging a block or replaying a cached clip; `429 narration_quota`. One network may make 30 of the server's 120 upstream speech calls per minute (`429 narration_busy`). The block route `/api/present/narration` serves only keys that form one aligned part of one block of the present session's bound version: the block cut into parts of 12 sentences from its start, the last part shorter. That is how pre-warming and the patient screens ask, and it keeps each block to a few cached merged clips. Keys from two blocks, a run that starts or ends inside a part, or keys outside that version answer `404 audio_not_found`. A speech call that times out or returns an unusable reply counts against the budget at its full price and is retried once (as D12 does for text). Pre-warming on entering Present mode covers generated blocks only; staff-edited text is narrated only when played |
 | Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue (a visible queue position is not built yet) |
 | Budget | $25 per month, reservation-based guard, 80% soft stop on new generations (see [AI_PIPELINE.md](AI_PIPELINE.md)). Narration may spend at most 20% of the cap, tracked in `ai_usage.speech_cost_usd`; past it narration answers `503 budget_reached` while generation keeps working |
-| Uploads | none; no endpoint accepts files |
+| Uploads | none; the only endpoint that accepts a file is the clinical logo upload, which answers `403 demo_read_only` in the demo |
 | PMS | synthetic connector only; no DB credentials exist in the container |
 | PII warning | shown next to every free-text input (Q&A, edits): "This is a public demo with made-up patients. Don't enter real personal or health information." |
 | Secrets | OpenRouter key in env only; never sent to the browser; settings page disabled |

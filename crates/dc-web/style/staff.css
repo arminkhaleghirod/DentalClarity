@@ -2414,3 +2414,231 @@ a.button {
     flex-wrap: wrap;
   }
 }
+
+/* Practice chip under the wordmark: the practice's logo or initial and
+   its name. Staff screens stay DentalClarity-branded (DECISIONS P5); this
+   only names the practice the workspace belongs to. */
+.practice-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -14px 0 14px;
+  padding: 0 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.practice-mark {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.practice-mark.has-image,
+.preview-logo.has-image {
+  padding: 2px;
+  background: #ffffff;
+  object-fit: contain;
+}
+
+/* Logo field in Settings */
+.logo-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo-frame {
+  width: 96px;
+  height: 64px;
+  flex: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.logo-current {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.logo-empty {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--color-text-subtle);
+}
+
+.logo-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.logo-chosen {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--text-sm);
+}
+
+/* First-launch setup wizard (UI_SPEC 5.8): stepper on the left, one step
+   at a time on the right, Back and Continue in the footer. */
+.wizard {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  background: var(--color-surface);
+}
+
+.wizard[hidden] {
+  display: none;
+}
+
+.wizard-steps {
+  padding: 28px 20px;
+  background: var(--color-surface-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.wizard-steps .wordmark {
+  padding: 0;
+}
+
+.wizard-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  letter-spacing: -0.01em;
+}
+
+.wizard-main {
+  padding: 40px 32px;
+  display: flex;
+  justify-content: center;
+}
+
+.wizard-form {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.wizard-step {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  outline: none;
+}
+
+.wizard-step .auth-text {
+  margin: 0;
+}
+
+.wizard-footer {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.wizard-inline-actions {
+  justify-content: flex-start;
+}
+
+.check-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.check-row {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
+}
+
+.check-row.ok {
+  background: var(--status-ready-bg);
+  color: var(--status-ready-fg);
+}
+
+.check-row.warn {
+  background: var(--status-changed-bg);
+  color: var(--status-changed-fg);
+}
+
+.check-title {
+  font-weight: 600;
+}
+
+.ack-list {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ack-list legend {
+  margin-bottom: 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.ack input {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  flex: none;
+}
+
+@media (max-width: 1179px) {
+  .practice-chip {
+    margin: -10px 0 12px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .wizard {
+    grid-template-columns: 1fr;
+  }
+
+  .wizard-main {
+    padding: 24px 16px;
+  }
+}

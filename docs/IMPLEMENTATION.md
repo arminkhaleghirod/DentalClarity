@@ -64,8 +64,10 @@ Acceptance:
 
 Progress:
 - Done: patient directory (`GET /api/staff/patients`), patient page with the read-only plan table and totals (`GET /api/staff/patients/{key}`), and practice name and brand colors in Settings (`GET` and `PUT /api/staff/settings`, with a 4.5:1 contrast check on the brand color; both answer `403 demo_read_only` in the demo).
-- Done: 22 knowledge entries in `knowledge/entries/`, all `unreviewed`.
-- Open: more entries toward the 25 to 40 target, logo upload, and the multi-step setup wizard.
+- Done: 30 knowledge entries in `knowledge/entries/`, all `unreviewed`. The eight added in this milestone (DECISIONS E23) use the fallback illustration.
+- Done: logo upload in Settings (`PUT` and `DELETE /api/staff/settings/logo`, migration 0013), checked by content with SVG accepted only from an allowlist, and shown in the staff sidebar and the patient header (DECISIONS E24).
+- Done: the five-step setup wizard with a read-only connection check (`POST /api/setup/check`), brand colors and logo at setup, and the three acknowledgments (DECISIONS E25).
+- Open: editable Open Dental and AI provider settings, which wait for M9; drawings for the eight new categories; dentist review of every entry.
 
 ## M4 Generation pipeline
 

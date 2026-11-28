@@ -16,6 +16,21 @@ pub fn StaffShell(children: Children) -> impl IntoView {
     let session = use_session();
     let mode = move || session.info.get().and_then(Result::ok).map(|i| i.mode);
     let is_demo = move || mode() == Some(Mode::Demo);
+    let shell_logo = crate::logo::provide_shell_logo(
+        session
+            .info
+            .get_untracked()
+            .and_then(Result::ok)
+            .map(|i| i.mode),
+    );
+    let practice_name = Signal::derive(move || {
+        session
+            .info
+            .get()
+            .and_then(Result::ok)
+            .map(|i| i.practice_name)
+            .unwrap_or_default()
+    });
     let signing_out = RwSignal::new(false);
     let sign_out_error = RwSignal::new(None::<String>);
     let sign_out = move |_| {
@@ -44,6 +59,10 @@ pub fn StaffShell(children: Children) -> impl IntoView {
             <nav class="sidebar" aria-label="Main">
                 <div class="wordmark">
                     <Logo />
+                </div>
+                <div class="practice-chip" title=move || practice_name.get()>
+                    <crate::logo::PracticeMark name=practice_name logo=shell_logo.0 class="practice-mark" />
+                    <span class="nav-label practice-name">{move || practice_name.get()}</span>
                 </div>
                 <NavLink href="/" icon=icons::HOME label="Dashboard" exact=true />
                 <NavLink href="/patients" icon=icons::PATIENTS label="Patients" />

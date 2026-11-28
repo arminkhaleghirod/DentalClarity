@@ -420,7 +420,7 @@ Disabled: 40% opacity plus `aria-disabled`, and a tooltip or helper text with th
 ### 5.7 Settings (unmocked, P)
 
 - Left sub-nav inside main area (200 px): Practice and branding, Open Dental, AI provider, Staff account and PIN, Data and retention, About.
-- Practice and branding: name, logo upload (PNG or SVG, max 1 MB), brand primary and accent color inputs (hex plus picker), live preview card (patient header, a phase card, three teeth with one highlighted), contrast result list with pass/fail per pair (§2.4).
+- Practice and branding: name, logo upload (PNG, JPEG or SVG, max 1 MB, saved as soon as a file is chosen, with a Remove button; SVG accepted only from the allowlist in SECURITY.md), brand primary and accent color inputs (hex plus picker), live preview card (patient header, a phase card, three teeth with one highlighted), contrast result list with pass/fail per pair (§2.4).
 - Open Dental: host, port, database, user, password (write-only), "Test connection" with result line; poll interval (minutes); last sync status.
 - AI provider: clinical shows AWS region, credential mode, "Test" button; active model IDs listed read-only; demo shows "OpenRouter (demo)" read-only and the month's spend against the $25 cap.
 - Staff account and PIN: change password, change PIN (both require current value).
@@ -430,9 +430,11 @@ Disabled: 40% opacity plus `aria-disabled`, and a tooltip or helper text with th
 
 ### 5.8 First-launch setup wizard (unmocked, P)
 
-- Full-screen, no sidebar. Left: 260 px stepper on `--dc-surface-subtle` with steps 1 Practice, 2 Open Dental, 3 AI provider, 4 Staff account, 5 Review and confirm; done steps use the generation-list icons (§4.9). Right: form column, max width 560.
+- Full-screen, no sidebar. Left: 260 px stepper on `--dc-surface-subtle` with steps 1 Setup code and connections, 2 Practice, 3 Logo, 4 Staff account, 5 Review and confirm (DECISIONS E25); done steps use the generation-list icons (§4.9). Right: form column, max width 560.
+- Step 1 takes the one-time setup code and runs a read-only check of the practice records connector and the AI provider, shown as one row each (ready family when it works, changed family when it does not). Until M9 these connections come from the server configuration, so there are no connection forms; a missing provider does not block setup.
+- Step 2 has the practice name, both brand colors with the contrast result, and the patient header preview from Settings. Step 3 takes an optional logo file (Continue reads "Skip for now" without one); it is uploaded after the account is created.
 - Footer bar: Back (secondary), Continue (primary). Continue is disabled until required fields pass; errors are inline under fields and summarized at the top on submit.
-- Step 2 test result states: success (ready family), auth failed, unreachable, write privileges detected (changed family, requires "I understand" checkbox).
+- Later, with editable Open Dental settings (M9), the test result states are: success (ready family), auth failed, unreachable, write privileges detected (changed family, requires "I understand" checkbox).
 - Step 5 lists entered settings and three required checkboxes: local practice network only; provider terms and agreements are the practice's responsibility; clinical-readiness notice (PRD §9) read.
 
 ### 5.9 Present-mode exit (unmocked, P)

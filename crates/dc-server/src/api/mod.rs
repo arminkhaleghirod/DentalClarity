@@ -3,9 +3,11 @@
 
 mod auth;
 mod edits;
+mod logo;
 mod present;
 mod presentations;
 mod review;
+mod setup;
 mod staff;
 #[cfg(test)]
 mod tests;
@@ -25,6 +27,13 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route(
             "/settings",
             get(staff::get_settings).put(staff::put_settings),
+        )
+        .route(
+            "/settings/logo",
+            get(logo::get_staff)
+                .put(logo::put)
+                .delete(logo::delete)
+                .layer(DefaultBodyLimit::max(logo::BODY_LIMIT)),
         )
         .route(
             "/presentations",
@@ -55,6 +64,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/audio/{key}", get(present::audio))
         .route("/narration", get(present::narration))
         .route("/exit", post(present::exit))
+        .route("/logo", get(logo::get_present))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));
 
     Router::new()
@@ -63,6 +73,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/session/unlock", post(auth::unlock))
         .route("/visit", post(auth::visit))
         .route("/setup", post(auth::setup))
+        .route("/setup/check", post(setup::check))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .nest("/staff", staff)
