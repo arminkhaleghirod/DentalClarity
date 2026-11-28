@@ -44,7 +44,7 @@ DentalClarity/
 │  ├─ dc-knowledge/           curated knowledge base loader + deterministic lookup
 │  ├─ dc-ai/                  provider traits; openrouter, bedrock/polly (feature) adapters
 │  ├─ dc-generation/          multistage pipeline, validators, prompts
-│  ├─ dc-booklet/             (planned, M8) Typst PDF booklet rendering
+│  ├─ dc-booklet/             Typst PDF booklet rendering
 │  ├─ dc-server/              Axum binary: API, auth, sessions, jobs, sync, storage, service
 │  ├─ dc-web/                 Leptos CSR app (staff + patient), built by Trunk
 │  └─ clarityeval/            (planned) benchmark runner and scoring CLI
@@ -123,7 +123,7 @@ The odontogram and illustrations are inline SVG components. Design tokens are CS
 
 ## 8. Booklet (dc-booklet)
 
-Typst is compiled in-process from a template in `assets/booklet/`, fed with a JSON data model of one version and variant. Fonts are bundled. Output goes to `artifacts/` keyed by (version, variant, template hash).
+Typst 0.15 is compiled in-process from `crates/dc-booklet/templates/booklet.typ`, fed with a JSON data model built from the patient view of one version. Fonts (Noto Sans and Noto Sans Arabic) are bundled in `crates/dc-booklet/fonts/` and the procedure drawings come from `assets/illustrations/`. The PDF is rendered on each download and not stored (DECISIONS E7).
 
 ## 9. Testing strategy (summary)
 

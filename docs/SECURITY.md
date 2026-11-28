@@ -154,9 +154,9 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `POST /api/visit` | 404 in clinical | 404 | 404 | 404 | A (demo only, Origin-checked, rate-limited) |
 | `POST /api/auth/login`, `logout` | A (login) | A (logout) | logout only | 403 | 404 |
 | `/api/staff/dashboard`, `patients`, `patients/:key` (read PMS) | 401 | A | 423 | 401 | A (synthetic, read-only) |
-| `/api/staff/presentations` list, view, create, edit (`blocks`, `blocks/revert`, `confirm-note`), regenerate (`sections/:key/regenerate`), release (`sections/:key/release`), history (planned) | 401 | A | 423 | 401 | A, own visitor scope only |
+| `/api/staff/presentations` list, view, create, edit (`blocks`, `blocks/revert`, `confirm-note`), regenerate (`sections/:key/regenerate`), release (`sections/:key/release`), history (`versions`, `versions/:n`, read-only) | 401 | A | 423 | 401 | A, own visitor scope only |
 | `/api/staff/jobs/:id` | 401 | A | 423 | 401 | A, own jobs only |
-| `/api/staff/presentations/:id/export` (PDF, planned for M8) | 401 | A | 423 | 401 | A, own scope |
+| `GET /api/staff/presentations/:id/export[?version=N]` (PDF of the patient view of one version; `Cache-Control: no-store`; at most 2 renders at once; `booklet_exported` audit event) | 401 | A | 423 | 401 | A, own scope |
 | `/api/staff/presentations/:id/present` | 401 | A | 423 | 401 | A |
 | `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
 | `/api/staff/analytics` (planned for M8) | 401 | A | 423 | 401 | aggregate only |
@@ -234,12 +234,12 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Data | Contents | Clinical default | Demo default | Deletion |
 |---|---|---|---|---|
 | Snapshots | normalized plan, display context (first name, age band, language) | kept while the presentation exists | 24 h, visitor scope | deleted with the presentation |
-| Versions, blocks, variants | generated and edited text | kept while the presentation exists; presentations with no activity for 12 months are flagged for deletion | 24 h | hard delete rows, then GC artifacts |
+| Versions (`presentation_versions`: snapshot and frozen sections of each version), blocks, variants | generated and edited text | kept while the presentation exists; presentations with no activity for 12 months are flagged for deletion | 24 h | hard delete rows, then GC artifacts |
 | Q&A conversations | questions and answers | 30 days | 24 h | scheduled hard delete |
 | Analytics events | sections visited, plays, language, active time; no free text | raw 90 days, then aggregated without presentation linkage | 24 h | scheduled delete |
 | `ai_calls` | metadata only, no prompt or response text | 12 months | 30 days | scheduled delete |
 | Audio clips | per-sentence audio and merged block clips | 30 days after last play | 24 h after last play | the 10-minute maintenance task deletes the row and file of stale clips, then the least recently played clips while the cache is over 2 GB, then clip files with no row older than the retention; only names of 64 hex characters with a known extension inside the audio directory are deleted |
-| PDF booklets | rendered booklet | 7 days (re-exportable) | 24 h | scheduled delete |
+| PDF booklets | rendered booklet | not stored: rendered for each download (DECISIONS E7) | not stored | nothing to delete |
 | Audit events | logins, unlocks, exports, deletions, review actions | 12 months | 7 days | scheduled delete |
 | Logs | redacted operational logs | 30 days, daily rotation | platform default, max 7 days | rotation |
 | Backups | DB and artifacts | practice-managed | none | deleted data stays in backups until those backups age out; documented |
@@ -262,7 +262,8 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 
 - Generated, translated and Q&A text is rendered as text nodes only. Leptos `inner_html` is banned in `dc-web` by a clippy `disallowed_methods` rule, with one reviewed exception for our own static SVG assets.
 - Validator V15 rejects HTML, Markdown and URLs in model output. Reference links come only from KB entries, which allow `https` URLs only.
-- PDF: text goes to Typst through the JSON data model and is placed as content strings, never evaluated as Typst markup. Test fixtures include Typst control characters (`#`, `$`, `[`, `]`).
+- PDF: text goes to Typst through the JSON data model and is placed as content strings, never evaluated as Typst markup. Test fixtures include Typst control characters (`#`, `$`, `[`, `]`, `*`, `_`). The booklet is built from the patient view, so held sections, unconfirmed note text and staff-only reasons never reach it. Brand colors that are not `#RRGGBB` fall back to the default brand. The Typst world serves only the template, its JSON data, the bundled fonts and the procedure drawings; it reads no other file and loads no system font.
+- Plan sync runs as the server with no session. It reads the practice records through the read-only connector, never calls a model, and writes a `plan_changed` audit event with ids only.
 - Response headers on every page: `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-<hash of each inline script in the embedded index.html>'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. Trunk loads the WASM through one inline module script, so the server computes its hash at startup from the embedded `index.html` and no `'unsafe-inline'` is needed. `media-src` allows `blob:` because the patient screens fetch a block's narration (to read its sentence offsets) and play the bytes from an object URL; a page can only make object URLs for data it already holds.
 - Also sent: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`, `Cross-Origin-Opener-Policy: same-origin`, and `Cache-Control: no-store` on `/api`.
 

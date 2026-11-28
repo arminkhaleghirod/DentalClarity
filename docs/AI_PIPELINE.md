@@ -394,6 +394,8 @@ Each section stores `input_hash = sha256(canonical_json(section's FactSheetView 
 
 The diff matches procedures by PMS source id between the previous and new snapshot.
 
+As built (DECISIONS E23), the poll never calls a model. The input hash is not stored; the diff below decides each section's fate directly. A section in the "Regenerated with model calls" column is held in the new version with no text and a reason, and staff write it again with Regenerate. A carried section keeps its text, staff edits and note confirmations under its new procedure ref.
+
 | Change | Regenerated with model calls | Refreshed deterministically | `NeedsReview` set |
 |---|---|---|---|
 | Procedure added | new `procedure` section; `at_a_glance`, `journey`, `next_steps` | chart, costs, references | yes, on the new procedure section and the three summary sections (material clinical change) |

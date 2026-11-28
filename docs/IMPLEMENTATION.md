@@ -125,6 +125,13 @@ Acceptance:
 - Plan polling with fingerprint comparison and the diff rules in [AI_PIPELINE.md](AI_PIPELINE.md#sync).
 - Version history and in-office engagement analytics.
 
+Progress:
+- Done: the booklet (DECISIONS E7). `GET /api/staff/presentations/{id}/export[?version=N]` returns the PDF of a version, typeset in process by the new `dc-booklet` crate with bundled Noto Sans and Noto Sans Arabic. It prints the cover, at a glance with the teeth in the plan, journey, one page per procedure with its drawing, costs and what happens next with lines for notes, from the patient view only. Held sections print their title and "Your dental team will go over this part with you." The footer carries practice name, plan date, version and short hash. Export writes a `booklet_exported` audit event and marks the version exported. At most 2 booklets render at once.
+- Done: plan sync (E23). A poll every 5 minutes compares each presentation with its live plan; an unchanged fingerprint does nothing and makes no model call. A changed one makes a new version from the diff, carrying unchanged sections and holding changed ones for Regenerate. A deleted plan or unreachable records show as a banner. The dashboard shows "Plan changed" until the new version is presented or exported.
+- Done: version history (E24, migration 0012). `GET .../versions` lists versions with cause, changes and presented and exported markers; `GET .../versions/{n}` opens one read-only. Present sessions stay on their version through a plan change. Regenerating a section of a presented or exported version makes a new version.
+- Done (web): History drawer, read-only version view at `/presentations/{id}?version=N`, plan changed, plan deleted and records unreachable banners, and the Export booklet link.
+- Open: in-office engagement analytics (another branch), translated booklet labels and language names (M7 branch), the booklet's references page and chart drawing, A4 paper in Settings, CJK fonts, a new draft version on staff edits of a presented version (FR-VER-01), Restore as new version, the edit-conflict banner with Keep my edit / Use new text, and the header sync indicator.
+
 ## M9 Clinical path and Windows
 
 Acceptance:
