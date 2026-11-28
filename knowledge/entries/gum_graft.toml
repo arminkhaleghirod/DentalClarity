@@ -1,0 +1,62 @@
+id = "gum_graft"
+version = 1
+title = "Gum graft"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "cc_gum_graft"
+publisher = "Cleveland Clinic"
+title = "Gum Graft Surgery: What it Is, Procedure & Recovery"
+url = "https://my.clevelandclinic.org/health/treatments/23504-gum-graft-surgery"
+accessed = "2026-11-28"
+
+[[sources]]
+id = "cuh_gum_graft"
+publisher = "Cambridge University Hospitals NHS Foundation Trust"
+title = "Gum grafting procedure"
+url = "https://cuh.nhs.uk/patient-information/gum-grafting-procedure"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A gum graft is a procedure that adds gum tissue where the gums have pulled back from the teeth. The new tissue is often taken from the roof of your mouth, and sometimes donated tissue is used instead. It is usually done by a gum specialist."
+sources = ["cc_gum_graft", "cuh_gum_graft"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Gums can pull back and leave part of a tooth root showing. This often follows gum disease, and it can also happen with thin gums or brushing too hard. A graft is a common way to cover the exposed root."
+sources = ["cc_gum_graft", "cuh_gum_graft"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed first. The specialist loosens the gum near the tooth, cleans the root surface, and places the graft tissue over the exposed root. Stitches hold it in place. Some stitches dissolve on their own, and others are removed at a later visit."
+sources = ["cc_gum_graft", "cuh_gum_graft"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Some soreness, swelling and bruising are common at first and usually improve as the area heals. Soft, cool foods are easier for the first days, and you avoid brushing right on the graft until your specialist says it is fine. Many people go back to work or school soon after. Call your dental team if bleeding does not stop or the pain is getting worse."
+sources = ["cc_gum_graft", "cuh_gum_graft"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "A gum graft covers exposed roots, which can make teeth less sensitive. It can help protect the roots from decay, make the gums easier to keep clean and lower the chance of more gum loss. It can also make the gum line look more even."
+sources = ["cc_gum_graft", "cuh_gum_graft"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Gums that keep pulling back can leave more of the roots exposed over time. Exposed roots can be more sensitive and more likely to decay, and in time teeth may lose support. Your dental team can talk with you about whether to treat now or keep watching."
+sources = ["cc_gum_graft"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Where will the graft tissue come from? What should I eat while it heals? How do I keep the area clean without disturbing it? What can I do to protect my gums afterward?"
+sources = ["cc_gum_graft", "cuh_gum_graft"]

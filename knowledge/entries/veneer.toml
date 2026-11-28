@@ -1,0 +1,62 @@
+id = "veneer"
+version = 1
+title = "Veneer"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "mh_veneers"
+publisher = "American Dental Association (MouthHealthy)"
+title = "Veneers"
+url = "https://www.mouthhealthy.org/en/az-topics/v/veneers"
+accessed = "2026-11-28"
+
+[[sources]]
+id = "cc_veneers"
+publisher = "Cleveland Clinic"
+title = "Veneers: What Are Dental Veneers? Cost, Procedure & Advantages"
+url = "https://my.clevelandclinic.org/health/treatments/23522-dental-veneers"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A veneer is a thin, custom-made shell that covers the front side of a tooth. It changes how the tooth looks, such as its color, shape or size. Veneers are usually made of porcelain or a tooth-colored resin."
+sources = ["mh_veneers", "cc_veneers"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "People often choose veneers to cover teeth that are chipped, stained, oddly shaped or smaller than the teeth around them. They can also close small gaps. Veneers are mainly about appearance, and any decay or gum problems are usually treated first."
+sources = ["mh_veneers", "cc_veneers"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually removes a thin layer of enamel from the front of the tooth to make room. For porcelain veneers, an impression or scan is sent to a lab, and you may wear temporary veneers while you wait. Your dentist then checks the fit and color and bonds each veneer in place. A resin veneer can be shaped and hardened directly on the tooth."
+sources = ["mh_veneers", "cc_veneers"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Most people go back to their normal routine the same day and can eat once any numbness wears off. Some people notice their teeth feel more sensitive to hot and cold for a while. Your dentist can tell you what to expect for your teeth."
+sources = ["cc_veneers"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Veneers can give your smile a more even, natural look. Porcelain veneers resist staining well. With daily brushing and flossing, care with hard foods and regular checkups, they often last for many years."
+sources = ["cc_veneers", "mh_veneers"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Veneers are usually a choice about appearance, so putting them off often does not harm your teeth. Placing most veneers removes some enamel, which does not grow back, so it is worth taking time to decide. Many people talk it over with their dental team before choosing."
+sources = ["mh_veneers", "cc_veneers"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Would porcelain or resin veneers suit my teeth better? How much enamel will be removed? Will I wear temporary veneers? What habits should I avoid to protect my veneers?"
+sources = ["mh_veneers", "cc_veneers"]

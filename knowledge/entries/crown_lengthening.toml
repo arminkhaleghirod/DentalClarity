@@ -1,0 +1,55 @@
+id = "crown_lengthening"
+version = 1
+title = "Crown lengthening"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "cc_gingivectomy"
+publisher = "Cleveland Clinic"
+title = "Gingivectomy: Procedure & Recovery"
+url = "https://my.clevelandclinic.org/health/treatments/24749-gingivectomy"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "Crown lengthening is a gum procedure that shows more of a tooth above the gum line. Your dentist or a gum specialist reshapes the gum and the bone underneath it. It is often done to get a tooth ready for a crown or filling."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "A common reason is a tooth that is too short above the gums to hold a crown well. It is also used when decay or a filling reaches below the gum line, where it is hard to repair. It can be done together with other gum procedures."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed first. Your dentist makes small openings along the gum line, reshapes the gum and bone around the tooth, and places the gum in its new position. Stitches usually hold it in place, and a soft protective dressing may cover the area."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Most people go home the same day and return to work or school soon after. Some swelling, soreness or sensitivity is common at first and usually fades. Eating soft foods, brushing gently and leaving the area alone helps it heal. Call your dental team if bleeding will not stop, you get a fever or the pain is not getting better."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Showing more of the tooth gives your dentist room to place a crown or filling on healthy tooth above the gums. This can help the crown or filling fit well and stay in place."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If a tooth does not have enough height above the gums, a crown may not hold as well as it should. Decay below the gum line can be hard to fix until it can be reached. Many people take time to think it over, and the decision is yours to make with your dental team."
+sources = ["cc_gingivectomy"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Why does my tooth need crown lengthening before the next step? Will a specialist do it? What should I eat while it heals? When will the crown or filling be placed?"
+sources = ["cc_gingivectomy"]

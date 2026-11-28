@@ -329,6 +329,28 @@ mod tests {
         let kb = KnowledgeBase::load(&dir).expect("knowledge base loads");
         for entry in kb.entries() {
             entry.validate().unwrap();
+            // An entry whose id is not a category would never be looked up.
+            let category: ProcedureCategory =
+                serde_json::from_value(serde_json::Value::String(entry.id.clone()))
+                    .unwrap_or_else(|_| panic!("entry {} is not a category", entry.id));
+            assert_ne!(category, ProcedureCategory::Unsupported);
+        }
+    }
+
+    #[test]
+    fn every_mapped_category_has_an_entry() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knowledge");
+        let kb = KnowledgeBase::load(&dir).expect("knowledge base loads");
+        let text = std::fs::read_to_string(dir.join("codes.toml")).unwrap();
+        for part in text.split("[codes]").nth(1).unwrap().lines() {
+            let Some((code, _)) = part.split_once(" = ") else {
+                continue;
+            };
+            let code = ProcedureCode::new(code);
+            assert!(
+                kb.entry_for_code(&code).is_some(),
+                "code {code} maps to a category with no entry"
+            );
         }
     }
 }

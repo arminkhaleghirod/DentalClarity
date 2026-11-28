@@ -1,0 +1,55 @@
+id = "stainless_steel_crown"
+version = 1
+title = "Stainless steel crown for a baby tooth"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "gstt_ssc"
+publisher = "Guy's and St Thomas' NHS Foundation Trust"
+title = "Stainless steel crowns for children"
+url = "https://guysandstthomas.nhs.uk/health-information/stainless-steel-crowns-children"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A stainless steel crown is a small metal cap that fits over a baby back tooth. It covers the whole tooth to protect it. The crowns come ready-made in many sizes, and because they sit on back teeth they are often hard to notice."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "These crowns are often used for baby back teeth that have large areas of decay or did not form properly. They can protect a weak tooth so it does not need to be taken out. They also tend to last longer than a large filling on a baby tooth."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The dentist usually numbs the tooth first. The tooth is cleaned and shaped, then the crown is fitted and cemented in place. For some children, the dentist may instead gently press the crown onto the tooth without numbing or drilling. Your dentist will explain which way suits your child."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Many children can go back to their normal day afterward. The crown may feel tight for a few days, and the bite may feel a little high at first, which usually settles. If the mouth was numbed, help your child avoid biting their lip, cheek or tongue until the feeling comes back. Brush and floss the crown like any other tooth."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "The crown protects the baby tooth so your child can chew comfortably. Keeping the baby tooth also holds space for the adult tooth growing underneath. The crown usually stays on until the baby tooth falls out on its own."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "A baby tooth with a lot of decay can get worse over time, and it may become sore or need to be taken out. Losing a baby tooth early can affect the space for the adult tooth. Your dental team can talk through timing with you."
+sources = ["gstt_ssc"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Will my child's tooth be numbed? How should we care for the crown at home? What should we do if the crown feels loose? Should we tell you about a metal allergy, since these crowns contain nickel and chrome?"
+sources = ["gstt_ssc"]

@@ -61,6 +61,14 @@ pub enum ProcedureCategory {
     DentureComplete,
     DenturePartial,
     NightGuard,
+    InlayOnlay,
+    Veneer,
+    SpaceMaintainer,
+    StainlessSteelCrown,
+    CrownLengthening,
+    Apicoectomy,
+    GumGraft,
+    Whitening,
     Unsupported,
 }
 
