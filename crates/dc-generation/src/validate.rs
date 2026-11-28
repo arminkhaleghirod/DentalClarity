@@ -255,7 +255,7 @@ fn cites(cites: &[String], path: &str, cx: &Context, issues: &mut Vec<Issue>) {
     }
 }
 
-fn text(t: &str, cites: &[String], path: &str, cx: &Context, issues: &mut Vec<Issue>) {
+pub(crate) fn text(t: &str, cites: &[String], path: &str, cx: &Context, issues: &mut Vec<Issue>) {
     let trimmed = t.trim();
     if trimmed.is_empty() || trimmed.chars().count() > 300 {
         issues.push(Issue::block("V1", path, "text must be 1 to 300 characters"));

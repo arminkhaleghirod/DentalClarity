@@ -158,12 +158,12 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/staff/jobs/:id` | 401 | A | 423 | 401 | A, own jobs only |
 | `/api/staff/presentations/:id/export` (PDF, planned for M8) | 401 | A | 423 | 401 | A, own scope |
 | `/api/staff/presentations/:id/present` | 401 | A | 423 | 401 | A |
-| `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
+| `GET /api/staff/presentations/:id/questions` (read conversations) | 401 | A | 423 | 401 | A, own visitor scope only (404 otherwise) |
 | `/api/staff/analytics` | 401 | A | 423 | 401 | A, own visitor scope only |
 | `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 `demo_read_only` |
 | `/api/staff/secrets` (write-only, planned for M9) | 401 | A, write only, never returns values | 423 | 401 | 403 |
 | `/api/present/content`, `audio/:key`, `narration?keys=`, `variant` (planned for M7) | 401 | 401 | 401 | A, bound version only | A, bound version only |
-| `/api/present/qa` (planned for M7) | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
+| `GET`, `POST /api/present/qa` | 401 | 401 | 401 | A, bound version only, caps apply | A, bound version only, caps and budget apply |
 | `POST /api/present/analytics` (engagement reports) | 401 | 401 | 401 | A, write only, 30 per minute per present session | A, write only, same cap |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
 
@@ -278,7 +278,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | New generations | 3 per hour per visitor, 10 per day per IP |
 | Section rewrites | 6 single-section regenerations per hour per visitor, 20 per day per IP; they share the one-running-job limit and the budget soft stop with new generations |
 | On-demand variants | 10 per hour per visitor (planned for M7) |
-| Q&A | 20 questions per hour per visitor, 500 characters each (planned for M7) |
+| Q&A | 500 characters per question, 20 questions per present session, 20 per hour per visitor and 60 per day per network (IPv6 by /64); `429 question_limit`. Questions the server refuses (length, personal details, budget) are not counted. The budget guard applies; an urgent question still gets the fixed escalation text when the budget is used up |
 | Staff edits | 2,000 characters per block, 400 per sentence; 60 saved edits per hour per visitor; text containing `{{` or `}}` is refused (`422 invalid_edit`), because placeholders are filled in after the length checks |
 | Narration | 20,000 synthesized characters per hour per visitor and 60,000 per day per network (IPv6 by /64), counted per synthesized sentence on cache misses only (at least 50 characters each), never for merging a block or replaying a cached clip; `429 narration_quota`. One network may make 30 of the server's 120 upstream speech calls per minute (`429 narration_busy`). The block route `/api/present/narration` serves only keys that form one aligned part of one block of the present session's bound version: the block cut into parts of 12 sentences from its start, the last part shorter. That is how pre-warming and the patient screens ask, and it keeps each block to a few cached merged clips. Keys from two blocks, a run that starts or ends inside a part, or keys outside that version answer `404 audio_not_found`. A speech call that times out or returns an unusable reply counts against the budget at its full price and is retried once (as D12 does for text). Pre-warming on entering Present mode covers generated blocks only; staff-edited text is narrated only when played |
 | Concurrency | 2 generation jobs globally, 1 per visitor; later jobs queue (a visible queue position is not built yet) |

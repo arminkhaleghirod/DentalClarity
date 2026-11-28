@@ -250,12 +250,22 @@ async fn present_totals(
     .fetch_all(&state.db)
     .await?;
     let mut showing: Vec<f64> = per_session.iter().map(|(s,)| *s as f64).collect();
+    // qa_conversations.asked_at is in seconds.
+    let (questions,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM qa_conversations q JOIN presentations p ON p.id = q.presentation_id
+         WHERE p.owner_scope = ? AND q.asked_at >= ?",
+    )
+    .bind(owner)
+    .bind(since_ms / 1000)
+    .fetch_one(&state.db)
+    .await?;
     Ok(PresentStats {
         sessions: count(sessions),
         presentations: count(presentations),
         seconds: seconds.max(0) as u64,
         median_seconds: percentile(&mut showing, 50).map(|s| s.round() as u64),
         narration_plays: count(plays),
+        questions: count(questions),
     })
 }
 

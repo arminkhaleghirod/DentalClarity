@@ -125,6 +125,8 @@ pub struct PresentStats {
     /// Median time of one showing.
     pub median_seconds: Option<u64>,
     pub narration_plays: u32,
+    /// Questions asked in the Ask a question drawer.
+    pub questions: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

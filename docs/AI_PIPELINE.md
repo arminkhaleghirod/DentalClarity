@@ -348,7 +348,9 @@ Deterministic handling around Q&A [P]:
 
 - Before the first question the drawer shows a fixed notice: "Your dental practice can read this chat. It is for questions about your treatment plan, not for emergencies. Please don't type personal details." Demo mode adds "This demo uses made-up patients."
 - A keyword lexicon checks each question for urgent symptoms before the model call. On a match the fixed, localized escalation text is shown first, whatever the model returns. The text comes from practice settings, with `{{practice_phone}}` rendered locally.
-- Answers pass through V1, V3 and V8 to V16. On a Block the patient sees a fixed fallback: "I can't answer that here. Your dental team will be happy to help." Q&A has no repair loop and no live reviewer pass, for latency. An asynchronous reviewer that flags conversations for staff is an open question for ClarityEval.
+- Answers pass through V1, V3 and V5 to V16 (DECISIONS E24). On a Block the patient sees a fixed fallback: "I can't answer that here. Your dental team will be happy to help." Q&A has no repair loop and no live reviewer pass, for latency. An asynchronous reviewer that flags conversations for staff is an open question for ClarityEval.
+
+Implemented in M7 (DECISIONS E24): the prompt is `crates/dc-generation/prompts/qa.answer.v1.txt` and the checks are in `dc-generation::qa`. Q&A citations are `fact:`, `kb:` and `text:N`, where `text:N` numbers the approved blocks in the prompt; notes are never sent. `QaOut` also carries `suggested_question`, empty unless the answer is declined or partial. The drawer notice is the UI_SPEC wording plus "This chat is not for emergencies." The escalation text names the practice until a practice phone setting exists.
 
 ### Prompt versioning [P]
 

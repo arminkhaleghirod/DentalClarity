@@ -10,6 +10,7 @@ pub mod facts;
 pub mod notes;
 pub mod pipeline;
 pub mod prompt;
+pub mod qa;
 pub mod schema;
 pub mod validate;
 

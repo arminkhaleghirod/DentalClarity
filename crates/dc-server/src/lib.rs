@@ -10,6 +10,7 @@ pub mod http;
 pub mod jobs;
 pub mod limits;
 pub mod narration;
+pub mod qa;
 pub mod security;
 pub mod sessions;
 pub mod settings;

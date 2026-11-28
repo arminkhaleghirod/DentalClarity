@@ -844,6 +844,7 @@ fn Editor(data: RwSignal<PresentationView>) -> impl IntoView {
                 <div class="rail-divider"></div>
                 <h2 class="rail-title">"Details"</h2>
                 {move || data.with(details)}
+                <crate::questions::PatientQuestions id=ctx.id.get_value() />
             </aside>
         </div>
     }

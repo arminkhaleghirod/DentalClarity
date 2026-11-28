@@ -118,6 +118,13 @@ Acceptance:
 - Reading level control on every patient screen.
 - Ask a question drawer with grounding, refusals, escalation wording and the notice that the practice can read the conversation.
 
+Progress:
+- Ask a question is built (DECISIONS E24): `GET` and `POST /api/present/qa` answer from the bound version's patient-visible text, the fact sheet without money and the knowledge base, with citations checked and V1, V3 and V5 to V16 on every answer. Declined answers carry a question for the dental team; failing answers show the fixed fallback.
+- Urgent questions get the fixed escalation text before any model call, also when the budget is used up or no provider exists, and flag the presentation for staff.
+- The drawer in Present mode has the notice that the practice can read the conversation, focus trapping, Escape to close and polite announcements. Staff read the conversation on the presentation page (`GET /api/staff/presentations/{id}/questions`).
+- Conversations are stored in `qa_conversations` (migration 0011), purged with demo presentations and after 30 days. Demo limits and the budget apply.
+- Not done yet: translated answers and reading-level variants (with translation), and opening the drawer prefilled from the "Questions you might ask" cards.
+
 ## M8 Booklet, sync and analytics
 
 Acceptance:
@@ -126,7 +133,7 @@ Acceptance:
 - Version history and in-office engagement analytics.
 
 Progress:
-- Done: in-office engagement analytics (DECISIONS E23). The patient screens report time per screen every 15 seconds and on each screen change, and each narration start, to `POST /api/present/analytics`; starting Present mode records the showing (migration 0009). `GET /api/staff/analytics?days=7|30|90` and the Analytics screen show showings, median time in a presentation, narration plays, time by screen, languages and reading levels, generation outcomes with p50 and p90 time and model spend, and the presentations shown. Rows hold no names or free text and are deleted after 90 days.
+- Done: in-office engagement analytics (DECISIONS E23). The patient screens report time per screen every 15 seconds and on each screen change, and each narration start, to `POST /api/present/analytics`; starting Present mode records the showing (migration 0009). `GET /api/staff/analytics?days=7|30|90` and the Analytics screen show showings, median time in a presentation, narration plays, questions asked, time by screen, languages and reading levels, generation outcomes with p50 and p90 time and model spend, and the presentations shown. Rows hold no names or free text and are deleted after 90 days.
 
 ## M9 Clinical path and Windows
 

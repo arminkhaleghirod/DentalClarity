@@ -5,6 +5,7 @@
 //! the practice's name and colors; DentalClarity is never named here.
 
 mod api;
+mod ask;
 mod chart;
 mod engagement;
 mod exit;
@@ -519,6 +520,7 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
                     </div>
                 </header>
                 <main id="p-main" class="p-main" tabindex="-1">{page}</main>
+                <ask::AskQuestion />
                 <div class="visually-hidden" aria-live="polite" aria-atomic="true">
                     {move || narrator.announcement()}
                 </div>

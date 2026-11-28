@@ -96,9 +96,9 @@ fn Report(report: AnalyticsResponse) -> impl IntoView {
                 <p class="stat-note">"Times a patient pressed Listen"</p>
             </div>
             <div class="stat-card">
-                <h2>"Ready without review"</h2>
-                <p class="stat-value">{first_pass}</p>
-                <p class="stat-note">{format!("of {} finished", plural(finished, "presentation", "presentations"))}</p>
+                <h2>"Questions asked"</h2>
+                <p class="stat-value">{p.questions}</p>
+                <p class="stat-note">"In the Ask a question drawer"</p>
             </div>
         </section>
 
@@ -120,6 +120,7 @@ fn Report(report: AnalyticsResponse) -> impl IntoView {
                     <div><dt>"Ready"</dt><dd>{g.succeeded}</dd></div>
                     <div><dt>"Needs review"</dt><dd>{g.needs_review}</dd></div>
                     <div><dt>"Failed"</dt><dd>{g.failed}</dd></div>
+                    <div><dt>"Ready without review"</dt><dd>{first_pass}</dd></div>
                     {(g.in_progress > 0).then(|| view! { <div><dt>"In progress"</dt><dd>{g.in_progress}</dd></div> })}
                     <div><dt>"Sections passed"</dt><dd>{g.sections_passed}</dd></div>
                     <div><dt>"Sections held"</dt><dd>{g.sections_held}</dd></div>

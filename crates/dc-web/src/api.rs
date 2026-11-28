@@ -17,6 +17,7 @@ use dc_core::presentation::{
     CreatePresentationRequest, CreatePresentationResponse, JobStatus, PresentationSummary,
     PresentationView, RegenerateSectionResponse,
 };
+use dc_core::qa::StaffQuestions;
 use gloo_net::http::{Request, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -313,6 +314,15 @@ pub async fn job(id: String) -> Result<JobStatus, Failure> {
 
 pub async fn presentation(id: String) -> Result<PresentationView, Failure> {
     get(&format!("/api/staff/presentations/{}", encode(&id))).await
+}
+
+/// Questions patients asked about this presentation in Present mode.
+pub async fn presentation_questions(id: String) -> Result<StaffQuestions, Failure> {
+    get(&format!(
+        "/api/staff/presentations/{}/questions",
+        encode(&id)
+    ))
+    .await
 }
 
 pub async fn presentations() -> Result<Vec<PresentationSummary>, Failure> {
