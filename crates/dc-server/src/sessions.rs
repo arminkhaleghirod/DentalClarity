@@ -231,6 +231,14 @@ pub async fn start_present(
     .bind(now * 1000)
     .execute(&mut *tx)
     .await?;
+    // A presented version is frozen: a later rewrite makes a new version.
+    crate::versions::mark(
+        &mut *tx,
+        presentation_id,
+        version,
+        crate::versions::Marker::Presented,
+    )
+    .await?;
     crate::audit::record(
         &mut *tx,
         actor,

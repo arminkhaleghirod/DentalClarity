@@ -8,6 +8,7 @@ mod api;
 mod create;
 mod editor;
 mod format;
+mod history;
 mod icons;
 mod logo;
 mod motion;

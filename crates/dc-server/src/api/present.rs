@@ -322,13 +322,25 @@ fn aligned_part(sentences: &[PatientSentence], keys: &[String]) -> Option<Vec<St
 }
 
 /// The default view for the present session's version: the presentation's
-/// own language and reading level (see [`super::variants::view`]).
+/// own language and reading level (see [`super::variants::view`]). An older
+/// version is read from the version history, so a plan change during Present
+/// mode does not change what the patient sees (PRD FR-VER-06).
 pub(super) async fn patient_view(
     state: &AppState,
     id: &str,
     bound_version: i64,
 ) -> Result<PatientView, Failure> {
     super::variants::view(state, id, bound_version, None).await
+}
+
+/// [`patient_view`] for a version already loaded, such as an older version
+/// for its booklet.
+pub(super) async fn patient_view_of(
+    state: &AppState,
+    id: &str,
+    data: crate::versions::VersionData,
+) -> Result<PatientView, Failure> {
+    super::variants::view(state, id, data.version, None).await
 }
 
 /// One block of approved patient text, placeholders unfilled.
@@ -372,22 +384,27 @@ pub(super) async fn approved(
     id: &str,
     bound_version: i64,
 ) -> Result<Approved, Failure> {
-    let row: Option<(String, String, i64, String)> = sqlx::query_as(
-        "SELECT language, reading_level, version, snapshot_json FROM presentations WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
-    let Some((language, level, version, snapshot)) = row else {
-        return Err(not_found("presentation"));
-    };
-    if version != bound_version {
-        return Err(Failure::conflict(
-            "version_changed",
-            "This presentation has changed. Ask your dental team to open it again.",
-        ));
-    }
-    let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
+    let data = crate::versions::load(&state.db, id, Some(bound_version))
+        .await?
+        .ok_or_else(|| not_found("presentation"))?;
+    approved_of(state, id, data).await
+}
+
+/// [`approved`] for a version already loaded.
+pub(super) async fn approved_of(
+    state: &AppState,
+    id: &str,
+    data: crate::versions::VersionData,
+) -> Result<Approved, Failure> {
+    let (language,): (String,) = sqlx::query_as("SELECT language FROM presentations WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| not_found("presentation"))?;
+    let level = data.reading_level.clone();
+    let version = data.version;
+    let snapshot: PlanSnapshot =
+        serde_json::from_str(&data.snapshot_json).map_err(Failure::internal)?;
     let sheet = FactSheet::build(&snapshot, &state.kb);
     let settings = load_settings(state).await?;
     let brand = PracticeBrand {
@@ -410,7 +427,7 @@ pub(super) async fn approved(
         }
     };
 
-    let sections = load_sections(state, id, version, &sheet)
+    let sections = load_sections(state, id, version, data.rows, &sheet)
         .await?
         .into_iter()
         .filter(|s| s.visibility == SectionVisibility::Ready)

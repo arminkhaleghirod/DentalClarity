@@ -6,6 +6,7 @@ members = [
     "crates/dc-knowledge",
     "crates/dc-ai",
     "crates/dc-generation",
+    "crates/dc-booklet",
     "crates/dc-server",
     "crates/dc-web",
     "crates/clarityeval",
@@ -16,6 +17,7 @@ default-members = [
     "crates/dc-knowledge",
     "crates/dc-ai",
     "crates/dc-generation",
+    "crates/dc-booklet",
     "crates/dc-server",
     "crates/clarityeval",
 ]
@@ -33,6 +35,7 @@ dc-pms = { path = "crates/dc-pms" }
 dc-knowledge = { path = "crates/dc-knowledge" }
 dc-ai = { path = "crates/dc-ai" }
 dc-generation = { path = "crates/dc-generation" }
+dc-booklet = { path = "crates/dc-booklet" }
 
 anyhow = "1"
 async-trait = "0.1"

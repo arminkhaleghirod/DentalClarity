@@ -530,24 +530,19 @@ struct Plan {
 
 impl Plan {
     async fn load(state: &AppState, present: &PresentSession) -> Result<Plan, Failure> {
-        let row: Option<(String, i64, String)> = sqlx::query_as(
-            "SELECT reading_level, version, snapshot_json FROM presentations WHERE id = ?",
-        )
-        .bind(&present.presentation_id)
-        .fetch_optional(&state.db)
-        .await?;
-        let Some((level, version, snapshot)) = row else {
-            return Err(not_found("presentation"));
-        };
-        if version != present.version {
-            return Err(Failure::conflict(
-                "version_changed",
-                "This presentation has changed. Ask your dental team to open it again.",
-            ));
-        }
-        let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
+        // Read through the version history, so a plan change during Present
+        // mode leaves the questions answered from the version shown.
+        let data =
+            crate::versions::load(&state.db, &present.presentation_id, Some(present.version))
+                .await?
+                .ok_or_else(|| not_found("presentation"))?;
+        let level = data.reading_level.clone();
+        let version = data.version;
+        let snapshot: PlanSnapshot =
+            serde_json::from_str(&data.snapshot_json).map_err(Failure::internal)?;
         let sheet = FactSheet::build(&snapshot, &state.kb);
-        let sections = load_sections(state, &present.presentation_id, version, &sheet).await?;
+        let sections =
+            load_sections(state, &present.presentation_id, version, data.rows, &sheet).await?;
         Ok(Plan {
             practice: settings::practice_name(state).await?,
             level: parse_level(&level),

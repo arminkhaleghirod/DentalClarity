@@ -20,6 +20,7 @@ use dc_core::presentation::{
     SectionView, SectionVisibility, TextBlock,
 };
 use dc_core::procedure::ProcedureCategory;
+use dc_core::versions::SourceState;
 use dc_core::{Mode, ToothRef};
 use dc_generation::facts::FactSheet;
 use dc_generation::schema::{
@@ -164,6 +165,8 @@ pub async fn create(
     let presentation_id = jobs::new_id();
     let job_id = jobs::new_id();
     let progress = jobs::initial_progress(&snapshot, &state.kb);
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(Failure::internal)?;
+    let fingerprint = snapshot.fingerprint();
     let mut tx = state.db.begin().await?;
     sqlx::query(
         "INSERT INTO presentations (id, owner_scope, client_key, patient_key, patient_display_name,
@@ -179,10 +182,13 @@ pub async fn create(
     .bind(language)
     .bind(level_str(request.reading_level))
     .bind(now)
-    .bind(serde_json::to_string(&snapshot).map_err(Failure::internal)?)
-    .bind(snapshot.fingerprint())
+    .bind(&snapshot_json)
+    .bind(&fingerprint)
     .execute(&mut *tx)
     .await?;
+    crate::versions::record_first(&mut tx, &presentation_id, &snapshot_json, &fingerprint, now)
+        .await
+        .map_err(Failure::internal)?;
     sqlx::query(
         "INSERT INTO jobs (id, presentation_id, state, created_at, progress_json, client_key)
          VALUES (?, ?, 'queued', ?, ?, ?)",
@@ -454,7 +460,7 @@ pub async fn list(
     Ok(Json(summaries))
 }
 
-pub(super) type SectionRow = (String, String, Option<String>, String, bool, String, String);
+pub(super) type SectionRow = crate::versions::SectionRow;
 
 /// Generated sections of a presentation in order, as stored.
 pub(super) async fn section_rows(state: &AppState, id: &str) -> Result<Vec<SectionRow>, Failure> {
@@ -526,9 +532,9 @@ pub(super) async fn load_sections(
     state: &AppState,
     id: &str,
     version: i64,
+    rows: Vec<SectionRow>,
     sheet: &FactSheet,
 ) -> Result<Vec<SectionView>, Failure> {
-    let rows = section_rows(state, id).await?;
     let changes = StaffChanges::load(state, id, version).await?;
     Ok(rows
         .into_iter()
@@ -580,34 +586,49 @@ pub async fn view(
         return Err(not_found("presentation"));
     }
     let owner = owner_scope(&state, &session);
-    let row: Option<(String, String, String, String, i64, String, String)> = sqlx::query_as(
-        "SELECT patient_key, patient_display_name, language, reading_level, version,
-             strftime('%Y-%m-%dT%H:%M:%SZ', created_at, 'unixepoch'), snapshot_json
+    Ok(Json(build_view(&state, &owner, &id, None).await?))
+}
+
+/// The staff view of one version of a presentation in `owner`'s scope, or
+/// of the current version when `version` is `None`. An older version comes
+/// back read-only, with no staff actions.
+pub(super) async fn build_view(
+    state: &AppState,
+    owner: &str,
+    id: &str,
+    version: Option<i64>,
+) -> Result<PresentationView, Failure> {
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT patient_key, patient_display_name, language,
+             strftime('%Y-%m-%dT%H:%M:%SZ', created_at, 'unixepoch'), source_state
          FROM presentations WHERE id = ? AND owner_scope = ?",
     )
-    .bind(&id)
-    .bind(&owner)
+    .bind(id)
+    .bind(owner)
     .fetch_optional(&state.db)
     .await?;
-    let Some((patient_key, display_name, language, level, version, created_at, snapshot)) = row
-    else {
+    let Some((patient_key, display_name, language, created_at, source_state)) = row else {
         return Err(not_found("presentation"));
     };
-    let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
+    let data = crate::versions::load(&state.db, id, version)
+        .await?
+        .ok_or_else(|| not_found("presentation"))?;
+    let snapshot: PlanSnapshot =
+        serde_json::from_str(&data.snapshot_json).map_err(Failure::internal)?;
     // The newest job, and the newest whole-presentation job, whose time is
     // the generation time shown to staff.
     let job: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT id, state, section_key FROM jobs WHERE presentation_id = ?
          ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(&id)
+    .bind(id)
     .fetch_optional(&state.db)
     .await?;
     let (generation_ms,): (i64,) = sqlx::query_as(
         "SELECT COALESCE((SELECT elapsed_ms FROM jobs WHERE presentation_id = ?
              AND section_key IS NULL ORDER BY created_at DESC LIMIT 1), 0)",
     )
-    .bind(&id)
+    .bind(id)
     .fetch_one(&state.db)
     .await?;
     let (job_id, job_state, section_job) = job
@@ -615,31 +636,37 @@ pub async fn view(
         .unwrap_or((String::new(), JobState::Failed, false));
 
     let sheet = FactSheet::build(&snapshot, &state.kb);
-    let level = parse_level(&level);
-    // While one section is written again, the others stay readable.
-    let rows = if job_state.is_finished() || section_job {
-        section_rows(&state, &id).await?
+    let level = parse_level(&data.reading_level);
+    let read_only = !data.is_current();
+    // While one section is written again, the others stay readable. An
+    // older version is frozen, so a running job does not touch it.
+    let rows = if read_only || job_state.is_finished() || section_job {
+        data.rows.clone()
     } else {
         Vec::new()
     };
     let writer_model = rows.first().map(|r| r.5.clone()).unwrap_or_default();
     let prompt_version = rows.first().map(|r| r.6.clone()).unwrap_or_default();
-    let changes = StaffChanges::load(&state, &id, version).await?;
+    let changes = StaffChanges::load(state, id, data.version).await?;
     let sections = rows
         .into_iter()
         .map(|r| {
             let output = stored_output(&r);
             let mut section = section_view(r, &sheet);
             changes.apply(&mut section);
-            super::review::annotate(&state, &mut section, output.as_ref(), &sheet, level);
+            super::review::annotate(state, &mut section, output.as_ref(), &sheet, level);
+            if read_only {
+                section.can_regenerate = false;
+                section.can_release = false;
+            }
             section
         })
         .collect();
     let procedures = procedure_facts(&snapshot, &sheet);
 
-    Ok(Json(PresentationView {
-        id,
-        version: u32::try_from(version).unwrap_or(1),
+    Ok(PresentationView {
+        id: id.to_owned(),
+        version: u32::try_from(data.version).unwrap_or(1),
         patient_key,
         patient_first_name: snapshot.patient.first_name.clone(),
         patient_display_name: display_name,
@@ -657,7 +684,17 @@ pub async fn view(
         writer_model,
         prompt_version,
         generation_ms: u64::try_from(generation_ms).unwrap_or(0),
-    }))
+        latest_version: u32::try_from(data.latest).unwrap_or(1),
+        read_only,
+        version_cause: data.cause,
+        version_created_at: crate::versions::rfc3339(data.created_at),
+        changes: data.changes.clone(),
+        source_state: match source_state.as_str() {
+            "plan_deleted" => SourceState::PlanDeleted,
+            "source_unavailable" => SourceState::SourceUnavailable,
+            _ => SourceState::Ok,
+        },
+    })
 }
 
 /// The stored model output of a section row, citations included.

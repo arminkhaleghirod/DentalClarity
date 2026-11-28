@@ -198,6 +198,25 @@ pub struct PresentationView {
     pub writer_model: String,
     pub prompt_version: String,
     pub generation_ms: u64,
+    /// The version staff edit and present now. Equal to `version` unless
+    /// this is an older version opened read-only.
+    #[serde(default)]
+    pub latest_version: u32,
+    /// An older version, opened from the history. Nothing can be changed
+    /// and it cannot be presented.
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub version_cause: crate::versions::VersionCause,
+    /// When this version was made, RFC 3339 UTC.
+    #[serde(default)]
+    pub version_created_at: String,
+    /// Changes from the version before, for the "plan changed" banner.
+    #[serde(default)]
+    pub changes: Vec<String>,
+    /// What the last poll of the practice records found.
+    #[serde(default)]
+    pub source_state: crate::versions::SourceState,
 }
 
 /// One row of `GET /api/staff/presentations`.

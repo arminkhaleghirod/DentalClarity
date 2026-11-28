@@ -153,6 +153,10 @@ pub async fn run(
         tracing::info!(resumed, "re-running interrupted generation jobs");
     }
 
+    // Plan sync: compares each presentation with the live plan and makes a
+    // new version when it changed. It never calls a model.
+    crate::sync::spawn(state.clone(), crate::sync::interval_from_env());
+
     let demo = config.mode == Mode::Demo;
     let narration = state.narration.clone();
     tokio::spawn(async move {
