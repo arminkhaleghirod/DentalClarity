@@ -15,9 +15,12 @@ path = "src/main.rs"
 default = ["opendental"]
 # The read-only Open Dental connector for clinical mode.
 opendental = ["dc-pms/opendental"]
+# Bedrock and Polly for clinical mode (docs/DECISIONS.md D15, D16).
+aws = ["dc-ai/aws"]
 
 [dependencies]
 anyhow.workspace = true
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 argon2 = { version = "0.5", features = ["std"] }
 async-trait.workspace = true
 axum.workspace = true
@@ -31,17 +34,25 @@ dc-knowledge.workspace = true
 dc-pms.workspace = true
 getrandom = "0.3"
 hex.workspace = true
+rcgen = "0.14"
 rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 subtle = "2"
+time = "0.3"
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 roxmltree = "0.20"
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
 [dev-dependencies]
+reqwest.workspace = true
 tower.workspace = true

@@ -154,6 +154,17 @@ Acceptance:
 - Installer technology chosen and built. TLS on the LAN, secrets protected with DPAPI.
 - The clinical-readiness gaps in [SECURITY.md](SECURITY.md) are listed in the README.
 
+Progress:
+- Done: Bedrock (Converse, structured output through one `output` tool) and Polly (neural, 16 kHz PCM wrapped as WAV) adapters in `dc-ai` behind the `aws` feature, with unit tests for request building, reply parsing, voices and audio that need no network. Default and CI builds do not compile the AWS SDK (DECISIONS D15, D16).
+- Done: clinical mode builds the AWS providers when the server is built with `--features aws` and `DC_AI_PROVIDER=aws` is set; otherwise it keeps the 503 answers. It never constructs OpenRouter (D17). Narration records Polly calls at the engine's price.
+- Pending: the live smoke test (`cargo run -p dc-ai --features aws --example aws_smoke`, synthetic text, one Bedrock and one Polly call). On 2026-11-28 the development account's IAM Identity Center session had expired, so it was not run. Until it runs, the Bedrock model id and the tool-use reply shape are unverified against the live service.
+- Done: `dentalclarity service install | uninstall | run` with the `windows-service` crate, under the virtual account `NT SERVICE\DentalClarity` (E28). The commands compile on Windows and other systems; installing and running the service on a clean Windows machine is still to be verified.
+- Done: HTTPS in the server process with rustls, from practice PEM files or a generated local CA (E29), with a test that a client trusting only the exported CA connects and one without it is refused. Device trust steps are in [deploy/windows/README.md](../deploy/windows/README.md).
+- Done: the DPAPI secret store with `dentalclarity secret set | delete` (E30), holding the AWS access key and the local CA key.
+- Installer: Inno Setup chosen (E31); the script is `deploy/windows/dentalclarity.iss`. Not built yet, because Inno Setup is not installed on the development machine.
+- Done: the README lists the clinical-readiness gaps from SECURITY.md.
+- Open: the narration listening test for the Polly voice, Bedrock and Polly data-handling terms, the Polly price check, short-lived AWS credentials, code signing, and an expiry reminder for practice-provided certificates.
+
 ## M10 Submission
 
 Acceptance:

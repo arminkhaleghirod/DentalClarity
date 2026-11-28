@@ -3,6 +3,7 @@
 pub mod api;
 pub mod assets;
 pub mod audit;
+pub mod clinical;
 pub mod config;
 pub mod credentials;
 pub mod generation;
@@ -12,10 +13,14 @@ pub mod limits;
 pub mod logo;
 pub mod narration;
 pub mod qa;
+pub mod secrets;
 pub mod security;
+pub mod server;
+pub mod service;
 pub mod sessions;
 pub mod settings;
 pub mod storage;
+pub mod tls;
 
 use axum::Router;
 use axum::middleware::from_fn_with_state;
@@ -41,7 +46,8 @@ pub struct AppState {
     /// Code map plus the educational entries used by the generation pipeline.
     pub kb: Arc<KnowledgeBase>,
     /// Models for the generation pipeline. `None` when no provider is
-    /// configured: clinical mode until M9, or demo mode without an API key.
+    /// configured: clinical mode without `DC_AI_PROVIDER=aws` (or a build
+    /// without the `aws` feature), or demo mode without an API key.
     pub generation: Option<Arc<Generation>>,
     /// Generation job slots and the create lock.
     pub jobs: Arc<Jobs>,

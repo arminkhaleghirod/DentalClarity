@@ -199,7 +199,7 @@ Open http://localhost:8080. The image is for demo mode only. [deploy/README.md](
 | `knowledge` | Procedure code map and knowledge entries |
 | `assets` | Logo, brand files and procedure illustrations |
 | `eval` | ClarityEval dev cases and the held-out commitment |
-| `deploy` | Dockerfile, entrypoint and Fly.io configuration for the demo |
+| `deploy` | Dockerfile, entrypoint and Fly.io configuration for the demo; `deploy/windows` has the clinical installer |
 | `scripts` | Helper scripts, such as the screenshot capture |
 | `docs` | Product, architecture, AI pipeline, UI, security and evaluation plans |
 
@@ -214,18 +214,34 @@ Open http://localhost:8080. The image is for demo mode only. [deploy/README.md](
 - [ClarityEval benchmark](docs/CLARITYEVAL.md)
 - [Implementation plan](docs/IMPLEMENTATION.md)
 - [Deploying the demo](deploy/README.md)
+- [Installing on Windows](deploy/windows/README.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Clinical use
 
-DentalClarity is a prototype. It has not been clinically validated. Open source and self-hosting do not make software HIPAA compliant, and neither does using a cloud service that is eligible under a business associate agreement. Before any practice uses it with real patient records, at least these gaps must be closed:
+DentalClarity is a prototype. It has not been clinically validated. Open source and self-hosting do not make software HIPAA compliant, and neither does using a cloud service that is eligible under a business associate agreement.
 
-- Individual staff accounts and audit attribution. The prototype has one shared staff account.
-- A completed security assessment by the practice.
-- A business associate agreement and verified configuration for the AWS services used.
-- Clinician review of every knowledge base entry and illustration. All of them are unreviewed until a dentist signs off.
+Clinical mode runs on a Windows server in the practice: a Windows service, HTTPS on the LAN with the practice's certificate or a generated local CA, secrets protected with DPAPI, and Bedrock and Polly in the practice's own AWS account. Building and installing it is described in [deploy/windows/README.md](deploy/windows/README.md).
 
-The full list is in [docs/SECURITY.md](docs/SECURITY.md).
+Before any practice uses it with real patient records, every gap in the [clinical-readiness checklist](docs/SECURITY.md#clinical-readiness-gap-checklist) must be closed, and the practice must complete its own security assessment:
+
+| # | Gap | Needed before real patient data |
+|---|---|---|
+| G1 | One shared staff account | Individual accounts, unique user identification, a per-user audit trail |
+| G2 | No roles | At least admin and staff roles, with settings and secrets limited to admin |
+| G3 | The database is not encrypted by the app | An encrypted database, or a documented and verified full-disk encryption requirement |
+| G4 | Backup encryption and restore | Encrypted backups and a tested restore procedure |
+| G5 | Provider agreements | A signed AWS business associate agreement, confirmed service eligibility and region, documented data flows |
+| G6 | AWS credential handling | Least-privilege IAM, and rotation or short-lived credentials |
+| G7 | TLS on all clients | A trusted certificate on every workstation and tablet, with no click-through warnings |
+| G8 | Audit log integrity | Append-only or hash-chained audit events, with retention set by the practice |
+| G9 | Clinical content review | Every knowledge base entry and illustration reviewed by a dentist; all are unreviewed now |
+| G10 | Open Dental semantics | Verification against the deployed Open Dental version, including how notes link to procedures |
+| G11 | Note handling | Staff confirmation of every note-derived block, and clinician review of note-derived output |
+| G12 | Retention | Retention periods approved by the practice and configured |
+| G13 | Incident response | A documented contact, a breach-assessment procedure and access to logs |
+| G14 | Independent review | An external security review or penetration test of the clinical build |
+| G15 | Windows hardening | The service account, data folder permissions and firewall rule verified on the practice's server, and a code-signed installer |
 
 ## Credits and attribution
 

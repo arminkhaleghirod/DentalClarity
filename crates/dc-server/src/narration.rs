@@ -30,8 +30,10 @@
 //!
 //! [`Narration::collect_garbage`] removes clips that have not been played
 //! for a while and keeps the cache under [`MAX_CACHE_BYTES`].
-//! Clinical mode has no speech provider until M9 and answers 503
-//! `narration_unavailable`.
+//! Clinical mode uses Amazon Polly when the server is built with the `aws`
+//! feature and `DC_AI_PROVIDER=aws` is set ([`crate::clinical`]); calls are
+//! recorded at the Polly engine's price per character. Without a provider,
+//! narration answers 503 `narration_unavailable`.
 
 use crate::AppState;
 use crate::generation::{Budget, Generation};
@@ -195,6 +197,8 @@ pub struct Narration {
     /// share of `upstream`.
     upstream_address: WindowLimiter,
     retry_delay: Duration,
+    /// Price per million synthesized characters, in US dollars.
+    usd_per_million_chars: f64,
 }
 
 impl Narration {
@@ -220,7 +224,20 @@ impl Narration {
             upstream: WindowLimiter::default(),
             upstream_address: WindowLimiter::default(),
             retry_delay: Duration::from_millis(500),
+            usd_per_million_chars: SPEECH_USD_PER_MILLION_CHARS,
         }
+    }
+
+    /// Records calls at `usd_per_million_chars` instead of the demo speech
+    /// model's price.
+    pub fn with_price(mut self, usd_per_million_chars: f64) -> Self {
+        self.usd_per_million_chars = usd_per_million_chars;
+        self
+    }
+
+    /// Cost of narrating `text` with this provider.
+    fn cost(&self, text: &str) -> f64 {
+        text.chars().count() as f64 * self.usd_per_million_chars / 1_000_000.0
     }
 
     /// Narration with no provider, for clinical mode and tests.
@@ -603,7 +620,7 @@ impl Narration {
     /// Calls the provider, retrying transport and server failures twice and
     /// a timeout or unusable reply once. Every attempt counts against the
     /// upstream limits and reserves its cost first. A clip, a timeout and an
-    /// unusable reply are recorded at [`speech_cost`], since the provider
+    /// unusable reply are recorded at the provider's price, since the provider
     /// may have billed them (D12); `billed` counts those attempts.
     async fn call(
         &self,
@@ -613,7 +630,7 @@ impl Narration {
         address: Option<&str>,
         billed: &mut u32,
     ) -> Result<dc_ai::SpeechClip, Failure> {
-        let cost = speech_cost(text);
+        let cost = self.cost(text);
         let request = SpeechRequest {
             model: self.model.clone(),
             text: text.to_owned(),
