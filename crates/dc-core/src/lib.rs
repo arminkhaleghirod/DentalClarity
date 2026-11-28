@@ -22,6 +22,7 @@ pub mod presentation;
 pub mod procedure;
 pub mod provenance;
 pub mod qa;
+pub mod setup;
 pub mod tooth;
 
 pub use mode::Mode;

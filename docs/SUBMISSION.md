@@ -29,7 +29,7 @@ It explains the plan the dentist made. It does not diagnose, recommend treatment
 The pipeline treats the model as a writer of plain-language sentences around facts it cannot change.
 
 1. **Locked facts.** The server takes a read-only snapshot of the plan and builds a FactSheet. Procedures, teeth, surfaces, phases and fees become facts with opaque ids (`p1`, `ph1`). Names, patient numbers, dates, contact details and money never reach a model; they are filled in on the server after validation.
-2. **Curated knowledge.** Each procedure code maps deterministically to one of 22 knowledge base entries, written for this project with cited sources. A code without an entry gets no generated text at all.
+2. **Curated knowledge.** Each procedure code maps deterministically to one of 30 knowledge base entries, written for this project with cited sources. The held-out evaluation ran with the first 22. A code without an entry gets no generated text at all.
 3. **Sanitized note.** The linked clinical note is stripped of identifiers. If too much has to be removed, it is dropped instead of passed on.
 4. **Section writer.** One model call per section returns strict JSON in which every sentence cites the facts, passages or note it relies on.
 5. **Deterministic validators.** Seventeen checks run on every section: schema, reference ids, citations, tooth numbers, codes, timing, costs, and wording that would diagnose, promise an outcome, pressure the patient or give medication advice. Any blocking failure sends the section back for repair.
@@ -99,7 +99,7 @@ The dry run needs no key and checks the whole flow offline. Every run records mo
 
 ## With another month
 
-- Dentist review of all 22 knowledge entries and the illustrations, and a blinded review of 20 to 30 outputs to calibrate the automated judge.
+- Dentist review of all 30 knowledge entries and the illustrations, and a blinded review of 20 to 30 outputs to calibrate the automated judge.
 - Translation into Spanish and Vietnamese with back-translation checks, and three reading levels, each measured in ClarityEval.
 - A grounded "Ask a question" feature that answers only from the plan and the knowledge base, and refers everything else to the dentist.
 - The take-home PDF booklet.

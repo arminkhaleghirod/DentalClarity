@@ -1,6 +1,7 @@
 //! Practice and branding settings.
 
 use crate::api;
+use crate::logo::{LogoSettings, PracticeMark};
 use crate::motion::SkeletonCard;
 use crate::session::use_session;
 use dc_core::Mode;
@@ -24,6 +25,7 @@ pub fn SettingsPage() -> impl IntoView {
             practice_name: info.map(|i| i.practice_name).unwrap_or_default(),
             brand_primary: DEFAULT_BRAND_PRIMARY.into(),
             brand_highlight: DEFAULT_BRAND_HIGHLIGHT.into(),
+            logo_url: None,
         };
         return view! {
             {header}
@@ -39,6 +41,7 @@ pub fn SettingsPage() -> impl IntoView {
                     name=Signal::stored(values.practice_name)
                     primary=Signal::stored(values.brand_primary)
                     highlight=Signal::stored(values.brand_highlight)
+                    logo=Signal::stored(None)
                 />
             </section>
         }
@@ -74,6 +77,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
     let name = RwSignal::new(values.practice_name);
     let primary = RwSignal::new(values.brand_primary);
     let highlight = RwSignal::new(values.brand_highlight);
+    let logo = RwSignal::new(values.logo_url);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let saved = RwSignal::new(false);
@@ -96,6 +100,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
             practice_name: name.get_untracked(),
             brand_primary: primary.get_untracked(),
             brand_highlight: highlight.get_untracked(),
+            logo_url: None,
         };
         busy.set(true);
         error.set(None);
@@ -122,6 +127,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
     view! {
         <section class="card settings-card reveal" aria-labelledby="branding-title">
             <h2 id="branding-title" class="card-title">"Practice and branding"</h2>
+            <LogoSettings logo />
             // Any edit after a save makes "Saved." stale. Input events from
             // every field bubble up to the form.
             <form class="form settings-form" on:submit=on_submit on:input=move |_| saved.set(false)>
@@ -142,7 +148,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
                 </p>
                 <ColorField label="Highlight color" id="brand-highlight" value=highlight
                     hint="Marks the patient's own teeth." />
-                <Preview name=name.into() primary=primary.into() highlight=highlight.into() />
+                <Preview name=name.into() primary=primary.into() highlight=highlight.into() logo=logo.into() />
                 <Show when=move || error.get().is_some()>
                     <p class="form-error" role="alert">{move || error.get().unwrap_or_default()}</p>
                 </Show>
@@ -160,7 +166,7 @@ fn BrandingForm(values: PracticeSettings) -> impl IntoView {
 }
 
 #[component]
-fn ColorField(
+pub fn ColorField(
     label: &'static str,
     id: &'static str,
     value: RwSignal<String>,
@@ -197,10 +203,11 @@ fn ColorField(
 
 /// The patient header as it will look with these settings.
 #[component]
-fn Preview(
+pub fn Preview(
     name: Signal<String>,
     primary: Signal<String>,
     highlight: Signal<String>,
+    logo: Signal<Option<String>>,
 ) -> impl IntoView {
     let background = move || {
         let p = primary.get();
@@ -218,9 +225,7 @@ fn Preview(
         <figure class="brand-preview">
             <figcaption>"Preview of the patient header"</figcaption>
             <div class="preview-bar" style:background-color=background>
-                <span class="preview-logo" aria-hidden="true">
-                    {move || name.get().chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()}
-                </span>
+                <PracticeMark name logo class="preview-logo" />
                 <span class="preview-name">{move || name.get()}</span>
             </div>
             <div class="preview-body">

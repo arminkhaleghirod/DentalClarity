@@ -65,10 +65,14 @@ async fn present_reports_add_up_on_the_analytics_screen() {
     assert_eq!(summary.generation.presentations, 1);
     assert_eq!(summary.present.sessions, 1);
     assert_eq!(summary.present.presentations, 1);
-    // 15 + 10 + the 40 seconds left of the minute (60 + 5 slack - 25).
-    assert_eq!(summary.present.seconds, 65);
+    // 15 + 10 + the 40 seconds left of the minute (60 + 5 slack - 25), or
+    // one more if the test crossed a second boundary.
+    assert!((65..=66).contains(&summary.present.seconds));
     assert_eq!(summary.present.narration_plays, 1);
-    assert_eq!(summary.present.median_seconds, Some(65));
+    assert_eq!(
+        summary.present.median_seconds,
+        Some(summary.present.seconds)
+    );
     assert_eq!(summary.languages.len(), 1);
     assert_eq!(summary.languages[0].language, "en");
     assert_eq!(
@@ -83,10 +87,8 @@ async fn present_reports_add_up_on_the_analytics_screen() {
         .iter()
         .find(|s| s.screen == PresentScreen::Costs)
         .unwrap();
-    assert_eq!(
-        (costs.seconds, costs.sessions, costs.narration_plays),
-        (50, 1, 1)
-    );
+    assert_eq!(costs.seconds, summary.present.seconds - 15);
+    assert_eq!((costs.sessions, costs.narration_plays), (1, 1));
     assert_eq!(summary.screens.len(), PresentScreen::ALL.len());
     assert_eq!(summary.presented.len(), 1);
     let row = &summary.presented[0];

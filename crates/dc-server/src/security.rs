@@ -31,11 +31,14 @@ pub async fn headers(State(state): State<AppState>, request: Request, next: Next
             h.insert(name, v);
         }
     };
-    set(
-        h,
-        "content-security-policy",
-        assets::content_security_policy(),
-    );
+    // A response may bring a stricter policy of its own (the practice logo).
+    if !h.contains_key("content-security-policy") {
+        set(
+            h,
+            "content-security-policy",
+            assets::content_security_policy(),
+        );
+    }
     set(h, "x-content-type-options", "nosniff");
     set(h, "x-frame-options", "DENY");
     set(h, "referrer-policy", "no-referrer");

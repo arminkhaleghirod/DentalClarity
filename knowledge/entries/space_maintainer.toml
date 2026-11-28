@@ -1,0 +1,62 @@
+id = "space_maintainer"
+version = 1
+title = "Space maintainer"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "mh_space_maintainers"
+publisher = "American Dental Association (MouthHealthy)"
+title = "Space Maintainers"
+url = "https://www.mouthhealthy.org/all-topics-a-z/space-maintainers"
+accessed = "2026-11-28"
+
+[[sources]]
+id = "dd_space_maintainers"
+publisher = "Delta Dental"
+title = "Space maintainers"
+url = "https://www.deltadental.com/protect-my-smile/life-stages/children-teens/space-maintainers/"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "A space maintainer is a small device that holds open the gap left when a baby tooth comes out too early. It is custom-made to fit the child's mouth. Many are a metal band or cap on a tooth next to the gap, joined by a wire loop that reaches across the space."
+sources = ["mh_space_maintainers", "dd_space_maintainers"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Baby teeth hold space for the adult teeth growing underneath. When a baby tooth is lost early, often because of decay or an injury, the nearby teeth can drift into the gap. A space maintainer keeps that room open until the adult tooth is ready to come in."
+sources = ["mh_space_maintainers", "dd_space_maintainers"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The dentist takes an impression or scan of the child's teeth so the device can be made to fit. When it is ready, the dentist places it on the tooth beside the gap. The dentist checks it at regular visits and takes it out once the adult tooth is ready to come through."
+sources = ["dd_space_maintainers"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "A new space maintainer can feel strange at first, and most children get used to it. Keep it clean with regular brushing and flossing, and avoid sticky candy and gum, which can pull it loose. Try to keep your child from pushing or playing with it, and call the dentist if it ever feels loose or bent."
+sources = ["dd_space_maintainers"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Holding the space gives the adult tooth room to come in where it belongs. This can help avoid crowded or crooked adult teeth and may reduce the need for braces later."
+sources = ["mh_space_maintainers", "dd_space_maintainers"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "Without something holding the space, nearby teeth may slowly shift into the gap. The adult tooth may then have too little room and come in out of place. Your dental team can talk with you about timing and whether your child still needs one."
+sources = ["mh_space_maintainers", "dd_space_maintainers"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "How long will my child need to wear the space maintainer? Which foods should we avoid? How do we keep it clean? What should we do if it comes loose?"
+sources = ["dd_space_maintainers"]

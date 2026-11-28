@@ -6,29 +6,63 @@
 #
 # A code missing from this file maps to `unsupported`, which routes the
 # procedure to staff review instead of generated content.
+#
+# D2962 stays unmapped for now: ClarityEval case G-001 uses it as a valid
+# code without an entry (DECISIONS E25).
 
 [codes]
 D0120 = { category = "exam", name = "Checkup exam" }
+D0140 = { category = "exam", name = "Problem-focused exam" }
 D0150 = { category = "exam", name = "Full exam" }
+D0180 = { category = "exam", name = "Full gum exam" }
 D0210 = { category = "radiographs", name = "Full set of X-rays" }
+D0220 = { category = "radiographs", name = "Single tooth X-ray" }
+D0272 = { category = "radiographs", name = "Checkup X-rays" }
 D0274 = { category = "radiographs", name = "Checkup X-rays" }
+D0330 = { category = "radiographs", name = "Panoramic X-ray" }
 D1110 = { category = "cleaning", name = "Cleaning" }
 D1120 = { category = "cleaning", name = "Child cleaning" }
 D1206 = { category = "fluoride", name = "Fluoride varnish" }
+D1208 = { category = "fluoride", name = "Fluoride treatment" }
 D1351 = { category = "sealant", name = "Sealant" }
+D1510 = { category = "space_maintainer", name = "Space maintainer" }
+D1516 = { category = "space_maintainer", name = "Space maintainer" }
+D1517 = { category = "space_maintainer", name = "Space maintainer" }
 D2140 = { category = "filling_amalgam", name = "Silver filling" }
 D2150 = { category = "filling_amalgam", name = "Silver filling" }
+D2160 = { category = "filling_amalgam", name = "Silver filling" }
+D2330 = { category = "filling_composite", name = "Tooth-colored filling" }
+D2331 = { category = "filling_composite", name = "Tooth-colored filling" }
+D2332 = { category = "filling_composite", name = "Tooth-colored filling" }
 D2391 = { category = "filling_composite", name = "Tooth-colored filling" }
 D2392 = { category = "filling_composite", name = "Tooth-colored filling" }
 D2393 = { category = "filling_composite", name = "Tooth-colored filling" }
+D2394 = { category = "filling_composite", name = "Tooth-colored filling" }
+D2610 = { category = "inlay_onlay", name = "Inlay" }
+D2620 = { category = "inlay_onlay", name = "Inlay" }
+D2630 = { category = "inlay_onlay", name = "Inlay" }
+D2642 = { category = "inlay_onlay", name = "Onlay" }
+D2643 = { category = "inlay_onlay", name = "Onlay" }
+D2644 = { category = "inlay_onlay", name = "Onlay" }
 D2740 = { category = "crown", name = "Crown" }
 D2750 = { category = "crown", name = "Crown" }
+D2790 = { category = "crown", name = "Crown" }
+D2930 = { category = "stainless_steel_crown", name = "Baby tooth steel crown" }
 D2950 = { category = "core_buildup", name = "Build-up" }
 D2954 = { category = "post_and_core", name = "Post and build-up" }
+D2960 = { category = "veneer", name = "Veneer" }
+D2961 = { category = "veneer", name = "Veneer" }
 D3220 = { category = "pulpotomy", name = "Baby tooth nerve treatment" }
 D3310 = { category = "root_canal", name = "Root canal" }
 D3320 = { category = "root_canal", name = "Root canal" }
 D3330 = { category = "root_canal", name = "Root canal" }
+D3410 = { category = "apicoectomy", name = "Root-end surgery" }
+D3421 = { category = "apicoectomy", name = "Root-end surgery" }
+D3425 = { category = "apicoectomy", name = "Root-end surgery" }
+D4249 = { category = "crown_lengthening", name = "Crown lengthening" }
+D4270 = { category = "gum_graft", name = "Gum graft" }
+D4273 = { category = "gum_graft", name = "Gum graft" }
+D4277 = { category = "gum_graft", name = "Gum graft" }
 D4341 = { category = "periodontal_scaling", name = "Deep cleaning" }
 D4342 = { category = "periodontal_scaling", name = "Deep cleaning" }
 D4910 = { category = "periodontal_scaling", name = "Gum maintenance cleaning" }
@@ -37,10 +71,16 @@ D5120 = { category = "denture_complete", name = "Full denture" }
 D5213 = { category = "denture_partial", name = "Partial denture" }
 D5214 = { category = "denture_partial", name = "Partial denture" }
 D6010 = { category = "implant", name = "Dental implant" }
+D6058 = { category = "implant_crown", name = "Implant crown" }
 D6065 = { category = "implant_crown", name = "Implant crown" }
 D6240 = { category = "bridge", name = "Bridge (replacement tooth)" }
 D6750 = { category = "bridge", name = "Bridge (supporting crown)" }
 D7140 = { category = "extraction", name = "Tooth removal" }
 D7210 = { category = "surgical_extraction", name = "Surgical tooth removal" }
+D7220 = { category = "surgical_extraction", name = "Surgical tooth removal" }
+D7230 = { category = "surgical_extraction", name = "Surgical tooth removal" }
+D7240 = { category = "surgical_extraction", name = "Surgical tooth removal" }
 D7953 = { category = "bone_graft", name = "Bone graft" }
 D9944 = { category = "night_guard", name = "Night guard" }
+D9972 = { category = "whitening", name = "In-office whitening" }
+D9975 = { category = "whitening", name = "Take-home whitening" }

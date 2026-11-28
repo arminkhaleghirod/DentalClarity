@@ -324,6 +324,20 @@ mod tests {
         assert!(dir.join("fallback.svg").is_file());
     }
 
+    /// Categories that show the neutral fallback drawing until one is drawn
+    /// for them. A new category must be added either here or to
+    /// `ILLUSTRATIONS`, so the choice is made on purpose.
+    const USES_FALLBACK: &[&str] = &[
+        "inlay_onlay",
+        "veneer",
+        "space_maintainer",
+        "stainless_steel_crown",
+        "crown_lengthening",
+        "apicoectomy",
+        "gum_graft",
+        "whitening",
+    ];
+
     #[test]
     fn every_mapped_category_has_alt_text() {
         let codes =
@@ -332,7 +346,7 @@ mod tests {
         for part in text.split("category = \"").skip(1) {
             let id = part.split('"').next().unwrap_or_default();
             assert!(
-                ILLUSTRATIONS.iter().any(|(known, _)| *known == id),
+                ILLUSTRATIONS.iter().any(|(known, _)| *known == id) || USES_FALLBACK.contains(&id),
                 "no illustration for {id}"
             );
         }

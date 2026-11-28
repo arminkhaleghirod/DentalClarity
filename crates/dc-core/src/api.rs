@@ -73,6 +73,17 @@ pub struct SetupRequest {
     pub practice_name: String,
     pub password: String,
     pub pin: String,
+    /// `#RRGGBB`, checked like the Settings value. The default when absent.
+    #[serde(default)]
+    pub brand_primary: Option<String>,
+    /// `#RRGGBB`. The default when absent.
+    #[serde(default)]
+    pub brand_highlight: Option<String>,
+    /// The wizard's final step: local network use, provider terms and the
+    /// clinical-readiness notice were acknowledged. Recorded in the
+    /// `setup_completed` audit event.
+    #[serde(default)]
+    pub acknowledged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +186,11 @@ pub struct PracticeSettings {
     pub brand_primary: String,
     /// `#RRGGBB`. Marks the patient's own teeth.
     pub brand_highlight: String,
+    /// Where staff screens load the practice logo, with a version so a new
+    /// upload is fetched again. `None` when no logo is set. Ignored on save;
+    /// the logo has its own route.
+    #[serde(default)]
+    pub logo_url: Option<String>,
 }
 
 pub const DEFAULT_BRAND_PRIMARY: &str = "#1B3A5C";

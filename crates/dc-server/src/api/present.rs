@@ -307,6 +307,9 @@ pub(super) async fn patient_view(
         name: settings.practice_name,
         primary: settings.brand_primary,
         highlight: settings.brand_highlight,
+        logo_url: crate::logo::version(&state.db)
+            .await?
+            .map(|v| super::logo::present_url(&v)),
     };
     // Content is English until translations land (M7).
     let language = "en".to_owned();

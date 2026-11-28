@@ -9,6 +9,7 @@ pub mod generation;
 pub mod http;
 pub mod jobs;
 pub mod limits;
+pub mod logo;
 pub mod narration;
 pub mod qa;
 pub mod security;

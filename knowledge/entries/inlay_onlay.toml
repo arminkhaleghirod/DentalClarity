@@ -1,0 +1,62 @@
+id = "inlay_onlay"
+version = 1
+title = "Inlay or onlay"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "cc_restorative"
+publisher = "Cleveland Clinic"
+title = "Restorative Dentistry: What It Is, Types & Procedures"
+url = "https://my.clevelandclinic.org/health/treatments/10924-dental-restorations"
+accessed = "2026-11-28"
+
+[[sources]]
+id = "cc_fillings"
+publisher = "Cleveland Clinic"
+title = "Dental Fillings: Types, Materials & What They're For"
+url = "https://my.clevelandclinic.org/health/treatments/17002-dental-fillings"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "An inlay or onlay is a custom-made piece that fits into a damaged tooth like a puzzle piece. An inlay sits in the area between the raised points on the chewing surface of a back tooth. An onlay also covers one or more of those points. They are often made of tooth-colored porcelain or gold."
+sources = ["cc_restorative", "cc_fillings"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "Dentists often use an inlay or onlay when a tooth has more damage than a regular filling can fix, but not so much that it needs a crown. It lets the dentist keep more of the natural tooth than a crown usually would."
+sources = ["cc_restorative", "cc_fillings"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "Your dentist usually numbs the area and removes the damaged part of the tooth. An impression or digital scan is taken so the piece can be made to fit, often in a dental lab. When it is ready, your dentist checks the fit and bonds it to the tooth. Some offices can design and make the piece during the same visit."
+sources = ["cc_fillings", "cc_restorative"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Most people go back to their normal day right away. It is common for the tooth or nearby gum to feel a little sensitive or sore for a short time, and this usually fades. Wait until the numbness wears off before you eat, so you don't bite your cheek or tongue."
+sources = ["cc_fillings"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "An inlay or onlay restores the shape of a damaged tooth so you can chew comfortably. It is made to fit your tooth closely. Brushing, flossing and regular checkups help it stay in good shape."
+sources = ["cc_restorative", "cc_fillings"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If a damaged tooth is left as it is, the decay or break can grow over time. A larger problem may mean the tooth later needs a crown or other treatment. Many people take time to think it over, and the decision is yours to make with your dental team."
+sources = ["cc_restorative"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Why is an inlay or onlay a better fit for my tooth than a filling or a crown? What material do you suggest? Will I have a temporary filling while it is made? How should I care for it?"
+sources = ["cc_restorative", "cc_fillings"]

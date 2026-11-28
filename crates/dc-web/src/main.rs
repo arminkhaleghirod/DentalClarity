@@ -9,6 +9,7 @@ mod create;
 mod editor;
 mod format;
 mod icons;
+mod logo;
 mod motion;
 mod pages;
 mod patients;
@@ -19,6 +20,7 @@ mod progress;
 mod questions;
 mod session;
 mod settings;
+mod setup;
 mod shell;
 
 use dc_core::api::SessionState;
@@ -71,7 +73,7 @@ fn App() -> impl IntoView {
                     <div class="notice error" role="alert">"DentalClarity is not reachable. " {message}</div>
                 </div>
             }.into_any(),
-            Gate::Setup => view! { <session::Setup /> }.into_any(),
+            Gate::Setup => view! { <setup::SetupWizard /> }.into_any(),
             Gate::SignIn(practice_name) => view! { <session::SignIn practice_name /> }.into_any(),
             Gate::Locked(practice_name) => view! { <session::Locked practice_name /> }.into_any(),
             Gate::Workspace => view! { <Workspace /> }.into_any(),

@@ -1,0 +1,55 @@
+id = "apicoectomy"
+version = 1
+title = "Root-end surgery (apicoectomy)"
+review_status = "unreviewed"
+reviewed_by = ""
+updated = "2026-11-28"
+
+[[sources]]
+id = "aae_endo_surgery"
+publisher = "American Association of Endodontists"
+title = "Endodontic Surgery Explained"
+url = "https://www.aae.org/patients/root-canal-treatment/endodontic-treatment-options/endodontic-surgery/endodontic-surgery-explained/"
+accessed = "2026-11-28"
+
+[[passages]]
+id = "what_it_is"
+topic = "what_it_is"
+text = "An apicoectomy is a small surgery on the tip of a tooth's root. It is also called root-end surgery. The dentist reaches the root through the gum, removes irritated or infected tissue, and trims off the very end of the root. It is usually done by a root canal specialist."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "common_reasons"
+topic = "common_reasons"
+text = "It is often used when the area around a root tip stays irritated or infected after root canal treatment. It can also help when a very narrow canal or a small hidden crack cannot be treated from inside the tooth. The goal is to keep the natural tooth."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "what_happens"
+topic = "what_happens"
+text = "The area is numbed so you stay comfortable. The gum near the tooth is opened, the irritated tissue is cleaned away, and the tip of the root is removed. A small filling may be placed to seal the end of the root, and stitches help the gum heal. Over time, the bone usually grows back around the root end."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "recovery"
+topic = "recovery"
+text = "Some mild discomfort and swelling are normal while the area heals. Many people go back to their usual routine the next day. Follow your care instructions, and call your dental team if the pain is not getting better."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "benefits"
+topic = "benefits"
+text = "Root-end surgery is meant to help save a tooth that might otherwise need to come out. Keeping your own tooth helps you chew normally."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "if_delayed"
+topic = "if_delayed"
+text = "If irritation or infection at the root tip is left alone, it may cause more discomfort or affect the bone around the tooth over time. It can also mean the tooth is harder to save later. Many people take time to think it over, and the decision is yours to make with your dental team."
+sources = ["aae_endo_surgery"]
+
+[[passages]]
+id = "questions"
+topic = "questions"
+text = "Why is surgery a better option for my tooth than another root canal? Who will do the surgery? Can I drive myself home afterward? How will we know the area is healing?"
+sources = ["aae_endo_surgery"]

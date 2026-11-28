@@ -18,6 +18,7 @@ use dc_core::presentation::{
     PresentationView, RegenerateSectionResponse,
 };
 use dc_core::qa::StaffQuestions;
+use dc_core::setup::{SetupCheckRequest, SetupCheckResponse};
 use gloo_net::http::{Request, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -397,4 +398,50 @@ pub async fn release_section(
     section_key: String,
 ) -> Result<BlockChangeResponse, Failure> {
     post(&section_path(&id, &section_key, "release"), &()).await
+}
+
+/// Checks the setup code and reads the connection status for the wizard.
+pub async fn setup_check(setup_code: String) -> Result<SetupCheckResponse, Failure> {
+    let response = send(
+        Write::Post,
+        "/api/setup/check",
+        &SetupCheckRequest { setup_code },
+    )
+    .await?;
+    finish(response, false).await
+}
+
+const LOGO_PATH: &str = "/api/staff/settings/logo";
+
+/// Uploads the practice logo. The file is the request body; the server
+/// decides its type from the bytes.
+pub async fn upload_logo(file: web_sys::File) -> Result<PracticeSettings, Failure> {
+    let send_once = || {
+        let file = file.clone();
+        async move {
+            Request::put(LOGO_PATH)
+                .header("X-DC-CSRF", &current_csrf())
+                .header("Content-Type", "application/octet-stream")
+                .body(file)
+                .map_err(network)?
+                .send()
+                .await
+                .map_err(network)
+        }
+    };
+    let response = send_with_fresh_csrf(send_once).await?;
+    finish(response, true).await
+}
+
+/// Removes the practice logo; patient screens show the initial again.
+pub async fn remove_logo() -> Result<PracticeSettings, Failure> {
+    let send_once = || async {
+        Request::delete(LOGO_PATH)
+            .header("X-DC-CSRF", &current_csrf())
+            .send()
+            .await
+            .map_err(network)
+    };
+    let response = send_with_fresh_csrf(send_once).await?;
+    finish(response, true).await
 }
