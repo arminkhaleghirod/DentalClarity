@@ -279,28 +279,30 @@ fn aligned_part(sentences: &[PatientSentence], keys: &[String]) -> Option<Vec<St
 
 /// Builds what the patient may see for the present session's version: only
 /// ready sections, staff text where it exists, and note-derived blocks only
-/// after staff confirmed them.
+/// after staff confirmed them. An older version is read from the version
+/// history, so a plan change during Present mode does not change what the
+/// patient sees (PRD FR-VER-06).
 pub(super) async fn patient_view(
     state: &AppState,
     id: &str,
     bound_version: i64,
 ) -> Result<PatientView, Failure> {
-    let row: Option<(String, i64, String)> = sqlx::query_as(
-        "SELECT reading_level, version, snapshot_json FROM presentations WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
-    let Some((level, version, snapshot)) = row else {
-        return Err(not_found("presentation"));
-    };
-    if version != bound_version {
-        return Err(Failure::conflict(
-            "version_changed",
-            "This presentation has changed. Ask your dental team to open it again.",
-        ));
-    }
-    let snapshot: PlanSnapshot = serde_json::from_str(&snapshot).map_err(Failure::internal)?;
+    let data = crate::versions::load(&state.db, id, Some(bound_version))
+        .await?
+        .ok_or_else(|| not_found("presentation"))?;
+    patient_view_of(state, id, data).await
+}
+
+/// [`patient_view`] for a version already loaded.
+pub(super) async fn patient_view_of(
+    state: &AppState,
+    id: &str,
+    data: crate::versions::VersionData,
+) -> Result<PatientView, Failure> {
+    let level = data.reading_level;
+    let version = data.version;
+    let snapshot: PlanSnapshot =
+        serde_json::from_str(&data.snapshot_json).map_err(Failure::internal)?;
     let sheet = FactSheet::build(&snapshot, &state.kb);
     let settings = load_settings(state).await?;
     let brand = PracticeBrand {
@@ -317,7 +319,7 @@ pub(super) async fn patient_view(
         language: &language,
     };
 
-    let sections = load_sections(state, id, version, &sheet)
+    let sections = load_sections(state, id, version, data.rows, &sheet)
         .await?
         .into_iter()
         .filter(|s| s.visibility == SectionVisibility::Ready)

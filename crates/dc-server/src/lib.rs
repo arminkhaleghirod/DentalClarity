@@ -14,6 +14,8 @@ pub mod security;
 pub mod sessions;
 pub mod settings;
 pub mod storage;
+pub mod sync;
+pub mod versions;
 
 use axum::Router;
 use axum::middleware::from_fn_with_state;

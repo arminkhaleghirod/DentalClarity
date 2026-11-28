@@ -30,8 +30,14 @@ pub async fn dashboard(
 ) -> Result<Json<Vec<PatientRow>>, Failure> {
     // Presentations in this caller's scope, newest first.
     let owner = super::presentations::owner_scope(&state, &session);
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT p.patient_key, p.plan_key, p.id, j.state
+    // A version made by a plan change counts as "Plan changed" until staff
+    // present or export it.
+    let rows: Vec<DashboardRow> = sqlx::query_as(
+        "SELECT p.patient_key, p.plan_key, p.id, j.state,
+             EXISTS (SELECT 1 FROM presentation_versions v
+                     WHERE v.presentation_id = p.id AND v.version = p.version
+                       AND v.cause = 'plan_changed'
+                       AND v.presented_at IS NULL AND v.exported_at IS NULL)
          FROM presentations p JOIN jobs j ON j.presentation_id = p.id
          WHERE p.owner_scope = ?
          ORDER BY p.created_at DESC, p.rowid DESC, j.created_at DESC",
@@ -79,18 +85,25 @@ pub async fn dashboard(
     Ok(Json(rows))
 }
 
-/// The newest presentation for each (patient key, plan key), from rows of
-/// `(patient_key, plan_key, presentation_id, job_state)` sorted newest first.
-/// A presentation of another plan must not show on the row of the plan the
-/// dashboard displays.
+/// `(patient_key, plan_key, presentation_id, job_state, plan_changed)`.
+type DashboardRow = (String, String, String, String, bool);
+
+/// The newest presentation for each (patient key, plan key), from
+/// [`DashboardRow`]s sorted newest first. A presentation of another plan
+/// must not show on the row of the plan the dashboard displays.
 fn latest_per_plan(
-    rows: Vec<(String, String, String, String)>,
+    rows: Vec<DashboardRow>,
 ) -> HashMap<(String, String), (String, PresentationStatus)> {
     let mut latest = HashMap::new();
-    for (patient_key, plan_key, id, job_state) in rows {
-        latest
-            .entry((patient_key, plan_key))
-            .or_insert_with(|| (id, status_for_job(&job_state)));
+    for (patient_key, plan_key, id, job_state, plan_changed) in rows {
+        latest.entry((patient_key, plan_key)).or_insert_with(|| {
+            let status = match status_for_job(&job_state) {
+                PresentationStatus::Generating => PresentationStatus::Generating,
+                _ if plan_changed => PresentationStatus::PlanChanged,
+                other => other,
+            };
+            (id, status)
+        });
     }
     latest
 }
@@ -341,6 +354,7 @@ mod tests {
                 plan.to_owned(),
                 id.to_owned(),
                 job.to_owned(),
+                plan == "4",
             )
         };
         // Newest first: plan 2 was presented after plan 1.
@@ -348,6 +362,7 @@ mod tests {
             row("2", "c", "running"),
             row("1", "b", "succeeded"),
             row("1", "a", "failed"),
+            row("4", "d", "needs_review"),
         ]);
         let key = |plan: &str| ("7".to_owned(), plan.to_owned());
         assert_eq!(
@@ -359,5 +374,9 @@ mod tests {
             Some(&("c".to_owned(), PresentationStatus::Generating))
         );
         assert!(!latest.contains_key(&key("3")));
+        assert_eq!(
+            latest.get(&key("4")),
+            Some(&("d".to_owned(), PresentationStatus::PlanChanged))
+        );
     }
 }

@@ -423,6 +423,16 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
                 .await?;
         }
         Some(key) => {
+            // A version that was presented or exported stays as it was; the
+            // rewrite goes into a new version.
+            let label = SectionKind::from_key(key)
+                .map_or_else(|| key.clone(), |kind| section_label(&kind, &sheet));
+            let version = crate::versions::fork_if_frozen(
+                &mut tx,
+                &presentation_id,
+                &format!("Section written again: {label}"),
+            )
+            .await?;
             sqlx::query("DELETE FROM presentation_sections WHERE presentation_id = ? AND key = ?")
                 .bind(&presentation_id)
                 .bind(key)
@@ -432,9 +442,11 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
             // whatever the section says now. Staff edits stay: the facts are
             // the same, so they carry forward (AI_PIPELINE, staff-edit conflicts).
             sqlx::query(
-                "DELETE FROM note_confirmations WHERE presentation_id = ? AND section_key = ?",
+                "DELETE FROM note_confirmations
+                 WHERE presentation_id = ? AND version = ? AND section_key = ?",
             )
             .bind(&presentation_id)
+            .bind(version)
             .bind(key)
             .execute(&mut *tx)
             .await?;
@@ -567,6 +579,8 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
         "DELETE FROM staff_edits WHERE presentation_id IN
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
         "DELETE FROM note_confirmations WHERE presentation_id IN
+             (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+        "DELETE FROM presentation_versions WHERE presentation_id IN
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
         "DELETE FROM job_section_results WHERE job_id IN
              (SELECT j.id FROM jobs j JOIN presentations p ON p.id = j.presentation_id

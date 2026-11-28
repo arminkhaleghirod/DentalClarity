@@ -21,6 +21,7 @@ pub mod presentation;
 pub mod procedure;
 pub mod provenance;
 pub mod tooth;
+pub mod versions;
 
 pub use mode::Mode;
 pub use money::Money;

@@ -311,6 +311,33 @@ pub async fn presentation(id: String) -> Result<PresentationView, Failure> {
     get(&format!("/api/staff/presentations/{}", encode(&id))).await
 }
 
+/// One version of a presentation; older versions come back read-only.
+pub async fn presentation_version(id: String, version: u32) -> Result<PresentationView, Failure> {
+    get(&format!(
+        "/api/staff/presentations/{}/versions/{version}",
+        encode(&id)
+    ))
+    .await
+}
+
+/// Every version of a presentation, newest first.
+pub async fn versions(id: String) -> Result<Vec<dc_core::versions::VersionSummary>, Failure> {
+    get(&format!(
+        "/api/staff/presentations/{}/versions",
+        encode(&id)
+    ))
+    .await
+}
+
+/// Download link of the booklet PDF: the current version, or `version`.
+pub fn booklet_href(id: &str, version: Option<u32>) -> String {
+    let base = format!("/api/staff/presentations/{}/export", encode(id));
+    match version {
+        Some(v) => format!("{base}?version={v}"),
+        None => base,
+    }
+}
+
 pub async fn presentations() -> Result<Vec<PresentationSummary>, Failure> {
     get("/api/staff/presentations").await
 }

@@ -2,6 +2,7 @@
 //! authorization matrix in docs/SECURITY.md.
 
 mod auth;
+pub(crate) mod booklet;
 mod edits;
 mod present;
 mod presentations;
@@ -9,6 +10,7 @@ mod review;
 mod staff;
 #[cfg(test)]
 mod tests;
+mod versions;
 
 use crate::{AppState, security};
 use axum::extract::DefaultBodyLimit;
@@ -32,6 +34,12 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         )
         .route("/presentations/{id}", get(presentations::view))
         .route("/presentations/{id}/present", post(present::start))
+        .route("/presentations/{id}/export", get(booklet::export))
+        .route("/presentations/{id}/versions", get(versions::list))
+        .route(
+            "/presentations/{id}/versions/{version}",
+            get(versions::view),
+        )
         .route("/presentations/{id}/blocks", put(edits::update))
         .route("/presentations/{id}/blocks/revert", post(edits::revert))
         .route(

@@ -5,6 +5,7 @@ use crate::api;
 use crate::format::{
     CONTENT_LANGUAGES, content_language, language_name, money_view, timestamp, tooth_label,
 };
+use crate::history::{HistoryDrawer, VersionBanner};
 use crate::motion::{SkeletonCard, restore_focus, view_transition};
 use crate::patients::patient_href;
 use crate::progress::{GenerationProgress, stage_text};
@@ -21,7 +22,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::wasm_bindgen::JsCast;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_params_map, use_query_map};
 use std::time::Duration;
 
 /// Key of the costs entry, which is built from the plan rather than written.
@@ -41,8 +42,23 @@ const DEMO_NOTE: &str = "This is a public demo. Don't enter real personal or hea
 #[component]
 pub fn PresentationPage() -> impl IntoView {
     let params = use_params_map();
+    let query = use_query_map();
     let id = move || params.read().get("id").unwrap_or_default();
-    let view_data = LocalResource::new(move || api::presentation(id()));
+    let version = move || {
+        query
+            .read()
+            .get("version")
+            .and_then(|v| v.parse::<u32>().ok())
+    };
+    let view_data = LocalResource::new(move || {
+        let (id, version) = (id(), version());
+        async move {
+            match version {
+                Some(version) => api::presentation_version(id, version).await,
+                None => api::presentation(id).await,
+            }
+        }
+    });
     let refetch = Callback::new(move |_| view_data.refetch());
 
     view! {
@@ -106,7 +122,8 @@ fn procedure_count(n: usize) -> String {
 
 /// Present needs a finished job and at least one section patients may see.
 fn can_present(p: &PresentationView) -> bool {
-    p.job_state.is_finished()
+    !p.read_only
+        && p.job_state.is_finished()
         && p.sections
             .iter()
             .any(|s| s.visibility == SectionVisibility::Ready)
@@ -131,12 +148,20 @@ fn EditorBar(data: RwSignal<PresentationView>) -> impl IntoView {
             p.patient_display_name.clone(),
             format!("{} · {}", p.plan_name, procedure_count(p.procedures.len())),
             format!("v{}", p.version),
-            timestamp(&p.created_at),
+            timestamp(if p.version_created_at.is_empty() {
+                &p.created_at
+            } else {
+                &p.version_created_at
+            }),
             patient_href(&p.patient_key),
         )
     });
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
+    let history_open = RwSignal::new(false);
+    let booklet =
+        data.with_untracked(|p| api::booklet_href(&p.id, p.read_only.then_some(p.version)));
+    let history_id = StoredValue::new(data.with_untracked(|p| p.id.clone()));
     let ready = move || data.with(can_present);
     let present = move |_| {
         if !ready() || busy.get_untracked() {
@@ -172,12 +197,12 @@ fn EditorBar(data: RwSignal<PresentationView>) -> impl IntoView {
                 <span class="muted">{created}</span>
             </span>
             <div class="editor-actions">
-                <button type="button" class="button text" aria-disabled="true"
-                    title="Version history arrives in a later update">"History"</button>
+                <button type="button" class="button text"
+                    aria-expanded=move || history_open.get().to_string()
+                    on:click=move |_| history_open.update(|open| *open = !*open)>"History"</button>
                 <button type="button" class="button text" aria-disabled="true"
                     title="Writing the whole presentation again arrives in a later update">"Regenerate"</button>
-                <button type="button" class="button" aria-disabled="true"
-                    title="The booklet arrives in a later update">"Export booklet"</button>
+                <a class="button" href=booklet download>"Export booklet"</a>
                 <button type="button" class="button primary present-button"
                     aria-disabled=move || (!ready() || busy.get()).then_some("true")
                     aria-busy=move || busy.get().then_some("true")
@@ -192,6 +217,10 @@ fn EditorBar(data: RwSignal<PresentationView>) -> impl IntoView {
                 <p class="present-error" role="alert">{message}</p>
             })}
         </header>
+        {move || history_open.get().then(|| view! {
+            <HistoryDrawer id=history_id.get_value() on_close=Callback::new(move |_| history_open.set(false)) />
+        })}
+        <VersionBanner data />
     }
 }
 
@@ -993,7 +1022,7 @@ fn section_pane(p: &PresentationView, section: &SectionView, ctx: EditCtx) -> An
     };
     let reasons = (section.visibility != SectionVisibility::Ready && !section.reasons.is_empty())
         .then(|| section.reasons.clone());
-    let editable = section.visibility != SectionVisibility::Failed;
+    let editable = section.visibility != SectionVisibility::Failed && !p.read_only;
     let shown = section.visibility == SectionVisibility::Ready;
     let section_key = section.key.clone();
     let blocks = section.blocks.clone();
@@ -1238,6 +1267,7 @@ fn BlockCard(
     ctx: EditCtx,
 ) -> impl IntoView {
     let (pill_class, pill_label) = source_pill(block.source);
+    let read_only = ctx.data.with_untracked(|p| p.read_only);
     let note_block = block.source == BlockSource::ClinicalNote;
     let confirm = note_block && block.needs_confirmation;
     let confirmed = note_block && !block.needs_confirmation;
@@ -1378,7 +1408,7 @@ fn BlockCard(
         let heading = heading.clone();
         view! {
             <p class="block-body">{text}</p>
-            {confirm.then(|| view! {
+            {(confirm && !read_only).then(|| view! {
                 <div class="block-confirm">
                     <button type="button" class="button small"
                         disabled=any_busy
@@ -1393,7 +1423,7 @@ fn BlockCard(
                     {if shown { "Confirmed. Patients will see this text." } else { "Confirmed." }}
                 </p>
             })}
-            {(editable || edited).then(|| view! {
+            {(editable || (edited && !read_only)).then(|| view! {
                 <div class="block-links">
                     {editable.then(|| view! {
                         <button type="button" class="link-button" id=edit_id.clone()
