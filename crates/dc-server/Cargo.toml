@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# `cargo run -p dc-server` starts the server; dc-bench is run with --bin.
+default-run = "dentalclarity"
 
 [[bin]]
 name = "dentalclarity"
