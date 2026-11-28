@@ -194,6 +194,8 @@ pub struct Limits {
     pub present_api: WindowLimiter,
     /// Exit requests per present session.
     pub present_exit: WindowLimiter,
+    /// Engagement reports per present session.
+    pub present_events: WindowLimiter,
     /// Exit requests per client address.
     pub present_exit_ip: WindowLimiter,
     /// Staff edits per demo visitor scope.
@@ -224,6 +226,7 @@ impl Default for Limits {
             staff_api: WindowLimiter::evicting(),
             present_api: WindowLimiter::evicting(),
             present_exit: WindowLimiter::evicting(),
+            present_events: WindowLimiter::evicting(),
             present_exit_ip: WindowLimiter::default(),
             edits: WindowLimiter::evicting(),
             narration_scope: WindowLimiter::evicting(),

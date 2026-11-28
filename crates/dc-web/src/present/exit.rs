@@ -28,6 +28,7 @@ fn go_to_staff(path: &str) -> Result<(), String> {
 #[component]
 pub fn ExitControl(demo: bool) -> impl IntoView {
     let narrator = use_narrator();
+    let tracker = super::engagement::use_tracker();
     let open = RwSignal::new(false);
     // Set while the dialog plays its exit animation, before it unmounts.
     let closing = RwSignal::new(false);
@@ -39,6 +40,9 @@ pub fn ExitControl(demo: bool) -> impl IntoView {
         busy.set(true);
         error.set(None);
         spawn_local(async move {
+            if let Some(t) = tracker {
+                t.finish().await;
+            }
             match api::exit(&ExitBody::default()).await {
                 Ok(response) => {
                     if let Err(message) = go_to_staff(&response.staff_path) {
@@ -97,6 +101,7 @@ pub fn ExitControl(demo: bool) -> impl IntoView {
 #[component]
 fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
     let narrator = use_narrator();
+    let tracker = super::engagement::use_tracker();
     let secret = RwSignal::new(String::new());
     let locked = RwSignal::new(false);
     let busy = RwSignal::new(false);
@@ -147,6 +152,9 @@ fn PinDialog(close: Callback<()>, closing: Signal<bool>) -> impl IntoView {
         busy.set(true);
         error.set(None);
         spawn_local(async move {
+            if let Some(t) = tracker {
+                t.finish().await;
+            }
             match api::exit(&body).await {
                 Ok(response) => {
                     if let Err(message) = go_to_staff(&response.staff_path) {

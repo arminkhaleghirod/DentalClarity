@@ -277,6 +277,10 @@ pub async fn health() -> Result<HealthResponse, Failure> {
     get("/api/health").await
 }
 
+pub async fn analytics(days: u32) -> Result<dc_core::analytics::AnalyticsResponse, Failure> {
+    get(&format!("/api/staff/analytics?days={days}")).await
+}
+
 pub async fn dashboard() -> Result<Vec<PatientRow>, Failure> {
     get("/api/staff/dashboard").await
 }

@@ -1,4 +1,4 @@
-//! Dashboard and placeholder pages.
+//! Dashboard and the not-found page.
 
 use crate::api;
 use crate::format::language_name;
@@ -157,14 +157,6 @@ fn PatientRowView(row: PatientRow) -> impl IntoView {
             <td><span class=format!("pill {pill_class}")>{pill_label}</span></td>
             <td class="action"><A href=href attr:aria-label=label>{action}</A></td>
         </tr>
-    }
-}
-
-#[component]
-pub fn Upcoming(title: &'static str, milestone: &'static str) -> impl IntoView {
-    view! {
-        <header class="topbar"><h1 class="page-title">{title}</h1></header>
-        <div class="notice">{format!("This screen is scheduled for milestone {milestone}. See docs/IMPLEMENTATION.md.")}</div>
     }
 }
 

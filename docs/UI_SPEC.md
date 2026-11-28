@@ -410,7 +410,8 @@ Disabled: 40% opacity plus `aria-disabled`, and a tooltip or helper text with th
 
 ### 5.6 Analytics (unmocked, P)
 
-- Header row of 4 metric tiles (status-card geometry, neutral family): Presentations shown (30 days), Median time in presentation, Narration plays, Questions asked.
+- Header row of 4 metric tiles (status-card geometry, neutral family): Presentations shown, Median time in presentation, Narration plays, and Ready without review (the share of finished generations that needed no staff review). Questions asked replaces the last tile once the Ask a question drawer ships.
+- Period control at the top right: last 7, 30 or 90 days, 30 by default.
 - "Engagement by section" horizontal bar list: sections with visit rate as a percentage and a text value.
 - "Languages and reading levels" table.
 - "Generation" table: p50 and p90 time, failures, held sections, estimated model cost (from call records), provider and model IDs.

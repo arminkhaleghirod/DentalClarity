@@ -10,6 +10,7 @@
 //! [`provenance::Provenance`] so the UI can always say where a sentence came
 //! from.
 
+pub mod analytics;
 pub mod api;
 pub mod color;
 pub mod content;

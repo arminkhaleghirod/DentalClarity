@@ -112,6 +112,11 @@ async fn main() -> Result<()> {
                     Err(err) => tracing::warn!(%err, "demo data purge failed"),
                 }
             }
+            match dc_server::api::purge_old_engagement(&db).await {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "deleted old engagement rows"),
+                Err(err) => tracing::warn!(%err, "engagement retention cleanup failed"),
+            }
             match narration.collect_garbage().await {
                 Ok(report) if report == Default::default() => {}
                 Ok(report) => tracing::info!(

@@ -6,6 +6,7 @@
 
 mod api;
 mod chart;
+mod engagement;
 mod exit;
 mod narration;
 mod screens;
@@ -397,12 +398,17 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
     provide_context(narrator);
     provide_context(nav);
     on_cleanup(move || narrator.stop());
+    let tracker = engagement::Tracker::start(nav.tab);
+    provide_context(tracker);
 
     // Audio keeps playing in a hidden tab; pause it there.
     let doc: leptos::wasm_bindgen::JsValue = document().into();
     let on_visibility = leptos::wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
         if document().hidden() {
             narrator.pause_when_hidden();
+            tracker.pause();
+        } else {
+            tracker.resume();
         }
     })
     .into_js_value();

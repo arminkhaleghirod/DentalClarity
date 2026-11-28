@@ -3,6 +3,7 @@
 //! Client-side rendered with Leptos and served by `dc-server` from the same
 //! origin. Patient-facing screens are added under `/present` in milestone M5.
 
+mod analytics;
 mod api;
 mod create;
 mod editor;
@@ -102,7 +103,7 @@ fn Workspace() -> impl IntoView {
                     <Route path=path!("patients") view=patients::PatientsPage />
                     <Route path=path!("patients/:key") view=patients::PatientPage />
                     <Route path=path!("presentations") view=presentations::PresentationsPage />
-                    <Route path=path!("analytics") view=|| view! { <pages::Upcoming title="Analytics" milestone="M8" /> } />
+                    <Route path=path!("analytics") view=analytics::AnalyticsPage />
                     <Route path=path!("settings") view=settings::SettingsPage />
                 </ParentRoute>
             </Routes>

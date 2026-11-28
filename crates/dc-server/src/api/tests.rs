@@ -1215,5 +1215,6 @@ async fn demo_data_is_purged_after_a_day() {
     assert_eq!(spend_rows, 1);
 }
 
+mod analytics;
 mod present;
 mod review;

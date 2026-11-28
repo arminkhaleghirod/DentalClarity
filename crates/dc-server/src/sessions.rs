@@ -219,6 +219,18 @@ pub async fn start_present(
         .bind(&staff.token_hash)
         .execute(&mut *tx)
         .await?;
+    // Counts this showing for the analytics screen, even if the patient
+    // screens never report a view.
+    sqlx::query(
+        "INSERT INTO present_events (presentation_id, version, session, kind, at)
+         VALUES (?, ?, ?, 'open', ?)",
+    )
+    .bind(presentation_id)
+    .bind(version)
+    .bind(token_hash(&token))
+    .bind(now * 1000)
+    .execute(&mut *tx)
+    .await?;
     crate::audit::record(
         &mut *tx,
         actor,

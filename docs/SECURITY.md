@@ -159,12 +159,12 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/staff/presentations/:id/export` (PDF, planned for M8) | 401 | A | 423 | 401 | A, own scope |
 | `/api/staff/presentations/:id/present` | 401 | A | 423 | 401 | A |
 | `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
-| `/api/staff/analytics` (planned for M8) | 401 | A | 423 | 401 | aggregate only |
+| `/api/staff/analytics` | 401 | A | 423 | 401 | A, own visitor scope only |
 | `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 `demo_read_only` |
 | `/api/staff/secrets` (write-only, planned for M9) | 401 | A, write only, never returns values | 423 | 401 | 403 |
 | `/api/present/content`, `audio/:key`, `narration?keys=`, `variant` (planned for M7) | 401 | 401 | 401 | A, bound version only | A, bound version only |
 | `/api/present/qa` (planned for M7) | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
-| `/api/present/analytics` (engagement events, planned for M8) | 401 | 401 | 401 | A, write only | A, write only |
+| `POST /api/present/analytics` (engagement reports) | 401 | 401 | 401 | A, write only, 30 per minute per present session | A, write only, same cap |
 | `POST /api/present/exit` | 401 | 401 | 401 | A (PIN in clinical) | A |
 
 First-launch setup works as follows. When no staff account exists, the server prints a one-time setup code to its console at startup and notes in the log that a code was issued. The code is 12 characters from an unambiguous alphabet (about 60 bits). Wrong codes count toward the same per-address backoff as logins and are audited as `setup_code_rejected`. The earlier restriction to localhost was removed, because a local TLS proxy would make every client look local; the code is the gate.
@@ -236,7 +236,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | Snapshots | normalized plan, display context (first name, age band, language) | kept while the presentation exists | 24 h, visitor scope | deleted with the presentation |
 | Versions, blocks, variants | generated and edited text | kept while the presentation exists; presentations with no activity for 12 months are flagged for deletion | 24 h | hard delete rows, then GC artifacts |
 | Q&A conversations | questions and answers | 30 days | 24 h | scheduled hard delete |
-| Analytics events | sections visited, plays, language, active time; no free text | raw 90 days, then aggregated without presentation linkage | 24 h | scheduled delete |
+| Analytics events (`present_events`) | screen visited, seconds on it, narration plays; no free text | 90 days, then deleted by the 10-minute maintenance task | 24 h, with the presentation | scheduled delete |
 | `ai_calls` | metadata only, no prompt or response text | 12 months | 30 days | scheduled delete |
 | Audio clips | per-sentence audio and merged block clips | 30 days after last play | 24 h after last play | the 10-minute maintenance task deletes the row and file of stale clips, then the least recently played clips while the cache is over 2 GB, then clip files with no row older than the retention; only names of 64 hex characters with a known extension inside the audio directory are deleted |
 | PDF booklets | rendered booklet | 7 days (re-exportable) | 24 h | scheduled delete |

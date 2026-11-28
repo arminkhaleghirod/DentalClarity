@@ -1,6 +1,7 @@
 //! JSON API under `/api`. Route groups and their access rules follow the
 //! authorization matrix in docs/SECURITY.md.
 
+mod analytics;
 mod auth;
 mod edits;
 mod present;
@@ -9,6 +10,8 @@ mod review;
 mod staff;
 #[cfg(test)]
 mod tests;
+
+pub use analytics::purge_old as purge_old_engagement;
 
 use crate::{AppState, security};
 use axum::extract::DefaultBodyLimit;
@@ -20,6 +23,7 @@ use dc_core::api::HealthResponse;
 pub fn routes(state: &AppState) -> Router<AppState> {
     let staff = Router::new()
         .route("/dashboard", get(staff::dashboard))
+        .route("/analytics", get(analytics::summary))
         .route("/patients", get(staff::patients))
         .route("/patients/{key}", get(staff::patient))
         .route(
@@ -54,6 +58,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/content", get(present::content))
         .route("/audio/{key}", get(present::audio))
         .route("/narration", get(present::narration))
+        .route("/analytics", post(analytics::record))
         .route("/exit", post(present::exit))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));
 

@@ -125,6 +125,9 @@ Acceptance:
 - Plan polling with fingerprint comparison and the diff rules in [AI_PIPELINE.md](AI_PIPELINE.md#sync).
 - Version history and in-office engagement analytics.
 
+Progress:
+- Done: in-office engagement analytics (DECISIONS E23). The patient screens report time per screen every 15 seconds and on each screen change, and each narration start, to `POST /api/present/analytics`; starting Present mode records the showing (migration 0009). `GET /api/staff/analytics?days=7|30|90` and the Analytics screen show showings, median time in a presentation, narration plays, time by screen, languages and reading levels, generation outcomes with p50 and p90 time and model spend, and the presentations shown. Rows hold no names or free text and are deleted after 90 days.
+
 ## M9 Clinical path and Windows
 
 Acceptance:

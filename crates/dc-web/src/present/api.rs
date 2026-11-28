@@ -82,6 +82,21 @@ pub async fn content() -> Result<PatientView, Failure> {
     finish(response).await
 }
 
+/// One engagement report (`POST /api/present/analytics`).
+pub async fn report(event: &dc_core::analytics::PresentEvent) -> Result<(), Failure> {
+    let response = Request::post("/api/present/analytics")
+        .json(event)
+        .map_err(network)?
+        .send()
+        .await
+        .map_err(network)?;
+    if response.ok() {
+        Ok(())
+    } else {
+        Err(error_of(response).await)
+    }
+}
+
 pub async fn exit(body: &ExitBody) -> Result<ExitPresentResponse, Failure> {
     let response = Request::post("/api/present/exit")
         .json(body)

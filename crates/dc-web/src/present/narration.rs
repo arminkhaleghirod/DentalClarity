@@ -622,7 +622,14 @@ pub fn PlayControl(id: String, sentences: Vec<PatientSentence>, label: String) -
     };
     let on_click = {
         let id = id.clone();
-        move |_| narrator.toggle(&id, &sentences)
+        move |_| {
+            if status.get_untracked() == Status::Idle
+                && let Some(nav) = use_context::<super::Nav>()
+            {
+                super::engagement::narration_started(nav.tab.get_untracked());
+            }
+            narrator.toggle(&id, &sentences)
+        }
     };
     let name = move || match status.get() {
         Status::Playing | Status::Loading => format!("Pause narration: {label}"),
