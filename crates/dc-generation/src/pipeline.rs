@@ -538,7 +538,7 @@ async fn review(
 /// One model call with jittered backoff: up to three attempts for transport
 /// errors, but only two when the provider timed out or replied with something
 /// unusable, because those calls may be billed.
-async fn call(
+pub(crate) async fn call(
     model: &Arc<dyn TextModel>,
     model_id: &str,
     messages: Vec<Message>,
@@ -576,7 +576,7 @@ async fn call(
 
 /// A reviewer finding that is about safety (R1 to R5) rather than style,
 /// at major or critical severity.
-fn is_safety_finding(issue: &crate::schema::ReviewIssue) -> bool {
+pub(crate) fn is_safety_finding(issue: &crate::schema::ReviewIssue) -> bool {
     let rubric: u32 = issue
         .category
         .trim()
@@ -591,7 +591,7 @@ fn is_safety_finding(issue: &crate::schema::ReviewIssue) -> bool {
     safety_category && issue.severity != Severity::Minor
 }
 
-fn add_usage(total: &mut Usage, more: &Usage) {
+pub(crate) fn add_usage(total: &mut Usage, more: &Usage) {
     total.input_tokens += more.input_tokens;
     total.output_tokens += more.output_tokens;
     total.cost_usd = match (total.cost_usd, more.cost_usd) {
@@ -600,7 +600,7 @@ fn add_usage(total: &mut Usage, more: &Usage) {
     };
 }
 
-fn strip_fences(text: &str) -> &str {
+pub(crate) fn strip_fences(text: &str) -> &str {
     let t = text.trim();
     let t = t
         .strip_prefix("```json")

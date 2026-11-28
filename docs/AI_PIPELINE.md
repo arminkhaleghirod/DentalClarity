@@ -68,7 +68,7 @@ Only S4, S6, S7, S9 and Q&A call a model. S0 to S3, S5 and S8 are deterministic 
 | `next_steps` | yes | `outlook`, `next_steps`, `questions` | none |
 | references | no | none | `sources[]` of every cited KB passage, deduplicated |
 
-The `costs` templates are written once in English. Each language's template strings are translated through S9 like any other block and cached globally (not per patient). Numbers are formatted locally with the variant's locale. [P]
+The `costs` templates are written once in English. Each language's template strings are translated through S9 like any other block and cached globally (not per patient). Numbers are formatted locally with the variant's locale. [P] Not built in M7: the cost screen's fixed sentences stay English.
 
 ## Prompt field allowlist
 
@@ -224,11 +224,11 @@ All live in `dc-generation::validate`. Each returns `Issue { code, path, severit
 | V15 | No URLs, HTML or Markdown | `<`, `>`, `](`, `http`, `www.`, backticks, `**`, leading `#` or `*` | Block |
 | V16 | Placeholders | only the allowed placeholders, well-formed `{{...}}`; translations keep the same multiset (with translation, M7) | Block |
 | V17 | Reading level, English | at most 20, 25 or 30 words per sentence for simple, standard and detailed. A Flesch-Kincaid grade with our own syllable heuristic (simple 6 or lower, standard 8, detailed 11) is planned [P, tune in ClarityEval] | Warn; warnings go to the writer with a reviewer's repair request and never hold a section by themselves |
-| V18 | Reading level, other languages (planned for M7) | mean sentence length and long-word ratio per level; no Flesch-Kincaid claims | Warn |
-| V19 | Language (planned for M7) | detected language equals target (candidate crate `whatlang`, verify in M5); very short sentences skipped | Block for translations |
-| V20 | Translation parity (planned for M7) | same sentence count per block; no new digits, URLs or placeholders | Block |
+| V18 | Reading level, other languages | words per sentence against a per-level limit (30, 38 or 45) for scripts written with spaces; no Flesch-Kincaid claims | Warn |
+| V19 | Language | the letters are mostly in the target's script (Latin, Cyrillic, Han, Hangul or Arabic); for Latin-script targets other than English, a sentence is refused when at least 35% of its words are common English words or it equals the English source; English output needs at least one common English word per sentence of six or more words. Text with fewer than 12 letters is skipped. This is our own check, not a language detector (DECISIONS E32) | Block for translations |
+| V20 | Translation parity | the same blocks in the same order, one sentence per source sentence, no number that is not in the source sentence, digits written as in the source | Block |
 
-V1 to V17 are built; V18 to V20 arrive with translation in M7. The English lexicons are constants in `validate.rs` today. Moving them to `crates/dc-generation/lexicon/<lang>.toml` and curating Spanish next is planned [P]. For other languages V10 to V14 run only on the English source, and the translation is checked by V16, V19, V20 and the AI reviewer. The staff UI labels those languages "not validated" [C, P9]. Lexicons produce false positives, for example "you have a cavity" taken from a note. They stay Block on purpose, and the repair prompt quotes the exact phrase.
+V1 to V20 are built; V18 to V20 run on variants only (`dc-generation::variant`). The English lexicons are constants in `validate.rs` today. Moving them to `crates/dc-generation/lexicon/<lang>.toml` and curating Spanish next is planned [P]. For other languages V10 to V14 run only on the English source, and the translation is checked by V16, V19, V20 and the AI reviewer. The staff UI labels those languages "not validated" [C, P9]. Lexicons produce false positives, for example "you have a cavity" taken from a note. They stay Block on purpose, and the repair prompt quotes the exact phrase.
 
 ## AI review pass
 
@@ -366,12 +366,16 @@ Implemented in M7 (DECISIONS E24): the prompt is `crates/dc-generation/prompts/q
 ### Variants [P]
 
 - A `Variant` is one (language, reading level) rendering of a `PresentationVersion`.
-- English at each level comes from the full S3 to S7 pipeline, since reading level changes content as well as wording.
-- Another language at level L is the translation of approved English at level L, block by block, checked by V16, V19, V20 and the translator review (R1 to R8). The `Passed`, `NeedsReview` and `Failed` rules are the same.
-- At creation, the job generates the selected (language, level) and the English variant at that level, which is its source.
-- Other combinations are generated on demand when the patient or staff switch. Present shows a loading state. A block that is not ready or failed shows the English text with a "not yet available in {language}" label, never silently mixed. [C, brainstorm 5]
-- Translated-block cache key: `sha256(source_block_text_hash, lang, level, translator.prompt_version, translator.model_id)`. Blocks are reused across versions while the English source block is unchanged.
-- Staff may edit a translated block. It becomes `StaffEdit`, and if its English source block later changes it is flagged `NeedsReview(SourceChanged)`.
+As built in M7 (DECISIONS E32, which replaces the earlier plan of running S3 to S7 again for each English level):
+
+- The source of every variant is the approved English at the level the presentation was written at: the patient-visible text of ready sections, after staff edits, note confirmations and the common-reasons substitution, placeholders unfilled.
+- English at another level and every other language at any level are derived from that source, one section per call (`translator.blocks@v1`), one output sentence per source sentence. The translator never sees the facts, notes or knowledge base.
+- Checks: V1, V8, V15, V16, V18, V19 and V20, plus V5 to V17 again when the output is English. Blocking findings get one repair round with the findings quoted. The translation reviewer (`reviewer.translation@v1`, rubric R3 to R8) then runs once. A block verdict, a critical finding, or a major safety (R1 to R5) or meaning (R8) finding holds the section.
+- A held or failed section is shown in English with a "Not yet available in {language}" label. A section being prepared shows placeholder lines. Languages are never mixed within a section. [C, brainstorm 5]
+- Cache: `section_variants` (migration 0010), one row per presentation version, section, language, level and source hash. The hash covers the source text, the target, both prompt versions and both model ids, so an edit or confirmation gives a new row. A failure is final for its hash; a call that could not reach a model leaves no row and is tried again on the next request.
+- `POST /api/present/variant {language, reading_level}` starts the missing sections in the background and returns the view, with sections still being prepared marked `pending`. `GET /api/present/content?language=&level=` reads the cache and starts nothing. Entering Present mode starts the presentation's own language and level, and pre-warms its narration when it is ready.
+- Narration keys use the language each section's text is in, so a translated sentence has its own clip and an English fallback keeps the English one.
+- Not built: staff editing of translated text, translated booklet text, and localized screen labels, section titles and procedure names.
 
 ### Narration [C, P10]
 

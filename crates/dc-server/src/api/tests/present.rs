@@ -134,7 +134,16 @@ async fn present_locks_the_session_and_shows_only_ready_content() {
     assert_eq!(patient.brand.name, "Maple Grove Family Dental");
     assert_eq!(patient.brand.primary, "#1B3A5C");
     assert_eq!(patient.language, "en");
-    assert_eq!(patient.available_languages, ["en"]);
+    assert_eq!(
+        patient.available_languages.len(),
+        dc_core::language::LANGUAGES.len()
+    );
+    assert!(
+        patient
+            .sections
+            .iter()
+            .all(|s| s.variant == dc_core::present::VariantState::Ready)
+    );
     assert_eq!(patient.procedures.len(), 6);
     assert!(patient.affected_teeth.contains(&"30".to_owned()));
     assert_eq!(

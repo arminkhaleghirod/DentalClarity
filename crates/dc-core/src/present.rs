@@ -106,6 +106,22 @@ pub enum PatientSectionKind {
     NextSteps,
 }
 
+/// Whether a section's text is in the requested language and reading level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariantState {
+    /// The text is in the requested language and level.
+    #[default]
+    Ready,
+    /// Being prepared. The blocks hold the approved English text, which the
+    /// screens replace with a loading state; ask again to get the result.
+    Pending,
+    /// Could not be prepared, or failed its checks. The blocks hold the
+    /// approved English text, shown with a "not available" label so
+    /// languages are never mixed silently.
+    Unavailable,
+}
+
 /// One section as the patient sees it. Only content that passed checks and
 /// review, or that staff wrote or confirmed, ever appears here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +132,21 @@ pub struct PatientSection {
     pub procedure_ref: Option<String>,
     pub blocks: Vec<PatientBlock>,
     pub questions: Vec<String>,
+    /// Whether `blocks` and `questions` are in the view's language and level.
+    #[serde(default)]
+    pub variant: VariantState,
+}
+
+/// `POST /api/present/variant`: switches the patient screens to another
+/// language or reading level. The server starts preparing sections it has
+/// not cached and answers with the view as it stands; sections still being
+/// prepared are `VariantState::Pending`. `GET /api/present/content?language=
+/// <tag>&level=<level>` reads the same view without starting any work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariantRequest {
+    /// A tag from `language::LANGUAGES`.
+    pub language: String,
+    pub reading_level: ReadingLevel,
 }
 
 /// `GET /api/present/content`: everything the patient screens need, for the
@@ -127,9 +158,12 @@ pub struct PatientView {
     pub patient_first_name: String,
     pub guardian_audience: bool,
     pub provider_display_name: Option<String>,
+    /// Language and reading level of this view.
     pub language: String,
     pub reading_level: ReadingLevel,
-    /// Languages with content for this version. English only until M7.
+    /// Languages the patient may switch to, as tags from
+    /// `language::LANGUAGES`. Sections in other languages are derived from
+    /// the approved English text on request.
     pub available_languages: Vec<String>,
     pub sections: Vec<PatientSection>,
     pub procedures: Vec<ProcedureFactView>,
@@ -140,6 +174,15 @@ pub struct PatientView {
     pub total_patient_estimate: Option<Money>,
     /// True in demo mode: exit needs no PIN, and screens show a demo note.
     pub demo: bool,
+}
+
+impl PatientView {
+    /// Some section is still being prepared in this language and level.
+    pub fn pending(&self) -> bool {
+        self.sections
+            .iter()
+            .any(|s| s.variant == VariantState::Pending)
+    }
 }
 
 /// Cache key for one narrated sentence: SHA-256 over the speech model, the

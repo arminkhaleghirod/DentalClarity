@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod qa;
 pub mod schema;
 pub mod validate;
+pub mod variant;
 
 #[cfg(test)]
 mod test_support;

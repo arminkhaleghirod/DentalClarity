@@ -14,6 +14,7 @@ pub mod analytics;
 pub mod api;
 pub mod color;
 pub mod content;
+pub mod language;
 pub mod mode;
 pub mod money;
 pub mod plan;

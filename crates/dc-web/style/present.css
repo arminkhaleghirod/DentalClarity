@@ -1575,11 +1575,108 @@
   font-weight: 600;
 }
 
-/* Levels that are not built yet: faint text, no hover, a not-allowed
-   cursor, and a title that says why. */
-.p-segment.is-unavailable {
-  color: #98a2b3;
-  cursor: not-allowed;
+button.p-segment {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.p-segment:not(.is-on):hover {
+  background: #f2f4f7;
+  color: #101828;
+}
+
+button.p-segment:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 1px;
+}
+
+/* Reading level: the "Aa" header button and its popover (UI_SPEC 5.10). */
+.p-level {
+  position: relative;
+}
+
+.p-level-button {
+  height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+  border: 1px solid #868e9c;
+  border-radius: 10px;
+  background: #ffffff;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  color: #101828;
+  cursor: pointer;
+}
+
+.p-level-button[aria-expanded="true"] {
+  border-color: var(--brand-primary);
+}
+
+.p-level-pop {
+  animation: dc-scale-in var(--dur-base) var(--ease-emphasized) backwards;
+  transform-origin: top right;
+  position: absolute;
+  right: 0;
+  top: 52px;
+  z-index: 10;
+  padding: 12px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+}
+
+.p-level-pop[hidden] {
+  display: none;
+}
+
+.p-level-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475467;
+}
+
+/* A section shown in English because its translation is not ready. */
+.p-variant-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #667085;
+}
+
+/* A section being prepared in another language. */
+.p-block-pending .skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.p-sk-line:nth-child(3n + 1) {
+  width: 92%;
+}
+
+.p-sk-line:nth-child(3n + 2) {
+  width: 78%;
+}
+
+.p-sk-line:nth-child(3n) {
+  width: 64%;
+}
+
+.p-variant-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 28px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff4ed;
+  color: #101828;
+  font-size: 14px;
 }
 
 .p-illustration {

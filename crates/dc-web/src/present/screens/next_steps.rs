@@ -16,7 +16,13 @@ pub fn NextSteps() -> impl IntoView {
     let key = next.key.clone();
     let outlook = block(&next, "outlook").cloned();
     let steps = block(&next, "next_steps").cloned();
-    let questions = next.questions.clone();
+    // Questions wait with the rest of the section while it is prepared in
+    // another language.
+    let questions = if next.variant == dc_core::present::VariantState::Pending {
+        Vec::new()
+    } else {
+        next.questions.clone()
+    };
     view! {
         <div class="p-page">
             <h1 class="p-page-title">"What happens next"</h1>

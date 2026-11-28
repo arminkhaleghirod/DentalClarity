@@ -13,6 +13,7 @@ mod setup;
 mod staff;
 #[cfg(test)]
 mod tests;
+mod variants;
 
 pub use analytics::purge_old as purge_old_engagement;
 
@@ -71,6 +72,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/narration", get(present::narration))
         .route("/analytics", post(analytics::record))
         .route("/qa", get(qa::conversation).post(qa::ask))
+        .route("/variant", post(variants::request))
         .route("/exit", post(present::exit))
         .route("/logo", get(logo::get_present))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));

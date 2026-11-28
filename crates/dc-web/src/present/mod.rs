@@ -11,11 +11,12 @@ mod engagement;
 mod exit;
 mod narration;
 mod screens;
+mod variants;
 
 use crate::motion::view_transition;
 use dc_core::ToothRef;
 use dc_core::present::{
-    PatientBlock, PatientSection, PatientSectionKind, PatientView, PracticeBrand,
+    PatientBlock, PatientSection, PatientSectionKind, PatientView, PracticeBrand, VariantState,
 };
 use dc_core::presentation::ProcedureFactView;
 use leptos::html;
@@ -312,11 +313,33 @@ fn initial(name: &str) -> String {
 pub fn PresentApp() -> impl IntoView {
     document().set_title("Your treatment plan");
     let content = LocalResource::new(api::content);
+    let variants = variants::Variants::new();
+    provide_context(variants);
+    // Kept outside the screens, so a language or level switch, which draws
+    // the screens again, leaves the patient where they were.
+    let tab = RwSignal::new(Tab::AtAGlance);
+    let procedure = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        if let Some(Ok(view)) = content.get() {
+            // The presentation's own language may still need preparing.
+            let prepare = view
+                .sections
+                .iter()
+                .any(|s| s.variant != VariantState::Ready);
+            let (language, level) = (view.language.clone(), view.reading_level);
+            variants.current.set(Some(view));
+            if prepare {
+                variants.switch(language, level);
+            }
+        }
+    });
     view! {
-        {move || match content.get() {
-            None => view! { <LoadingScreen /> }.into_any(),
-            Some(Err(failure)) if failure.session_ended() => view! { <Ended /> }.into_any(),
-            Some(Err(_)) => view! {
+        {move || match (content.get(), variants.current.get()) {
+            _ if variants.ended.get() => view! { <Ended /> }.into_any(),
+            (_, Some(view)) => view! { <PresentRoot view tab procedure /> }.into_any(),
+            (None, None) | (Some(Ok(_)), None) => view! { <LoadingScreen /> }.into_any(),
+            (Some(Err(failure)), None) if failure.session_ended() => view! { <Ended /> }.into_any(),
+            (Some(Err(_)), None) => view! {
                 <div class="present p-center">
                     <div class="p-center-card" role="alert">
                         <p class="p-center-text">"This presentation could not be loaded."</p>
@@ -326,7 +349,6 @@ pub fn PresentApp() -> impl IntoView {
                     </div>
                 </div>
             }.into_any(),
-            Some(Ok(view)) => view! { <PresentRoot view /> }.into_any(),
         }}
     }
 }
@@ -370,13 +392,18 @@ fn Ended() -> impl IntoView {
 }
 
 #[component]
-fn PresentRoot(view: PatientView) -> impl IntoView {
+fn PresentRoot(
+    view: PatientView,
+    tab: RwSignal<Tab>,
+    procedure: RwSignal<Option<String>>,
+) -> impl IntoView {
     let brand = view.brand.clone();
     let demo = view.demo;
-    let languages = view.available_languages.clone();
-    // `lang` must name the language the text is in, so screen readers and
-    // hyphenation follow the content rather than the requested language.
-    let language = crate::format::content_language(&view.language, &languages);
+    let variants = variants::use_variants();
+    // `lang` names the language of the text. Sections still in English
+    // carry their own `lang`.
+    let language = view.language.clone();
+    let level = view.reading_level;
 
     document().set_title(&brand.name);
     if let Some(root) = document().document_element() {
@@ -390,8 +417,8 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
     let data = StoredValue::new(view);
     let narrator = Narrator::new();
     let nav = Nav {
-        tab: RwSignal::new(Tab::AtAGlance),
-        procedure: RwSignal::new(None),
+        tab,
+        procedure,
         data,
         narrator,
     };
@@ -479,15 +506,6 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
         })
         .collect_view();
 
-    let language_options = languages
-        .iter()
-        .map(|tag| {
-            let selected = *tag == language;
-            view! { <option value=tag.clone() selected=selected>{crate::format::language_name(tag)}</option> }
-        })
-        .collect_view();
-    let single_language = languages.len() <= 1;
-
     let logo = initial(&name);
     let page = move || match nav.tab.get() {
         Tab::AtAGlance => view! { <screens::AtAGlance /> }.into_any(),
@@ -516,18 +534,23 @@ fn PresentRoot(view: PatientView) -> impl IntoView {
                     </div>
                     <nav class="p-tabs" aria-label="Sections">{tab_buttons}</nav>
                     <div class="p-tools">
-                        <label class="visually-hidden" for="p-language">"Language"</label>
-                        <select id="p-language" class="p-select"
-                            title=single_language.then_some("More languages arrive in a later update")>
-                            {language_options}
-                        </select>
+                        <variants::LanguageSelect current=language.clone() level />
+                        <variants::LevelButton language=language.clone() current=level />
                         <exit::ExitControl demo />
                     </div>
                 </header>
+                {move || variants.notice.get().map(|n| view! {
+                    <div class="p-variant-notice" role="alert">
+                        <span>{n}</span>
+                        <button type="button" class="p-button" on:click=move |_| variants.notice.set(None)>
+                            "OK"
+                        </button>
+                    </div>
+                })}
                 <main id="p-main" class="p-main" tabindex="-1">{page}</main>
                 <ask::AskQuestion />
                 <div class="visually-hidden" aria-live="polite" aria-atomic="true">
-                    {move || narrator.announcement()}
+                    {move || variants.preparing.get().unwrap_or_else(|| narrator.announcement())}
                 </div>
             </div>
             {move || ended().then(|| view! {

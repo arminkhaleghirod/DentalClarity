@@ -23,11 +23,13 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use dc_core::Mode;
+use dc_core::content::ReadingLevel;
+use dc_core::language::{LANGUAGES, SOURCE_LANGUAGE};
 use dc_core::plan::PlanSnapshot;
 use dc_core::present::{
     ExitPresentRequest, ExitPresentResponse, MAX_NARRATION_SENTENCES, NARRATION_DURATION_HEADER,
     PatientBlock, PatientSection, PatientSectionKind, PatientSentence, PatientView, PracticeBrand,
-    SENTENCE_OFFSETS_HEADER, StartPresentResponse, audio_key,
+    SENTENCE_OFFSETS_HEADER, StartPresentResponse, VariantState, audio_key,
 };
 use dc_core::presentation::{BlockSource, SectionVisibility, TextBlock};
 use dc_generation::facts::FactSheet;
@@ -61,7 +63,7 @@ pub async fn start(
     let token =
         sessions::start_present(&state.db, &session, &id, version, actor(session.kind)).await?;
     let quota = crate::narration::quota(&state, &owner_scope(&state, &session), ip);
-    prewarm_narration(&state, &id, version, quota).await;
+    prewarm_narration(&state, &session, ip, &id, version, quota).await;
     Ok((
         [(header::SET_COOKIE, present_cookie(&state.http, &token))],
         Json(StartPresentResponse {
@@ -74,13 +76,27 @@ pub async fn start(
 /// Starts filling the narration cache for the generated sentences patients
 /// will see, so the first play is quick. Staff-edited text is narrated only
 /// when a patient plays it, so edits cannot be turned into bulk synthesis.
-/// Failures only cost a slower first play.
+/// When the presentation's language or level is a variant that still has to
+/// be derived, the derivation starts here and narration is pre-warmed once
+/// it finishes. Failures only cost a slower first play.
 async fn prewarm_narration(
     state: &AppState,
+    session: &Session,
+    ip: IpAddr,
     id: &str,
     version: i64,
     quota: Option<crate::narration::Quota>,
 ) {
+    let requester = super::variants::Requester {
+        owner_scope: owner_scope(state, session),
+        client_key: super::presentations::client_key(state, ip),
+        prewarm: Some(quota.clone()),
+    };
+    match super::variants::start(state, id, version, None, requester).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(failure) => tracing::debug!(code = failure.code, "variant not started"),
+    }
     match patient_view(state, id, version).await {
         Ok(view) => {
             crate::narration::prewarm(state, &view.language, prewarm_blocks(&view), quota);
@@ -95,6 +111,7 @@ async fn prewarm_narration(
 pub(super) fn prewarm_blocks(view: &PatientView) -> Vec<Vec<String>> {
     view.sections
         .iter()
+        .filter(|s| s.variant == VariantState::Ready)
         .flat_map(|s| &s.blocks)
         .filter(|b| b.source == BlockSource::Generated)
         .flat_map(|b| b.sentences.chunks(MAX_NARRATION_SENTENCES))
@@ -145,13 +162,18 @@ async fn presentable_version(
     Ok(version)
 }
 
-/// `GET /api/present/content`
+/// `GET /api/present/content`, optionally `?language=<tag>&level=<level>`:
+/// the view of the bound version, by default in the presentation's own
+/// language and level. Reads the variant cache only and never starts work;
+/// `POST /api/present/variant` does that.
 pub async fn content(
     State(state): State<AppState>,
     CurrentPresent(present): CurrentPresent,
+    RawQuery(query): RawQuery,
 ) -> Result<Json<PatientView>, Failure> {
+    let choice = super::variants::parse_query(query.as_deref())?;
     Ok(Json(
-        patient_view(&state, &present.presentation_id, present.version).await?,
+        super::variants::view(&state, &present.presentation_id, present.version, choice).await?,
     ))
 }
 
@@ -173,20 +195,25 @@ pub async fn audio(
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(unknown());
     }
-    let view = patient_view(&state, &present.presentation_id, present.version).await?;
-    let text = view
-        .sections
+    let views =
+        super::variants::all_views(&state, &present.presentation_id, present.version).await?;
+    let (language, text) = views
         .iter()
-        .flat_map(|s| &s.blocks)
-        .flat_map(|b| &b.sentences)
-        .find(|s| s.audio_key == key)
-        .map(|s| s.text.clone())
+        .find_map(|view| {
+            view.sections.iter().find_map(|section| {
+                section
+                    .blocks
+                    .iter()
+                    .flat_map(|b| &b.sentences)
+                    .find(|s| s.audio_key == key)
+                    .map(|s| (text_language(view, section).to_owned(), s.text.clone()))
+            })
+        })
         .ok_or_else(unknown)?;
     // Demo presentations are owned by the scope of the session that started
     // Present mode.
     let quota = crate::narration::quota(&state, &present.staff_token_hash, ip);
-    let (mime, bytes) =
-        crate::narration::clip(&state, &view.language, &text, quota.as_ref()).await?;
+    let (mime, bytes) = crate::narration::clip(&state, &language, &text, quota.as_ref()).await?;
     Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
@@ -210,16 +237,20 @@ pub async fn narration(
             "Ask for one to twelve narration keys.",
         )
     })?;
-    let view = patient_view(&state, &present.presentation_id, present.version).await?;
-    let texts = block_texts(&view, &keys).ok_or_else(|| {
-        Failure::new(
-            StatusCode::NOT_FOUND,
-            "audio_not_found",
-            "These narration keys are not one part of this presentation.",
-        )
-    })?;
+    let views =
+        super::variants::all_views(&state, &present.presentation_id, present.version).await?;
+    let (language, texts) = views
+        .iter()
+        .find_map(|v| block_texts(v, &keys))
+        .ok_or_else(|| {
+            Failure::new(
+                StatusCode::NOT_FOUND,
+                "audio_not_found",
+                "These narration keys are not one part of this presentation.",
+            )
+        })?;
     let quota = crate::narration::quota(&state, &present.staff_token_hash, ip);
-    let clip = crate::narration::block(&state, &view.language, &texts, quota.as_ref()).await?;
+    let clip = crate::narration::block(&state, &language, &texts, quota.as_ref()).await?;
     let offsets = clip
         .offsets_ms
         .iter()
@@ -253,13 +284,26 @@ pub(super) fn narration_keys(query: Option<&str>) -> Option<Vec<String>> {
     valid.then_some(keys)
 }
 
-/// The texts of the sentences `keys` name, if they are exactly one part of
-/// one block of `view`.
-pub(super) fn block_texts(view: &PatientView, keys: &[String]) -> Option<Vec<String>> {
-    view.sections
-        .iter()
-        .flat_map(|s| &s.blocks)
-        .find_map(|b| aligned_part(&b.sentences, keys))
+/// The language and texts of the sentences `keys` name, if they are exactly
+/// one part of one block of `view`.
+pub(super) fn block_texts(view: &PatientView, keys: &[String]) -> Option<(String, Vec<String>)> {
+    view.sections.iter().find_map(|section| {
+        section
+            .blocks
+            .iter()
+            .find_map(|b| aligned_part(&b.sentences, keys))
+            .map(|texts| (text_language(view, section).to_owned(), texts))
+    })
+}
+
+/// The language a section's text is in: the view's, or English for a
+/// section shown in English because its variant is not ready.
+fn text_language<'a>(view: &'a PatientView, section: &PatientSection) -> &'a str {
+    if section.variant == VariantState::Ready {
+        &view.language
+    } else {
+        SOURCE_LANGUAGE
+    }
 }
 
 /// The texts of `keys` if they are one of the parts a block is cut into for
@@ -277,21 +321,64 @@ fn aligned_part(sentences: &[PatientSentence], keys: &[String]) -> Option<Vec<St
         .map(|part| part.iter().map(|s| s.text.clone()).collect())
 }
 
-/// Builds what the patient may see for the present session's version: only
-/// ready sections, staff text where it exists, and note-derived blocks only
-/// after staff confirmed them.
+/// The default view for the present session's version: the presentation's
+/// own language and reading level (see [`super::variants::view`]).
 pub(super) async fn patient_view(
     state: &AppState,
     id: &str,
     bound_version: i64,
 ) -> Result<PatientView, Failure> {
-    let row: Option<(String, i64, String)> = sqlx::query_as(
-        "SELECT reading_level, version, snapshot_json FROM presentations WHERE id = ?",
+    super::variants::view(state, id, bound_version, None).await
+}
+
+/// One block of approved patient text, placeholders unfilled.
+#[derive(Debug, Clone)]
+pub(super) struct ApprovedBlock {
+    pub field: String,
+    pub heading: String,
+    pub sentences: Vec<String>,
+    pub source: BlockSource,
+}
+
+/// One ready section's approved English text.
+#[derive(Debug, Clone)]
+pub(super) struct ApprovedSection {
+    pub key: String,
+    pub kind: PatientSectionKind,
+    pub title: String,
+    pub procedure_ref: Option<String>,
+    pub blocks: Vec<ApprovedBlock>,
+    pub questions: Vec<String>,
+}
+
+/// What the patient may see of one presentation version, in English at the
+/// level it was written at: only ready sections, staff text where it exists,
+/// and note-derived blocks only after staff confirmed them. This is the
+/// source every language and reading level variant is derived from.
+#[derive(Debug, Clone)]
+pub(super) struct Approved {
+    pub snapshot: PlanSnapshot,
+    pub sheet: FactSheet,
+    pub brand: PracticeBrand,
+    /// The language staff chose for the presentation.
+    pub language: String,
+    /// The reading level the English was written at.
+    pub level: ReadingLevel,
+    pub sections: Vec<ApprovedSection>,
+}
+
+pub(super) async fn approved(
+    state: &AppState,
+    id: &str,
+    bound_version: i64,
+) -> Result<Approved, Failure> {
+    let row: Option<(String, String, i64, String)> = sqlx::query_as(
+        "SELECT language, reading_level, version, snapshot_json FROM presentations WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&state.db)
     .await?;
-    let Some((level, version, snapshot)) = row else {
+    let Some((language, level, version, snapshot)) = row else {
         return Err(not_found("presentation"));
     };
     if version != bound_version {
@@ -311,13 +398,16 @@ pub(super) async fn patient_view(
             .await?
             .map(|v| super::logo::present_url(&v)),
     };
-    // Content is English until translations land (M7).
-    let language = "en".to_owned();
-    let fill = Filler {
-        practice: &brand.name,
-        provider: snapshot.provider_display_name.as_deref(),
-        voice: crate::narration::speech_model_id(state),
-        language: &language,
+    // With no provider on the plan, the provider placeholder becomes "your
+    // dentist" before any model sees the text, so a translation says it in
+    // the target language.
+    let has_provider = snapshot.provider_display_name.is_some();
+    let prepare = |text: &String| {
+        if has_provider {
+            text.clone()
+        } else {
+            fill_provider(text, None)
+        }
     };
 
     let sections = load_sections(state, id, version, &sheet)
@@ -335,36 +425,92 @@ pub(super) async fn patient_view(
                 .blocks
                 .iter()
                 .filter_map(|block| {
-                    patient_block(
-                        state,
-                        &sheet,
-                        section.procedure_ref.as_deref(),
-                        block,
-                        &fill,
-                    )
+                    approved_block(state, &sheet, section.procedure_ref.as_deref(), block)
+                })
+                .map(|mut block| {
+                    block.sentences = block.sentences.iter().map(prepare).collect();
+                    block
                 })
                 .collect();
-            PatientSection {
+            ApprovedSection {
                 kind,
                 title: section.title,
                 procedure_ref: section.procedure_ref,
                 blocks,
-                questions: section.questions.iter().map(|q| fill.text(q)).collect(),
+                questions: section.questions.iter().map(prepare).collect(),
                 key: section.key,
             }
         })
         .collect();
 
-    Ok(PatientView {
+    Ok(Approved {
+        snapshot,
+        sheet,
         brand,
+        language,
+        level: parse_level(&level),
+        sections,
+    })
+}
+
+/// The patient view of `approved` with each section's text as given: in
+/// `language` and `level` when its state is `Ready`, otherwise the approved
+/// English. Placeholders are filled here, and audio keys follow the language
+/// each section's text is actually in.
+pub(super) fn render(
+    state: &AppState,
+    approved: &Approved,
+    language: &str,
+    level: ReadingLevel,
+    sections: Vec<(ApprovedSection, VariantState)>,
+) -> PatientView {
+    let snapshot = &approved.snapshot;
+    let sheet = &approved.sheet;
+    let voice = crate::narration::speech_model_id(state);
+    let sections = sections
+        .into_iter()
+        .map(|(section, variant)| {
+            let fill = Filler {
+                practice: &approved.brand.name,
+                provider: snapshot.provider_display_name.as_deref(),
+                voice,
+                language: if variant == VariantState::Ready {
+                    language
+                } else {
+                    SOURCE_LANGUAGE
+                },
+            };
+            PatientSection {
+                kind: section.kind,
+                title: section.title,
+                procedure_ref: section.procedure_ref,
+                blocks: section
+                    .blocks
+                    .iter()
+                    .map(|b| PatientBlock {
+                        field: b.field.clone(),
+                        heading: b.heading.clone(),
+                        sentences: b.sentences.iter().map(|s| fill.sentence(s)).collect(),
+                        source: b.source,
+                    })
+                    .collect(),
+                questions: section.questions.iter().map(|q| fill.text(q)).collect(),
+                key: section.key,
+                variant,
+            }
+        })
+        .collect();
+
+    PatientView {
+        brand: approved.brand.clone(),
         patient_first_name: snapshot.patient.first_name.clone(),
         guardian_audience: sheet.guardian_audience,
         provider_display_name: snapshot.provider_display_name.clone(),
-        language,
-        reading_level: parse_level(&level),
-        available_languages: vec!["en".into()],
+        language: language.to_owned(),
+        reading_level: level,
+        available_languages: LANGUAGES.iter().map(|l| l.tag.to_owned()).collect(),
         sections,
-        procedures: procedure_facts(&snapshot, &sheet),
+        procedures: procedure_facts(snapshot, sheet),
         affected_teeth: snapshot
             .affected_teeth()
             .iter()
@@ -378,25 +524,24 @@ pub(super) async fn patient_view(
             .sum(),
         total_patient_estimate: snapshot.total_patient_estimate(),
         demo: state.mode == Mode::Demo,
-    })
+    }
 }
 
-/// One block as the patient sees it, or `None` when it must not be shown.
+/// One block as the patient may see it, or `None` when it must not be shown.
 /// An unconfirmed documented reason is replaced by the knowledge base's
 /// common reasons for the procedure's category (P11); an unconfirmed
 /// objective is left out.
-fn patient_block(
+fn approved_block(
     state: &AppState,
     sheet: &FactSheet,
     procedure_ref: Option<&str>,
     block: &TextBlock,
-    fill: &Filler,
-) -> Option<PatientBlock> {
+) -> Option<ApprovedBlock> {
     if !block.needs_confirmation {
-        return Some(PatientBlock {
+        return Some(ApprovedBlock {
             field: block.field.clone(),
             heading: block.heading.clone(),
-            sentences: block.sentences.iter().map(|s| fill.sentence(s)).collect(),
+            sentences: block.sentences.clone(),
             source: block.source,
         });
     }
@@ -405,16 +550,29 @@ fn patient_block(
     }
     let category = sheet.procedure(procedure_ref?)?.category;
     let passage = state.kb.entry(category)?.passage(Topic::CommonReasons)?;
-    let sentences: Vec<PatientSentence> = split_sentences(&passage.text)
-        .iter()
-        .map(|s| fill.sentence(s))
-        .collect();
-    (!sentences.is_empty()).then(|| PatientBlock {
+    let sentences = split_sentences(&passage.text);
+    (!sentences.is_empty()).then(|| ApprovedBlock {
         field: block.field.clone(),
         heading: "Why this is done".into(),
         sentences,
         source: BlockSource::Generated,
     })
+}
+
+/// Fills `{{provider_display_name}}` with the provider's name, or with
+/// "your dentist" when the plan has none.
+fn fill_provider(text: &str, provider: Option<&str>) -> String {
+    const PROVIDER: &str = "{{provider_display_name}}";
+    match provider {
+        Some(name) => text.replace(PROVIDER, name),
+        None => {
+            let mut text = text.to_owned();
+            if let Some(rest) = text.strip_prefix(PROVIDER) {
+                text = format!("Your dentist{rest}");
+            }
+            text.replace(PROVIDER, NO_PROVIDER)
+        }
+    }
 }
 
 /// Local placeholder substitution and audio keys for patient text.
@@ -428,18 +586,10 @@ struct Filler<'a> {
 
 impl Filler<'_> {
     fn text(&self, text: &str) -> String {
-        const PROVIDER: &str = "{{provider_display_name}}";
-        let mut text = text.replace("{{practice_name}}", self.practice);
-        match self.provider {
-            Some(name) => text = text.replace(PROVIDER, name),
-            None => {
-                if let Some(rest) = text.strip_prefix(PROVIDER) {
-                    text = format!("Your dentist{rest}");
-                }
-                text = text.replace(PROVIDER, NO_PROVIDER);
-            }
-        }
-        text
+        fill_provider(
+            &text.replace("{{practice_name}}", self.practice),
+            self.provider,
+        )
     }
 
     fn sentence(&self, text: &str) -> PatientSentence {
