@@ -2,7 +2,7 @@
 //! generation progress on the right.
 
 use crate::api;
-use crate::format::{PRESENTATION_LANGUAGES, default_presentation_language};
+use crate::format::default_presentation_language;
 use crate::icons::Logo;
 use crate::motion::SkeletonCard;
 use crate::patients::{
@@ -11,6 +11,7 @@ use crate::patients::{
 use crate::progress::GenerationProgress;
 use dc_core::api::{PatientDetail, PlanDetail};
 use dc_core::content::ReadingLevel;
+use dc_core::language::LANGUAGES;
 use dc_core::presentation::{CreatePresentationRequest, CreatePresentationResponse};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -168,16 +169,21 @@ fn CreateView(patient: PatientDetail, plan: PlanDetail) -> impl IntoView {
                             disabled=locked
                             on:change=move |ev| language.set(event_target_value(&ev))
                         >
-                            {PRESENTATION_LANGUAGES.iter().map(|(tag, label)| {
-                                let tag = *tag;
+                            {LANGUAGES.iter().map(|l| {
+                                let tag = l.tag;
+                                let label = if l.tested {
+                                    l.label()
+                                } else {
+                                    format!("{} (not reviewed)", l.label())
+                                };
                                 view! {
-                                    <option value=tag selected=move || language.get() == tag>{*label}</option>
+                                    <option value=tag selected=move || language.get() == tag>{label}</option>
                                 }
                             }).collect_view()}
                         </select>
                     </div>
                     <p id="language-help" class="setting-help">
-                        "Content is written in English first; other languages arrive in a later update."
+                        "Content is written and checked in English. Other languages are machine-translated from it when the presentation opens, and have not been reviewed by a native speaker."
                     </p>
                     <div class="setting-row">
                         <span id="level-label" class="setting-label">"Reading level"</span>

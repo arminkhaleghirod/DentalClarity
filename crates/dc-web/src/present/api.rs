@@ -2,7 +2,8 @@
 //! used here; the present-session cookie is the only credential.
 
 use dc_core::api::ApiError;
-use dc_core::present::{ExitPresentResponse, PatientView, SENTENCE_OFFSETS_HEADER};
+use dc_core::content::ReadingLevel;
+use dc_core::present::{ExitPresentResponse, PatientView, SENTENCE_OFFSETS_HEADER, VariantRequest};
 use gloo_net::http::{Request, Response};
 use leptos::wasm_bindgen::JsCast;
 use serde::Serialize;
@@ -76,6 +77,35 @@ async fn finish<T: DeserializeOwned>(response: Response) -> Result<T, Failure> {
 
 pub async fn content() -> Result<PatientView, Failure> {
     let response = Request::get("/api/present/content")
+        .send()
+        .await
+        .map_err(network)?;
+    finish(response).await
+}
+
+/// The view in one language and reading level, from the server's cache
+/// (`GET /api/present/content?language=&level=`). Starts no work.
+pub async fn content_in(language: &str, level: ReadingLevel) -> Result<PatientView, Failure> {
+    let response = Request::get(&format!(
+        "/api/present/content?language={language}&level={level}"
+    ))
+    .send()
+    .await
+    .map_err(network)?;
+    finish(response).await
+}
+
+/// Asks the server to prepare a language and reading level
+/// (`POST /api/present/variant`). Sections still being prepared come back
+/// pending; read them again with [`content_in`].
+pub async fn variant(language: &str, level: ReadingLevel) -> Result<PatientView, Failure> {
+    let body = VariantRequest {
+        language: language.to_owned(),
+        reading_level: level,
+    };
+    let response = Request::post("/api/present/variant")
+        .json(&body)
+        .map_err(network)?
         .send()
         .await
         .map_err(network)?;

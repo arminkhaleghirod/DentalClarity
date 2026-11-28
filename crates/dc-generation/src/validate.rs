@@ -462,7 +462,7 @@ pub fn contains_phrase(haystack: &str, phrase: &str) -> bool {
     })
 }
 
-fn sentence_count(text: &str) -> usize {
+pub fn sentence_count(text: &str) -> usize {
     let chars: Vec<char> = text.chars().collect();
     let mut count = 1;
     for i in 0..chars.len().saturating_sub(2) {
@@ -665,7 +665,7 @@ pub fn find_money(text: &str) -> Option<String> {
     })
 }
 
-fn placeholders(text: &str) -> Vec<String> {
+pub fn placeholders(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("{{") {

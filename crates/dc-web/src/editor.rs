@@ -2,9 +2,7 @@
 //! editable text blocks, the checks panel, and the Present button.
 
 use crate::api;
-use crate::format::{
-    CONTENT_LANGUAGES, content_language, language_name, money_view, timestamp, tooth_label,
-};
+use crate::format::{language_name, money_view, timestamp, tooth_label};
 use crate::motion::{SkeletonCard, restore_focus, view_transition};
 use crate::patients::patient_href;
 use crate::progress::{GenerationProgress, stage_text};
@@ -1554,14 +1552,15 @@ fn level_name(level: ReadingLevel) -> &'static str {
 
 fn details(p: &PresentationView) -> AnyView {
     let seconds = format!("{:.1} s", p.generation_ms as f64 / 1000.0);
-    // Name the language the text is in, which is what the patient sees. A
-    // different requested language is noted after it.
-    let content = language_name(&content_language(&p.language, &CONTENT_LANGUAGES));
+    // Staff edit the English text; patients see the chosen language, derived
+    // from it in Present mode.
     let requested = language_name(&p.language);
-    let language = if content == requested {
-        content
+    let language = if dc_core::language::find(&p.language)
+        .is_some_and(|l| l.tag == dc_core::language::SOURCE_LANGUAGE)
+    {
+        requested
     } else {
-        format!("{content} ({requested} requested)")
+        format!("{requested}, from the English below")
     };
     view! {
         <dl class="detail-list">

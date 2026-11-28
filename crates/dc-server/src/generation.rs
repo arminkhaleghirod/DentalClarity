@@ -14,6 +14,7 @@ use dc_ai::openrouter::OpenRouter;
 use dc_ai::{AiError, ProviderPolicy, TextModel, TextRequest, TextResponse, Usage, defaults};
 use dc_core::Mode;
 use dc_generation::Models;
+use dc_generation::variant::VariantModels;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
 
@@ -235,6 +236,10 @@ impl TextModel for BudgetedModel {
 /// Everything the job runner needs to generate a presentation.
 pub struct Generation {
     pub models: Models,
+    /// Translator and translation reviewer for language and reading level
+    /// variants. By default the writer and reviewer models (the demo
+    /// translator is the same model as the writer, docs/AI_PIPELINE.md).
+    pub variants: VariantModels,
     pub budget: Arc<Budget>,
 }
 
@@ -256,16 +261,49 @@ impl Generation {
                 budget: budget.clone(),
             })
         };
+        let writer = wrap(writer);
+        let reviewer = wrap(reviewer);
         Self {
+            variants: VariantModels {
+                translator: writer.clone(),
+                translator_model: writer_model.clone(),
+                reviewer: reviewer.clone(),
+                reviewer_model: reviewer_model.clone(),
+                reasoning,
+            },
             models: Models {
-                writer: wrap(writer),
+                writer,
                 writer_model,
-                reviewer: wrap(reviewer),
+                reviewer,
                 reviewer_model,
                 reasoning,
             },
             budget,
         }
+    }
+
+    /// Uses other models for variants, wrapped with the same budget guard.
+    pub fn with_variant_models(
+        mut self,
+        translator: Arc<dyn TextModel>,
+        translator_model: String,
+        reviewer: Arc<dyn TextModel>,
+        reviewer_model: String,
+    ) -> Self {
+        let wrap = |inner: Arc<dyn TextModel>| -> Arc<dyn TextModel> {
+            Arc::new(BudgetedModel {
+                inner,
+                budget: self.budget.clone(),
+            })
+        };
+        self.variants = VariantModels {
+            translator: wrap(translator),
+            translator_model,
+            reviewer: wrap(reviewer),
+            reviewer_model,
+            reasoning: self.models.reasoning,
+        };
+        self
     }
 
     /// Builds the provider for `mode` from the environment, if one is available.

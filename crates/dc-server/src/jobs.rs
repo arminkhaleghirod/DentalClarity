@@ -568,6 +568,8 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
         "DELETE FROM note_confirmations WHERE presentation_id IN
              (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
+        "DELETE FROM section_variants WHERE presentation_id IN
+             (SELECT id FROM presentations WHERE owner_scope <> 'staff' AND created_at <= ?)",
         "DELETE FROM job_section_results WHERE job_id IN
              (SELECT j.id FROM jobs j JOIN presentations p ON p.id = j.presentation_id
               WHERE p.owner_scope <> 'staff' AND p.created_at <= ?)",
@@ -600,6 +602,10 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
     // Regeneration events expire by their own time (milliseconds), not with
     // the presentation, so the demo limits keep counting them for a full day.
     sqlx::query("DELETE FROM regeneration_events WHERE created_at <= ?")
+        .bind(cutoff * 1000)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM variant_events WHERE created_at <= ?")
         .bind(cutoff * 1000)
         .execute(&mut *tx)
         .await?;

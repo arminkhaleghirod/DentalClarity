@@ -8,7 +8,7 @@
 //! plays as consecutive parts; the next part is fetched while one plays.
 
 use super::api;
-use dc_core::present::{MAX_NARRATION_SENTENCES, PatientBlock, PatientSentence};
+use dc_core::present::{MAX_NARRATION_SENTENCES, PatientBlock, PatientSentence, VariantState};
 use dc_core::presentation::BlockSource;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -668,6 +668,33 @@ pub fn NarratedBlock(
     #[prop(optional)] hide_heading: bool,
     #[prop(optional, into)] label: Option<String>,
 ) -> impl IntoView {
+    let (variant, language) = super::use_data().with_value(|v| {
+        let variant = v
+            .sections
+            .iter()
+            .find(|s| s.key == section_key)
+            .map(|s| s.variant)
+            .unwrap_or_default();
+        (variant, v.language.clone())
+    });
+    // A section still being prepared in another language shows placeholder
+    // lines, so the old and new languages are never mixed (UI_SPEC §6).
+    if variant == VariantState::Pending {
+        let lines = block.sentences.len().clamp(1, 6);
+        return view! {
+            <section class="p-block p-block-pending" aria-busy="true">
+                <div class="skeleton" aria-hidden="true">
+                    {(0..lines).map(|_| view! { <span class="sk-bar p-sk-line"></span> }).collect_view()}
+                </div>
+            </section>
+        }
+        .into_any();
+    }
+    // A section that could not be prepared stays in English, labelled.
+    let fallback = (variant == VariantState::Unavailable).then(|| {
+        let name = dc_core::language::find(&language).map_or("this language", |l| l.native);
+        format!("Not yet available in {name}. Shown in English.")
+    });
     let narrator = use_narrator();
     let id = format!("{section_key}/{}", block.field);
     let anchor = dom_id(&id);
@@ -768,12 +795,17 @@ pub fn NarratedBlock(
         let id = id.clone();
         move || narrator.message_for(&id)
     };
+    let lang = fallback
+        .is_some()
+        .then_some(dc_core::language::SOURCE_LANGUAGE);
     view! {
-        <section class="p-block" class:is-note=is_note>
+        <section class="p-block" class:is-note=is_note lang=lang>
+            {fallback.map(|l| view! { <p class="p-variant-label">{l}</p> })}
             {lead}
             {head}
             {body}
             {move || message().map(|m| view! { <p class="p-inline-note">{m}</p> })}
         </section>
     }
+    .into_any()
 }

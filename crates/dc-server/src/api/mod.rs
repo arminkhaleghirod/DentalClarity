@@ -9,6 +9,7 @@ mod review;
 mod staff;
 #[cfg(test)]
 mod tests;
+mod variants;
 
 use crate::{AppState, security};
 use axum::extract::DefaultBodyLimit;
@@ -54,6 +55,7 @@ pub fn routes(state: &AppState) -> Router<AppState> {
         .route("/content", get(present::content))
         .route("/audio/{key}", get(present::audio))
         .route("/narration", get(present::narration))
+        .route("/variant", post(variants::request))
         .route("/exit", post(present::exit))
         .route_layer(from_fn_with_state(state.clone(), security::require_present));
 

@@ -1,75 +1,23 @@
 //! Display helpers shared by staff pages.
 
 use dc_core::Money;
+use dc_core::language;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsValue;
 
-/// English name for the language tags the app currently recognizes.
-/// Unknown tags are shown as-is rather than guessed.
+/// English name for a language tag. Unknown tags are shown as-is rather
+/// than guessed.
 pub fn language_name(tag: &str) -> String {
-    let name = match tag.split('-').next().unwrap_or(tag) {
-        "en" => "English",
-        "es" => "Spanish",
-        "vi" => "Vietnamese",
-        "zh" => "Chinese",
-        "tl" => "Tagalog",
-        "ar" => "Arabic",
-        "fr" => "French",
-        "ko" => "Korean",
-        "ru" => "Russian",
-        "pt" => "Portuguese",
-        _ => return tag.to_owned(),
-    };
-    name.to_owned()
-}
-
-/// Languages offered when creating a presentation, as (tag, label).
-pub const PRESENTATION_LANGUAGES: [(&str, &str); 10] = [
-    ("en", "English"),
-    ("es", "Español · Spanish"),
-    ("vi", "Tiếng Việt · Vietnamese"),
-    ("zh", "中文 · Chinese"),
-    ("tl", "Tagalog"),
-    ("ar", "العربية · Arabic"),
-    ("fr", "Français · French"),
-    ("ko", "한국어 · Korean"),
-    ("ru", "Русский · Russian"),
-    ("pt", "Português · Portuguese"),
-];
-
-/// Languages content is written in today. This mirrors the server's
-/// `available_languages`, which is English only until translations land (M7).
-pub const CONTENT_LANGUAGES: [&str; 1] = ["en"];
-
-fn base_tag(tag: &str) -> String {
-    tag.split('-').next().unwrap_or(tag).to_ascii_lowercase()
+    language::find(tag).map_or_else(|| tag.to_owned(), |l| l.english.to_owned())
 }
 
 /// The language to preselect on the create screen: the patient's recorded
-/// preference when content exists in it, else English. Preselecting a
-/// language with no content would promise the patient something they will
-/// not see.
+/// preference when it is offered, else English. Content in every offered
+/// language is derived from the approved English text (DECISIONS E23).
 pub fn default_presentation_language(preferred: Option<&str>) -> &'static str {
-    let base = preferred.map(base_tag).unwrap_or_default();
-    CONTENT_LANGUAGES
-        .iter()
-        .copied()
-        .find(|tag| *tag == base)
-        .unwrap_or("en")
-}
-
-/// The language a presentation's text is actually in. `requested` is the
-/// tag chosen at creation; when no content exists in it, the text is in
-/// the first language that has content.
-pub fn content_language<S: AsRef<str>>(requested: &str, available: &[S]) -> String {
-    let base = base_tag(requested);
-    available
-        .iter()
-        .map(AsRef::as_ref)
-        .find(|tag| base_tag(tag) == base)
-        .or_else(|| available.first().map(AsRef::as_ref))
-        .unwrap_or("en")
-        .to_owned()
+    preferred
+        .and_then(language::find)
+        .map_or(language::SOURCE_LANGUAGE, |l| l.tag)
 }
 
 /// A money cell; missing amounts say so instead of showing a number.
@@ -133,17 +81,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_defaults_to_a_language_with_content() {
-        assert_eq!(default_presentation_language(Some("vi")), "en");
-        assert_eq!(default_presentation_language(Some("en-US")), "en");
+    fn create_preselects_an_offered_preference() {
+        assert_eq!(default_presentation_language(Some("vi")), "vi");
+        assert_eq!(default_presentation_language(Some("es-MX")), "es");
+        assert_eq!(default_presentation_language(Some("xx")), "en");
         assert_eq!(default_presentation_language(None), "en");
-    }
-
-    #[test]
-    fn content_language_falls_back_to_what_exists() {
-        assert_eq!(content_language("vi", &["en"]), "en");
-        assert_eq!(content_language("en-US", &["en"]), "en");
-        assert_eq!(content_language("es", &["en", "es"]), "es");
-        assert_eq!(content_language("vi", &[] as &[&str]), "en");
+        assert_eq!(language_name("es"), "Spanish");
+        assert_eq!(language_name("xx"), "xx");
     }
 }

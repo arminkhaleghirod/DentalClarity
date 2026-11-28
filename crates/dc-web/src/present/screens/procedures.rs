@@ -3,8 +3,10 @@
 use super::common::*;
 use crate::present::chart::{ToothChart, tooth_location};
 use crate::present::narration::NarratedBlock;
+use crate::present::variants::LevelControl;
 use crate::present::{planned_teeth, procedure_section, single_tooth, use_data, use_nav};
 use dc_core::ToothRef;
+use dc_core::present::VariantState;
 use dc_core::presentation::ProcedureFactView;
 use leptos::prelude::*;
 
@@ -70,42 +72,14 @@ pub fn Procedures() -> impl IntoView {
 }
 
 #[component]
-fn ReadingLevel(current: dc_core::content::ReadingLevel) -> impl IntoView {
-    use dc_core::content::ReadingLevel as Level;
-    let options = [
-        (Level::Simple, "Simple"),
-        (Level::Standard, "Standard"),
-        (Level::Detailed, "Detailed"),
-    ];
-    // Only the level the presentation was written at exists for now. It
-    // shows as selected; the others show as unavailable and say why.
-    view! {
-        <div class="p-segmented" role="radiogroup" aria-label="Reading level"
-            aria-describedby="p-level-later">
-            {options.into_iter().map(|(level, label)| {
-                let on = level == current;
-                view! {
-                    <span role="radio" class="p-segment" class:is-on=on class:is-unavailable=!on
-                        aria-checked=if on { "true" } else { "false" }
-                        aria-disabled=(!on).then_some("true")
-                        title=(!on).then_some("Not available yet. More reading levels arrive in a later update.")>
-                        {label}
-                    </span>
-                }
-            }).collect_view()}
-            <span id="p-level-later" class="visually-hidden">"More reading levels arrive in a later update"</span>
-        </div>
-    }
-}
-
-#[component]
 fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
     let data = use_data();
-    let (section, provider, level) = data.with_value(|v| {
+    let (section, provider, level, language) = data.with_value(|v| {
         (
             procedure_section(v, &procedure.procedure_ref).cloned(),
             v.provider_display_name.clone(),
             v.reading_level,
+            v.language.clone(),
         )
     });
     let tooth = single_tooth(&procedure);
@@ -143,7 +117,11 @@ fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
                     view! { <NarratedBlock section_key=key.clone() block=b provider=provider.clone() /> }
                 })
                 .collect_view();
-            questions = section.questions.clone();
+            // Questions wait with the rest of the section while it is
+            // prepared in another language.
+            if section.variant != VariantState::Pending {
+                questions = section.questions.clone();
+            }
             blocks.into_any()
         }
     };
@@ -166,7 +144,7 @@ fn ProcedureDetail(procedure: ProcedureFactView) -> impl IntoView {
                         <div class="p-eyebrow">{location}</div>
                         <h1 class="p-detail-title">{title}</h1>
                     </div>
-                    <ReadingLevel current=level />
+                    <LevelControl language current=level />
                 </div>
                 <div class="p-detail-body">{body}</div>
             </div>

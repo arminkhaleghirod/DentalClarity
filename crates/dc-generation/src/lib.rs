@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod prompt;
 pub mod schema;
 pub mod validate;
+pub mod variant;
 
 #[cfg(test)]
 mod test_support;
