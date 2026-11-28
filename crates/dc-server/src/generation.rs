@@ -1,7 +1,7 @@
 //! Model setup for the generation pipeline and the demo budget guard.
 //!
 //! Demo mode builds OpenRouter models when `OPENROUTER_API_KEY` is set.
-//! Clinical mode has no provider until the Bedrock path lands (M9), so
+//! Clinical mode builds Bedrock models in [`crate::clinical`]; without them,
 //! creating a presentation there is refused.
 //!
 //! Every model call goes through [`BudgetedModel`], which reserves the call's
@@ -272,7 +272,8 @@ impl Generation {
     ///
     /// Demo: OpenRouter with `OPENROUTER_API_KEY`, the app-managed default text
     /// model (or `text_model` from `DC_TEXT_MODEL`) for writer and reviewer, and
-    /// the monthly cap. Clinical: none until M9. The key is never logged.
+    /// the monthly cap. Clinical: always `None`; see [`crate::clinical`]. The
+    /// key is never logged.
     pub fn from_env(
         mode: Mode,
         db: &SqlitePool,
@@ -280,7 +281,6 @@ impl Generation {
         monthly_budget_usd: f64,
     ) -> Result<Option<Self>> {
         if mode != Mode::Demo {
-            tracing::info!("no AI provider in clinical mode until M9; generation is disabled");
             return Ok(None);
         }
         let Some(key) = std::env::var("OPENROUTER_API_KEY")

@@ -5,9 +5,15 @@
 //! may be built is decided by [`ProviderPolicy`], derived from the deployment
 //! [`Mode`]. Clinical mode cannot construct the OpenRouter adapter at all.
 
+#[cfg(feature = "aws")]
+pub mod aws;
+#[cfg(feature = "aws")]
+pub mod bedrock;
 pub mod fake;
 pub mod openrouter;
 pub mod openrouter_speech;
+#[cfg(feature = "aws")]
+pub mod polly;
 
 use async_trait::async_trait;
 use dc_core::Mode;
@@ -82,6 +88,19 @@ pub mod defaults {
     /// weston, vincent) and no voice descriptions. This default is provisional
     /// until the M9 listening test; `DC_SPEECH_VOICE` overrides it.
     pub const DEMO_SPEECH_VOICE: &str = "meredith";
+
+    /// AWS region for the clinical providers (docs/DECISIONS.md D13).
+    pub const CLINICAL_REGION: &str = "us-west-2";
+    /// Clinical text model on Bedrock, for writer and reviewer (D13). Claude
+    /// Haiku 5.5 showed no violating sentence through the pipeline in the
+    /// final ClarityEval run, with the second-highest faithfulness, at a
+    /// fraction of the larger Claude models' cost.
+    pub const CLINICAL_TEXT_MODEL: &str = "anthropic.claude-haiku-5-5";
+    /// Polly engine for clinical narration (D14).
+    pub const CLINICAL_SPEECH_ENGINE: &str = "neural";
+    /// Polly voice for English narration (D14). Other languages use the
+    /// table in `polly::voice_for`.
+    pub const CLINICAL_SPEECH_VOICE: &str = "Joanna";
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -149,6 +168,17 @@ impl ProviderPolicy {
         self.mode == Mode::Clinical
     }
 
+    pub fn check_aws(self) -> Result<()> {
+        if self.allows_aws() {
+            Ok(())
+        } else {
+            Err(AiError::NotAllowed {
+                provider: "aws",
+                mode: self.mode,
+            })
+        }
+    }
+
     pub fn check_openrouter(self) -> Result<()> {
         if self.allows_openrouter() {
             Ok(())
@@ -174,6 +204,7 @@ mod tests {
             Err(AiError::NotAllowed { .. })
         ));
         assert!(policy.allows_aws());
+        assert!(policy.check_aws().is_ok());
     }
 
     #[test]
@@ -181,5 +212,9 @@ mod tests {
         let policy = ProviderPolicy::for_mode(Mode::Demo);
         assert!(policy.check_openrouter().is_ok());
         assert!(!policy.allows_aws());
+        assert!(matches!(
+            policy.check_aws(),
+            Err(AiError::NotAllowed { .. })
+        ));
     }
 }

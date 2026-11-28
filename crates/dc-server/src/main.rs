@@ -1,171 +1,123 @@
-use anyhow::{Context, Result};
-use dc_core::Mode;
-use dc_knowledge::KnowledgeBase;
-use dc_pms::synthetic::SyntheticConnector;
+//! `dentalclarity` command line.
+//!
+//! ```text
+//! dentalclarity                     run the server in this console
+//! dentalclarity service install     register the Windows service (Administrator)
+//! dentalclarity service uninstall   stop and remove the Windows service
+//! dentalclarity service run         started by Windows, not by hand
+//! dentalclarity secret set NAME     store a secret read from standard input
+//! dentalclarity secret delete NAME  remove a stored secret
+//! dentalclarity tls ca-path         print where the local CA certificate is
+//! ```
+
+use anyhow::{Context, Result, bail};
 use dc_server::config::Config;
-use dc_server::generation::Generation;
-use dc_server::jobs::{self, Jobs};
-use dc_server::limits::Limits;
-use dc_server::narration::Narration;
-use dc_server::{AppState, router, sessions, settings, storage};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use dc_server::secrets::SecretStore;
+use dc_server::server::{self, RunOptions};
+use dc_server::{service, tls};
+use std::io::BufRead;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Values already set in the environment win over `.env`.
-    let dotenv = dotenvy::dotenv();
+const USAGE: &str =
+    "usage: dentalclarity [service install|uninstall|run | secret set|delete NAME | tls ca-path]";
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        [] => run_console(),
+        ["service", "install"] => service::install(),
+        ["service", "uninstall"] => service::uninstall(),
+        ["service", "run"] => service::run(),
+        ["secret", "set", name] => {
+            load_settings();
+            let store = SecretStore::new(&data_dir());
+            eprintln!("Enter the value for {name} and press Enter:");
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            let value = line.trim_end_matches(['\r', '\n']);
+            if value.trim().is_empty() {
+                bail!("no value given; nothing was stored");
+            }
+            store.set(name, value.as_bytes())?;
+            let how = if dc_server::secrets::PROTECTED {
+                "protected with DPAPI"
+            } else {
+                "not encrypted on this system; file permissions only"
+            };
+            println!("Stored {name} ({how}). Restart DentalClarity to use it.");
+            Ok(())
+        }
+        ["secret", "delete", name] => {
+            load_settings();
+            let removed = SecretStore::new(&data_dir()).delete(name)?;
+            println!(
+                "{}",
+                if removed {
+                    "Removed."
+                } else {
+                    "Nothing was stored under that name."
+                }
+            );
+            Ok(())
+        }
+        ["tls", "ca-path"] => {
+            load_settings();
+            println!("{}", tls::ca_path(&data_dir()).display());
+            Ok(())
+        }
+        ["-h" | "--help" | "help"] => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        _ => bail!("{USAGE}"),
+    }
+}
+
+/// Loads `.env` from the working directory, or on Windows the service's
+/// settings file when there is no `.env`, so commands run by an
+/// administrator see the same data directory as the service. Values already
+/// set in the environment win.
+fn load_settings() -> Option<PathBuf> {
+    if let Ok(path) = dotenvy::dotenv() {
+        return Some(path);
+    }
+    if cfg!(windows) {
+        let path = service::program_data().join(service::SETTINGS_FILE);
+        if dotenvy::from_path(&path).is_ok() {
+            if std::env::var_os("DC_DATA_DIR").is_none() {
+                // SAFETY: single-threaded at this point; no runtime yet.
+                unsafe { std::env::set_var("DC_DATA_DIR", service::program_data().join("data")) };
+            }
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn data_dir() -> PathBuf {
+    std::env::var("DC_DATA_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "data".into())
+        .into()
+}
+
+fn run_console() -> Result<()> {
+    let loaded = load_settings();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
-
-    if let Ok(path) = &dotenv {
+    if let Some(path) = &loaded {
         tracing::info!(path = %path.display(), "loaded settings file");
     }
     let config = Config::from_env()?;
-    let db = storage::open(&config.data_dir).await?;
-    // Until the Open Dental connector lands (M2), both modes read the
-    // synthetic practice. Clinical mode with synthetic data is a training setup.
-    let pms =
-        SyntheticConnector::from_path(&config.fixture).context("loading synthetic practice")?;
-    let kb = KnowledgeBase::load(&config.knowledge_dir).context("loading the knowledge base")?;
-    tracing::info!(entries = kb.entries().count(), "knowledge base loaded");
-    let generation = Generation::from_env(
-        config.mode,
-        &db,
-        config.text_model.as_deref(),
-        config.demo_monthly_budget_usd,
-    )?;
-    let narration = Narration::from_env(
-        config.mode,
-        &db,
-        &config.data_dir,
-        generation.as_ref(),
-        config.demo_monthly_budget_usd,
-    )?;
-
-    // Sessions from one mode never carry into the other.
-    let mode = config.mode.to_string();
-    if settings::get(&db, settings::MODE).await?.as_deref() != Some(mode.as_str()) {
-        let ended = sessions::delete_all(&db).await?;
-        settings::set(&db, settings::MODE, &mode).await?;
-        tracing::info!(
-            ended,
-            mode,
-            "mode changed since last start; all sessions ended"
-        );
-    }
-
-    let setup_code = if config.mode == Mode::Clinical && !staff_account_exists(&db).await? {
-        let code = new_setup_code();
-        // Printed and logged on this machine only; the log never leaves it.
-        println!(
-            "
-  First-time setup code: {code}"
-        );
-        println!(
-            "  Enter it on the setup screen to create the staff account.
-"
-        );
-        tracing::warn!("setup required; the one-time setup code is printed above");
-        Some(code)
-    } else {
-        None
-    };
-
-    let state = AppState {
-        mode: config.mode,
-        http: Arc::new(config.http.clone()),
-        db: db.clone(),
-        default_practice_name: pms.practice_name().to_owned(),
-        pms: Arc::new(pms),
-        codes: Arc::new(kb.codes.clone()),
-        kb: Arc::new(kb),
-        generation: generation.map(Arc::new),
-        jobs: Arc::new(Jobs::default()),
-        limits: Arc::new(Limits::default()),
-        setup_code: Arc::new(std::sync::Mutex::new(setup_code)),
-        narration: Arc::new(narration),
-    };
-
-    // Jobs interrupted by a stop are re-run from the start.
-    let resumed = jobs::resume_pending(&state).await?;
-    if resumed > 0 {
-        tracing::info!(resumed, "re-running interrupted generation jobs");
-    }
-
-    let demo = config.mode == Mode::Demo;
-    let narration = state.narration.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(600));
-        loop {
-            tick.tick().await;
-            if let Err(err) = sessions::purge_expired(&db).await {
-                tracing::warn!(%err, "session purge failed");
-            }
-            if demo {
-                match jobs::purge_demo_data(&db).await {
-                    Ok(0) => {}
-                    Ok(removed) => tracing::info!(removed, "purged demo presentations"),
-                    Err(err) => tracing::warn!(%err, "demo data purge failed"),
-                }
-            }
-            match narration.collect_garbage().await {
-                Ok(report) if report == Default::default() => {}
-                Ok(report) => tracing::info!(
-                    stale = report.stale,
-                    over_cap = report.over_cap,
-                    orphans = report.orphans,
-                    "cleaned the narration cache"
-                ),
-                Err(err) => tracing::warn!(%err, "narration cache cleanup failed"),
-            }
-        }
-    });
-
-    let listener = tokio::net::TcpListener::bind(config.bind)
-        .await
-        .with_context(|| format!("binding {}", config.bind))?;
-    tracing::info!(
-        mode = %config.mode,
-        addr = %config.bind,
-        origin = %config.http.public_origin,
-        "DentalClarity listening"
-    );
-
-    axum::serve(
-        listener,
-        router(state).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
-    Ok(())
-}
-
-async fn staff_account_exists(db: &sqlx::SqlitePool) -> Result<bool> {
-    let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM staff_account WHERE id = 1")
-        .fetch_optional(db)
-        .await?;
-    Ok(row.is_some())
-}
-
-/// Twelve characters from an alphabet without look-alikes, grouped for reading
-/// aloud, e.g. `7KQ2-MX9D-4TRB`. About 60 bits, and attempts are rate limited.
-fn new_setup_code() -> String {
-    const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).expect("OS random source is available");
-    let chars: Vec<char> = bytes
-        .iter()
-        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
-        .collect();
-    chars
-        .chunks(4)
-        .map(|c| c.iter().collect::<String>())
-        .collect::<Vec<_>>()
-        .join("-")
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?
+        .block_on(server::run(config, RunOptions::default(), async {
+            let _ = tokio::signal::ctrl_c().await;
+        }))
 }

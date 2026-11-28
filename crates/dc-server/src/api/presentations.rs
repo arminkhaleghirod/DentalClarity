@@ -207,8 +207,8 @@ pub async fn create(
 pub(super) fn provider_not_configured(state: &AppState) -> Failure {
     let message = match state.mode {
         Mode::Clinical => {
-            "Generating presentations in clinical mode needs the AWS Bedrock connection, \
-             which is not available in this version yet."
+            "Generating presentations in clinical mode needs the AWS Bedrock connection. \
+             Build with the aws feature, set DC_AI_PROVIDER=aws and restart."
         }
         Mode::Demo => {
             "The demo AI provider is not configured on this server. Set OPENROUTER_API_KEY and restart."

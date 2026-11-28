@@ -16,5 +16,20 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Clinical mode providers (Bedrock and Polly). Off by default so demo builds
+# and CI do not compile the AWS SDK.
+aws-config = { version = "1.13", optional = true, features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = { version = "1.158", optional = true }
+aws-sdk-polly = { version = "1.133", optional = true }
+aws-smithy-types = { version = "1.9", optional = true }
+tokio = { workspace = true, optional = true }
+
+[features]
+aws = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-sdk-polly", "dep:aws-smithy-types", "dep:tokio"]
+
 [dev-dependencies]
 tokio.workspace = true
+
+[[example]]
+name = "aws_smoke"
+required-features = ["aws"]

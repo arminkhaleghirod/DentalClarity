@@ -3,6 +3,8 @@ use dc_core::Mode;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
+use crate::tls::TlsSource;
+
 /// Startup configuration, read from environment variables.
 ///
 /// | Variable            | Default                               |
@@ -18,6 +20,13 @@ use std::path::PathBuf;
 /// | `DC_KNOWLEDGE_DIR`  | `knowledge`                           |
 /// | `DC_TEXT_MODEL`     | app-managed default (demo only)       |
 /// | `DC_DEMO_MONTHLY_BUDGET_USD` | `25`                         |
+/// | `DC_TLS`            | unset; `local-ca` for a generated CA  |
+/// | `DC_TLS_CERT`, `DC_TLS_KEY` | unset; PEM files              |
+/// | `DC_TLS_HOSTNAMES`  | unset; extra certificate names        |
+/// | `DC_AI_PROVIDER`    | unset; `aws` in clinical mode         |
+///
+/// With TLS on, `DC_PUBLIC_ORIGIN` defaults to `https://` + `DC_BIND`.
+/// The AWS provider variables are read in [`crate::clinical`].
 ///
 /// `OPENROUTER_API_KEY` is read where the demo provider is built, and is
 /// deliberately not part of this `Debug` struct.
@@ -33,6 +42,9 @@ pub struct Config {
     pub text_model: Option<String>,
     /// Monthly cap on demo model spend in US dollars.
     pub demo_monthly_budget_usd: f64,
+    /// HTTPS served by this process. `None` serves plain HTTP, for a TLS
+    /// proxy in front, the demo platform, or loopback use.
+    pub tls: Option<TlsSource>,
 }
 
 /// Settings the request-handling code needs.
@@ -72,12 +84,17 @@ impl Config {
             .unwrap_or_else(|| "127.0.0.1:8080".into())
             .parse()
             .context("DC_BIND")?;
+        let tls = tls_source(&var)?;
+        let scheme = if tls.is_some() { "https" } else { "http" };
         let public_origin = var("DC_PUBLIC_ORIGIN")
-            .unwrap_or_else(|| format!("http://{bind}"))
+            .unwrap_or_else(|| format!("{scheme}://{bind}"))
             .trim_end_matches('/')
             .to_owned();
         if !public_origin.starts_with("http://") && !public_origin.starts_with("https://") {
             bail!("DC_PUBLIC_ORIGIN must start with http:// or https://");
+        }
+        if tls.is_some() && !public_origin.starts_with("https://") {
+            bail!("the server speaks HTTPS, so DC_PUBLIC_ORIGIN must start with https://");
         }
         let trusted_proxy = var("DC_TRUSTED_PROXY")
             .map(|v| v.parse())
@@ -93,7 +110,7 @@ impl Config {
             && !bind.ip().is_loopback()
         {
             bail!(
-                "clinical mode on the network needs HTTPS. Set DC_PUBLIC_ORIGIN to an https:// address served through a TLS proxy, or bind to 127.0.0.1 for use on this machine only."
+                "clinical mode on the network needs HTTPS. Set DC_TLS=local-ca or DC_TLS_CERT and DC_TLS_KEY, or set DC_PUBLIC_ORIGIN to an https:// address served through a TLS proxy, or bind to 127.0.0.1 for use on this machine only."
             );
         }
         let demo_monthly_budget_usd = match var("DC_DEMO_MONTHLY_BUDGET_USD") {
@@ -124,7 +141,41 @@ impl Config {
                 .into(),
             text_model: var("DC_TEXT_MODEL").map(|m| m.trim().to_owned()),
             demo_monthly_budget_usd,
+            tls,
         })
+    }
+}
+
+/// Reads the TLS settings: certificate files, the generated local CA, or none.
+fn tls_source(var: &dyn Fn(&str) -> Option<String>) -> Result<Option<TlsSource>> {
+    let files = match (var("DC_TLS_CERT"), var("DC_TLS_KEY")) {
+        (Some(cert), Some(key)) => Some(TlsSource::Files {
+            cert: cert.trim().into(),
+            key: key.trim().into(),
+        }),
+        (None, None) => None,
+        _ => bail!("set both DC_TLS_CERT and DC_TLS_KEY, or neither"),
+    };
+    let mode = var("DC_TLS").map(|v| v.trim().to_ascii_lowercase());
+    match (mode.as_deref(), files) {
+        (Some("local-ca"), Some(_)) => {
+            bail!("DC_TLS=local-ca and DC_TLS_CERT cannot be used together")
+        }
+        (Some("local-ca"), None) => Ok(Some(TlsSource::LocalCa {
+            hostnames: var("DC_TLS_HOSTNAMES")
+                .map(|v| {
+                    v.split(',')
+                        .map(|n| n.trim().to_owned())
+                        .filter(|n| !n.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })),
+        (Some("off"), Some(_)) => bail!("DC_TLS=off conflicts with DC_TLS_CERT"),
+        (None | Some("off"), None) => Ok(None),
+        (None | Some("files"), files @ Some(_)) => Ok(files),
+        (Some("files"), None) => bail!("DC_TLS=files needs DC_TLS_CERT and DC_TLS_KEY"),
+        (Some(other), _) => bail!("DC_TLS must be local-ca, files or off, not {other:?}"),
     }
 }
 
@@ -208,5 +259,42 @@ mod tests {
         assert!(!r.contains("8.8.8.8".parse().unwrap()));
         assert!("10.0.0.1/40".parse::<ProxyRanges>().is_err());
         assert!("".parse::<ProxyRanges>().is_err());
+    }
+
+    #[test]
+    fn reads_tls_settings() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert_eq!(tls_source(&env(&[])).unwrap(), None);
+        assert_eq!(
+            tls_source(&env(&[
+                ("DC_TLS", "local-ca"),
+                ("DC_TLS_HOSTNAMES", "a.lan, 10.0.0.5,")
+            ]))
+            .unwrap(),
+            Some(TlsSource::LocalCa {
+                hostnames: vec!["a.lan".into(), "10.0.0.5".into()]
+            })
+        );
+        assert!(matches!(
+            tls_source(&env(&[("DC_TLS_CERT", "c.pem"), ("DC_TLS_KEY", "k.pem")])).unwrap(),
+            Some(TlsSource::Files { .. })
+        ));
+        assert!(tls_source(&env(&[("DC_TLS_CERT", "c.pem")])).is_err());
+        assert!(tls_source(&env(&[("DC_TLS", "self-signed")])).is_err());
+        assert!(
+            tls_source(&env(&[
+                ("DC_TLS", "local-ca"),
+                ("DC_TLS_CERT", "c.pem"),
+                ("DC_TLS_KEY", "k.pem")
+            ]))
+            .is_err()
+        );
     }
 }
