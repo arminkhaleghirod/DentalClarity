@@ -80,4 +80,4 @@ The held-out cases, their salts and the run directory are not in the repository 
 cargo run -p clarityeval -- report eval/runs/20261126T230607Z-final-heldout-v1-291b679
 ```
 
-Re-scoring is exact. Re-running the models repeats the procedure, but provider outputs vary from run to run.
+Re-scoring is exact at commit `fe7504d`, the code and knowledge base the run was scored with. Later commits add knowledge entries and map more procedure codes, so `report` on a newer checkout warns that the knowledge hash differs and may count unsupported codes differently. Re-running the models repeats the procedure, but provider outputs vary from run to run.
