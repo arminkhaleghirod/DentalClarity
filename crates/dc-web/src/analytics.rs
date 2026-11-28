@@ -73,11 +73,9 @@ fn Report(report: AnalyticsResponse) -> impl IntoView {
         .median_seconds
         .map_or_else(|| "None yet".to_owned(), duration);
     let finished = g.succeeded + g.needs_review + g.failed;
-    let first_pass = if finished > 0 {
-        format!("{}%", (g.succeeded * 100 + finished / 2) / finished)
-    } else {
-        "None yet".to_owned()
-    };
+    let first_pass = (g.succeeded * 100 + finished / 2)
+        .checked_div(finished)
+        .map_or_else(|| "None yet".to_owned(), |pct| format!("{pct}%"));
     view! {
         <section class="stat-cards reveal" aria-label="Summary">
             <div class="stat-card">
