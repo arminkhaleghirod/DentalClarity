@@ -7,6 +7,8 @@
 //! Every model call goes through [`BudgetedModel`], which reserves the call's
 //! worst-case cost before it runs and records the actual cost afterwards in
 //! `ai_usage` for the current UTC month (docs/AI_PIPELINE.md, demo budget guard).
+//! Prices come from the dated table in `prices.toml` ([`crate::pricing`]),
+//! and every call that reaches the provider writes an `ai_calls` row.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,6 +18,7 @@ use dc_core::Mode;
 use dc_generation::Models;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Share of the monthly cap at which new generations stop. Calls already
 /// running may continue up to the full cap.
@@ -24,26 +27,20 @@ pub const SOFT_STOP_SHARE: f64 = 0.8;
 /// stop this keeps room for generation after narration's share is used up.
 pub const SPEECH_SHARE: f64 = 0.2;
 
-/// Placeholder prices for estimating a call's cost when the provider does
-/// not report one, in US dollars per million tokens. Deliberately above the
-/// demo model's list price so the estimate errs high. Replace with the dated
-/// price table once prices are verified.
-const EST_INPUT_USD_PER_MTOK: f64 = 1.0;
-const EST_OUTPUT_USD_PER_MTOK: f64 = 4.0;
-
-/// Estimated cost of a call from its token counts.
+/// Cost of a call at the placeholder rates for models the price table does
+/// not list ([`crate::pricing::FALLBACK_INPUT_USD_PER_MTOK`]).
 pub fn estimate_cost(input_tokens: u32, output_tokens: u32) -> f64 {
-    (f64::from(input_tokens) * EST_INPUT_USD_PER_MTOK
-        + f64::from(output_tokens) * EST_OUTPUT_USD_PER_MTOK)
+    (f64::from(input_tokens) * crate::pricing::FALLBACK_INPUT_USD_PER_MTOK
+        + f64::from(output_tokens) * crate::pricing::FALLBACK_OUTPUT_USD_PER_MTOK)
         / 1_000_000.0
 }
 
-/// Cost to record for a usage total: the provider's figure when it reports
-/// one, otherwise the estimate.
-pub fn usage_cost(usage: &Usage) -> f64 {
-    usage
-        .cost_usd
-        .unwrap_or_else(|| estimate_cost(usage.input_tokens, usage.output_tokens))
+/// Cost to record for a usage total of `model` from `provider`: the
+/// provider's figure when it reports one, otherwise the table price.
+pub fn usage_cost(usage: &Usage, provider: &str, model: &str) -> f64 {
+    usage.cost_usd.unwrap_or_else(|| {
+        crate::pricing::text_price(provider, model).cost(usage.input_tokens, usage.output_tokens)
+    })
 }
 
 /// Monthly spend tracking and the cap check.
@@ -184,14 +181,32 @@ impl Budget {
     }
 }
 
-/// Spend to record for one finished call. A call that timed out or came back
-/// unusable was still sent and may be billed without a usage report, so it is
-/// counted at its worst-case reservation. Refused or failed requests cost nothing.
-fn billed_cost(result: &dc_ai::Result<TextResponse>, reservation: f64) -> Option<f64> {
+/// Cost, its source, the reported cost, the table estimate and the outcome
+/// of one finished call. A call that timed out or came back unusable was
+/// still sent and may be billed without a usage report, so it is counted at
+/// its worst-case reservation. A failed request costs nothing.
+fn billed_cost(
+    result: &dc_ai::Result<TextResponse>,
+    price: &crate::pricing::TextPrice,
+    reservation: f64,
+) -> (f64, &'static str, Option<f64>, Option<f64>, &'static str) {
     match result {
-        Ok(response) => Some(usage_cost(&response.usage)),
-        Err(AiError::BadResponse(_)) => Some(reservation),
-        Err(_) => None,
+        Ok(response) => {
+            let usage = &response.usage;
+            let est = price.cost(usage.input_tokens, usage.output_tokens);
+            match usage.cost_usd {
+                Some(reported) => (reported, "reported", Some(reported), Some(est), "ok"),
+                None => (est, price.source.cost_source(), None, Some(est), "ok"),
+            }
+        }
+        Err(AiError::BadResponse(_)) => (
+            reservation,
+            "reservation",
+            None,
+            Some(reservation),
+            "unusable",
+        ),
+        Err(_) => (0.0, "none", None, None, "failed"),
     }
 }
 
@@ -208,10 +223,12 @@ impl TextModel for BudgetedModel {
     }
 
     async fn generate(&self, request: TextRequest) -> dc_ai::Result<TextResponse> {
+        let provider = self.inner.provider();
+        let price = crate::pricing::text_price(provider, &request.model);
         // About four characters per token.
         let input_chars: usize = request.messages.iter().map(|m| m.content.len()).sum();
         let input_tokens = u32::try_from(input_chars / 4).unwrap_or(u32::MAX);
-        let reservation = estimate_cost(input_tokens, request.max_tokens);
+        let reservation = price.max_cost(input_tokens, request.max_tokens);
         match self.budget.reserve(reservation).await {
             Ok(true) => {}
             Ok(false) => {
@@ -221,12 +238,41 @@ impl TextModel for BudgetedModel {
             }
             Err(err) => return Err(AiError::Request(format!("budget check failed: {err}"))),
         }
+        let model_requested = request.model.clone();
+        let started = Instant::now();
         let result = self.inner.generate(request).await;
+        let latency_ms = started.elapsed().as_millis() as u64;
         self.budget.release(reservation);
-        if let Some(cost) = billed_cost(&result, reservation)
+        let (cost, cost_source, reported, est, outcome) = billed_cost(&result, &price, reservation);
+        if outcome != "failed"
             && let Err(err) = self.budget.record(cost).await
         {
             tracing::warn!(%err, "could not record model spend");
+        }
+        if !matches!(result, Err(AiError::NotAllowed { .. })) {
+            let site = dc_generation::current_call_site();
+            let ok = result.as_ref().ok();
+            let call = crate::ai_calls::CallRecord {
+                stage: site.as_ref().map_or("other", |s| s.stage.as_str()),
+                section_key: site.as_ref().map(|s| s.section.clone()),
+                round: site.as_ref().map_or(0, |s| s.round),
+                attempt: site.as_ref().map_or(1, |s| s.attempt),
+                provider,
+                model_requested,
+                model_returned: ok.map(|r| r.model.clone()),
+                provider_route: ok.and_then(|r| r.route.clone()),
+                prompt_version: site.map(|s| s.prompt_version),
+                input_tokens: ok.map_or(0, |r| r.usage.input_tokens),
+                output_tokens: ok.map_or(0, |r| r.usage.output_tokens),
+                audio_chars: None,
+                latency_ms,
+                outcome,
+                cost_usd: cost,
+                cost_source,
+                reported_cost_usd: reported,
+                est_cost_usd: est,
+            };
+            crate::ai_calls::record_or_warn(&self.budget.db, &call).await;
         }
         result
     }
@@ -405,6 +451,44 @@ mod tests {
             .unwrap();
         assert_eq!(calls, 1);
         assert_eq!(budget.reserved(), 0.0);
+
+        // Both calls reached the provider, so both are logged; only the
+        // timed-out one is charged.
+        let rows: Vec<(String, String, f64, String)> = sqlx::query_as(
+            "SELECT provider, outcome, cost_usd, cost_source FROM ai_calls ORDER BY id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].0.as_str(), rows[0].1.as_str(), rows[0].3.as_str()),
+            ("failing", "unusable", "reservation")
+        );
+        assert!((rows[0].2 - cost).abs() < 1e-12);
+        assert_eq!(
+            (rows[1].1.as_str(), rows[1].2, rows[1].3.as_str()),
+            ("failed", 0.0, "none")
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_calls_write_no_row() {
+        let db = open_in_memory().await.unwrap();
+        let budget = Arc::new(Budget::new(db.clone(), Some(0.0)));
+        let model = BudgetedModel {
+            inner: Arc::new(FakeTextModel::default()),
+            budget,
+        };
+        assert!(matches!(
+            model.generate(request()).await,
+            Err(AiError::Limited(_))
+        ));
+        let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ai_calls")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
@@ -414,13 +498,16 @@ mod tests {
             output_tokens: 0,
             cost_usd: Some(0.01),
         };
-        assert_eq!(usage_cost(&usage), 0.01);
+        assert_eq!(usage_cost(&usage, "fake", "m"), 0.01);
+        let unreported = Usage {
+            cost_usd: None,
+            ..usage
+        };
+        assert_eq!(usage_cost(&unreported, "fake", "m"), 1.0);
+        let listed = crate::pricing::text_price("openrouter", defaults::DEMO_TEXT_MODEL);
         assert_eq!(
-            usage_cost(&Usage {
-                cost_usd: None,
-                ..usage
-            }),
-            1.0
+            usage_cost(&unreported, "openrouter", defaults::DEMO_TEXT_MODEL),
+            listed.cost(1_000_000, 0)
         );
     }
 }

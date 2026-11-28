@@ -52,10 +52,6 @@ use std::time::Duration;
 
 /// Longest sentence that may be narrated, in characters.
 pub const MAX_TEXT_CHARS: usize = 400;
-/// OpenRouter list price for `heygen/heygen-voice-1-turbo` (checked
-/// 2026-11-26): $4 per million input characters. The response reports no
-/// cost, so calls are recorded at this price.
-pub const SPEECH_USD_PER_MILLION_CHARS: f64 = 4.0;
 /// Extra attempts after a transport or server failure.
 const RETRIES: u32 = 2;
 /// Extra attempts after a call that timed out or came back unusable. The
@@ -172,9 +168,19 @@ pub struct CleanupReport {
     pub orphans: u64,
 }
 
-/// Cost of narrating `text`.
+/// Cost of narrating `text` with `model` from `provider`, at the dated
+/// table price. Speech replies report no cost, so this is what is recorded.
+pub fn speech_cost_for(provider: &str, model: &str, text: &str) -> (f64, &'static str) {
+    let (per_million, source) = crate::pricing::speech_price(provider, model);
+    (
+        text.chars().count() as f64 * per_million / 1_000_000.0,
+        source.cost_source(),
+    )
+}
+
+/// Cost of narrating `text` with the demo voice.
 pub fn speech_cost(text: &str) -> f64 {
-    text.chars().count() as f64 * SPEECH_USD_PER_MILLION_CHARS / 1_000_000.0
+    speech_cost_for("openrouter", defaults::DEMO_SPEECH_MODEL, text).0
 }
 
 pub struct Narration {
@@ -613,7 +619,8 @@ impl Narration {
         address: Option<&str>,
         billed: &mut u32,
     ) -> Result<dc_ai::SpeechClip, Failure> {
-        let cost = speech_cost(text);
+        let (cost, cost_source) = speech_cost_for(speech.provider(), &self.model, text);
+        let mut attempt = 0;
         let request = SpeechRequest {
             model: self.model.clone(),
             text: text.to_owned(),
@@ -630,13 +637,44 @@ impl Narration {
                     "Demo narration budget reached for this month. Narration is paused until next month.",
                 ));
             }
+            attempt += 1;
+            let started = std::time::Instant::now();
             let result = speech.synthesize(request.clone()).await;
+            let latency_ms = started.elapsed().as_millis() as u64;
             self.budget.release_speech(cost);
-            if matches!(result, Ok(_) | Err(AiError::BadResponse(_))) {
+            let billed_call = matches!(result, Ok(_) | Err(AiError::BadResponse(_)));
+            if billed_call {
                 *billed += 1;
                 if let Err(err) = self.budget.record_speech(cost).await {
                     tracing::warn!(%err, "could not record narration spend");
                 }
+            }
+            if !matches!(result, Err(AiError::NotAllowed { .. })) {
+                let call = crate::ai_calls::CallRecord {
+                    stage: "speech",
+                    section_key: None,
+                    round: 0,
+                    attempt,
+                    provider: speech.provider(),
+                    model_requested: self.model.clone(),
+                    model_returned: result.is_ok().then(|| self.model.clone()),
+                    provider_route: None,
+                    prompt_version: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    audio_chars: Some(u32::try_from(text.chars().count()).unwrap_or(u32::MAX)),
+                    latency_ms,
+                    outcome: match &result {
+                        Ok(_) => "ok",
+                        Err(AiError::BadResponse(_)) => "unusable",
+                        Err(_) => "failed",
+                    },
+                    cost_usd: if billed_call { cost } else { 0.0 },
+                    cost_source: if billed_call { cost_source } else { "none" },
+                    reported_cost_usd: None,
+                    est_cost_usd: Some(cost),
+                };
+                crate::ai_calls::record_or_warn(&self.db, &call).await;
             }
             match result {
                 Ok(clip) => return Ok(clip),

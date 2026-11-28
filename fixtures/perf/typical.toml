@@ -1,0 +1,318 @@
+# Timing benchmark workload `perf/typical` (docs/AI_PIPELINE.md, measuring
+# the 90 second target; docs/DECISIONS.md E26), in the synthetic practice
+# format. Five plans, each with 4 to 6 procedures in 2 phases, 1 or 2 linked
+# notes and at least one tooth with two procedures. English, standard level.
+#
+# Every person, plan, note and amount in this file is invented. Do not add
+# real patient data here or anywhere else in the repository.
+#
+# Amounts are in cents. Procedure descriptions are the practice's own short
+# names, not CDT descriptor text.
+
+[practice]
+name = "Benchmark Dental"
+
+[[patients]]
+key = "perf-1"
+first_name = "Avery"
+last_name = "Lindqvist"
+age = 38
+language = "en"
+
+[[patients.plans]]
+key = "perf-1-plan"
+name = "Active"
+provider = "Dr. Moreau"
+
+[[patients.plans.procedures]]
+id = "perf-1-1"
+code = "D3330"
+description = "Root canal, molar"
+tooth = "19"
+phase = 1
+fee = 115000
+insurance_est = 69000
+patient_est = 46000
+note = "#19 deep decay into the nerve, sensitive to cold. Root canal, build-up and crown planned."
+
+[[patients.plans.procedures]]
+id = "perf-1-2"
+code = "D2950"
+description = "Core buildup"
+tooth = "19"
+phase = 1
+fee = 31000
+insurance_est = 18600
+patient_est = 12400
+
+[[patients.plans.procedures]]
+id = "perf-1-3"
+code = "D2740"
+description = "Crown, porcelain"
+tooth = "19"
+phase = 2
+fee = 138000
+insurance_est = 69000
+patient_est = 69000
+
+[[patients.plans.procedures]]
+id = "perf-1-4"
+code = "D1110"
+description = "Adult cleaning"
+phase = 2
+fee = 13500
+insurance_est = 13500
+patient_est = 0
+
+[[patients]]
+key = "perf-2"
+first_name = "Jonah"
+last_name = "Abernathy"
+age = 54
+language = "en"
+
+[[patients.plans]]
+key = "perf-2-plan"
+name = "Active"
+provider = "Dr. Moreau"
+
+[[patients.plans.procedures]]
+id = "perf-2-1"
+code = "D7210"
+description = "Surgical extraction"
+tooth = "30"
+phase = 1
+fee = 42000
+insurance_est = 25200
+patient_est = 16800
+note = "#30 cracked below the gumline, cannot be restored. Remove, graft the site, implant after healing."
+
+[[patients.plans.procedures]]
+id = "perf-2-2"
+code = "D7953"
+description = "Bone graft"
+tooth = "30"
+phase = 1
+fee = 65000
+insurance_est = 26000
+patient_est = 39000
+
+[[patients.plans.procedures]]
+id = "perf-2-3"
+code = "D6010"
+description = "Implant placement"
+tooth = "30"
+phase = 2
+fee = 210000
+insurance_est = 84000
+patient_est = 126000
+
+[[patients.plans.procedures]]
+id = "perf-2-4"
+code = "D6065"
+description = "Implant crown"
+tooth = "30"
+phase = 2
+fee = 165000
+insurance_est = 66000
+patient_est = 99000
+
+[[patients.plans.procedures]]
+id = "perf-2-5"
+code = "D2391"
+description = "Composite filling, 1 surface"
+tooth = "3"
+surfaces = "O"
+phase = 2
+fee = 21000
+insurance_est = 16800
+patient_est = 4200
+
+[[patients]]
+key = "perf-3"
+first_name = "Priya"
+last_name = "Castellano"
+age = 47
+language = "en"
+
+[[patients.plans]]
+key = "perf-3-plan"
+name = "Active"
+provider = "Dr. Osei"
+
+[[patients.plans.procedures]]
+id = "perf-3-1"
+code = "D4341"
+description = "Scaling and root planing, UR"
+quadrant = "UR"
+phase = 1
+fee = 28000
+insurance_est = 22400
+patient_est = 5600
+note = "5-6 mm pockets with bleeding in the upper and lower right. Deep cleaning by quadrant, then a filling on #14."
+
+[[patients.plans.procedures]]
+id = "perf-3-2"
+code = "D4341"
+description = "Scaling and root planing, LR"
+quadrant = "LR"
+phase = 1
+fee = 28000
+insurance_est = 22400
+patient_est = 5600
+
+[[patients.plans.procedures]]
+id = "perf-3-3"
+code = "D2392"
+description = "Composite filling, 2 surfaces"
+tooth = "14"
+surfaces = "MO"
+phase = 2
+fee = 26500
+insurance_est = 21200
+patient_est = 5300
+
+[[patients.plans.procedures]]
+id = "perf-3-4"
+code = "D2740"
+description = "Crown, porcelain"
+tooth = "14"
+phase = 2
+fee = 138000
+insurance_est = 69000
+patient_est = 69000
+
+[[patients.plans.procedures]]
+id = "perf-3-5"
+code = "D4910"
+description = "Periodontal maintenance"
+phase = 2
+fee = 16000
+insurance_est = 12800
+patient_est = 3200
+
+[[patients]]
+key = "perf-4"
+first_name = "Tomasz"
+last_name = "Okonkwo"
+age = 29
+language = "en"
+
+[[patients.plans]]
+key = "perf-4-plan"
+name = "Active"
+provider = "Dr. Osei"
+
+[[patients.plans.procedures]]
+id = "perf-4-1"
+code = "D3310"
+description = "Root canal, front tooth"
+tooth = "8"
+phase = 1
+fee = 82000
+insurance_est = 49200
+patient_est = 32800
+note = "#8 darkened after an old injury, no response to testing. Root canal, then post and crown."
+
+[[patients.plans.procedures]]
+id = "perf-4-2"
+code = "D2954"
+description = "Post and core"
+tooth = "8"
+phase = 1
+fee = 36000
+insurance_est = 21600
+patient_est = 14400
+
+[[patients.plans.procedures]]
+id = "perf-4-3"
+code = "D2750"
+description = "Crown, porcelain fused to metal"
+tooth = "8"
+phase = 2
+fee = 132000
+insurance_est = 66000
+patient_est = 66000
+
+[[patients.plans.procedures]]
+id = "perf-4-4"
+code = "D2391"
+description = "Composite filling, 1 surface"
+tooth = "30"
+surfaces = "O"
+phase = 2
+fee = 21000
+insurance_est = 16800
+patient_est = 4200
+note = "#30 small decay on the biting surface."
+
+[[patients.plans.procedures]]
+id = "perf-4-5"
+code = "D1110"
+description = "Adult cleaning"
+phase = 2
+fee = 13500
+insurance_est = 13500
+patient_est = 0
+
+[[patients.plans.procedures]]
+id = "perf-4-6"
+code = "D9944"
+description = "Night guard"
+phase = 2
+fee = 48000
+insurance_est = 0
+patient_est = 48000
+
+[[patients]]
+key = "perf-5"
+first_name = "Helena"
+last_name = "Vasquez-Moore"
+age = 63
+language = "en"
+
+[[patients.plans]]
+key = "perf-5-plan"
+name = "Active"
+provider = "Dr. Moreau"
+
+[[patients.plans.procedures]]
+id = "perf-5-1"
+code = "D7140"
+description = "Extraction"
+tooth = "4"
+phase = 1
+fee = 22000
+insurance_est = 17600
+patient_est = 4400
+note = "#4 broken down with decay below the gumline. Remove, then a bridge from #3 to #5."
+
+[[patients.plans.procedures]]
+id = "perf-5-2"
+code = "D6750"
+description = "Bridge crown, #3"
+tooth = "3"
+phase = 2
+fee = 125000
+insurance_est = 62500
+patient_est = 62500
+
+[[patients.plans.procedures]]
+id = "perf-5-3"
+code = "D6240"
+description = "Bridge pontic, #4"
+tooth = "4"
+phase = 2
+fee = 120000
+insurance_est = 60000
+patient_est = 60000
+
+[[patients.plans.procedures]]
+id = "perf-5-4"
+code = "D6750"
+description = "Bridge crown, #5"
+tooth = "5"
+phase = 2
+fee = 125000
+insurance_est = 62500
+patient_est = 62500

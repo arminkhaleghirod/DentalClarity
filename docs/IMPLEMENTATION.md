@@ -82,7 +82,12 @@ Progress:
 - Done: demo controls. Presentations are scoped to the visitor session and purged after 24 hours; 3 new generations per hour per visitor, 10 per day per client address, 1 running job per visitor (all `429` with `Retry-After`); the monthly budget guard with the 80% soft stop.
 - Done: demo mode builds OpenRouter models from `OPENROUTER_API_KEY`, with `DC_TEXT_MODEL` as an override. Clinical mode answers `503 provider_not_configured` until M9.
 - Done: call timeouts and billing (DECISIONS D12). A text call with hidden reasoning times out after 120 s, others after 45 s; a call that times out or returns an unreadable reply is charged at its worst-case reservation and retried once.
-- Open: resume within a section (per stage), a visible queue position, the `ai_calls` table, the dated price table, and the timing benchmark.
+- Done: resume within a section (DECISIONS E5). Every model reply is saved to `job_saved_replies` (migration 0014) before the section moves on; a restarted section replays its saved replies through the same checks and calls the model only from the stage where it stopped, so no reply is sent or charged twice.
+- Done: the `ai_calls` table (migration 0014, E23), one row per text or speech call with its job, section, stage, round, attempt, models, route, prompt version, tokens, latency, outcome, cost and cost source, and no prompt or reply text.
+- Done: the dated price table in `crates/dc-server/prices.toml` (E24), used for reservations and for calls that report no cost.
+- Done: the queue position. `GET /api/staff/jobs/{id}` returns `queue_ahead` and the progress card shows "Queued, N ahead" (E25).
+- Done: the timing benchmark harness, `cargo run -p dc-server --bin dc-bench` (E26), with the `perf/typical` workload in `fixtures/perf/typical.toml`. Scripted results are in [AI_PIPELINE.md](AI_PIPELINE.md#measuring-the-90-second-target). The first run found that every job waited out the progress writer's 250 ms pause after its last section; the writer now wakes when the job is done.
+- Open: the live timing runs (20 runs over at least 2 days on OpenRouter, `--live`) that the 90 s claim needs.
 
 ## M5 Editor, Present mode and narration
 

@@ -1,8 +1,10 @@
 //! HTTP server: JSON API under `/api`, and the embedded web app for every other path.
 
+pub mod ai_calls;
 pub mod api;
 pub mod assets;
 pub mod audit;
+pub mod bench;
 pub mod config;
 pub mod credentials;
 pub mod generation;
@@ -10,6 +12,7 @@ pub mod http;
 pub mod jobs;
 pub mod limits;
 pub mod narration;
+pub mod pricing;
 pub mod security;
 pub mod sessions;
 pub mod settings;

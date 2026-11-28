@@ -11,6 +11,10 @@ repository.workspace = true
 name = "dentalclarity"
 path = "src/main.rs"
 
+[[bin]]
+name = "dc-bench"
+path = "src/bin/dc-bench.rs"
+
 [dependencies]
 anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std"] }
@@ -33,6 +37,7 @@ sha2.workspace = true
 sqlx.workspace = true
 subtle = "2"
 tokio.workspace = true
+toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -6,9 +6,12 @@
 //! to `job_section_results` as soon as it finishes. A job left `queued` or
 //! `running` when the server stopped runs again at startup and skips the
 //! sections it already finished, so their model calls are not paid twice.
-//! A section that was in flight starts over. When every section is done, the
-//! results replace the presentation's rows in one transaction, so readers
-//! never see a mix of old and new sections from one job.
+//! Inside a section, every model reply is saved to `job_saved_replies`
+//! before the section moves on, so a section that was in flight replays its
+//! saved replies and continues from its last finished stage (DECISIONS E5).
+//! When every section is done, the results replace the presentation's rows
+//! in one transaction, so readers never see a mix of old and new sections
+//! from one job.
 
 use crate::AppState;
 use anyhow::{Context, Result, anyhow};
@@ -17,12 +20,16 @@ use dc_core::ToothRef;
 use dc_core::content::ReadingLevel;
 use dc_core::presentation::{JobState, SectionProgress, SectionStage};
 use dc_generation::facts::FactSheet;
-use dc_generation::pipeline::{PARALLEL_SECTIONS, section, sections_for};
+use dc_generation::pipeline::{PARALLEL_SECTIONS, section_resumable, sections_for};
 use dc_generation::prompt::SectionKind;
-use dc_generation::{Event, Progress, SectionResult, SectionState};
+use dc_generation::{
+    CallStage, Event, Progress, ReplyLog, Resume, SavedReply, SectionResult, SectionState,
+};
 use dc_knowledge::KnowledgeBase;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -140,6 +147,9 @@ struct Tracker {
     sections: Mutex<Vec<SectionProgress>>,
     changed: Notify,
     done: AtomicBool,
+    /// Wakes the writer from its pause between writes when the job is done,
+    /// so the job does not wait out the pause.
+    finished: Notify,
 }
 
 impl Tracker {
@@ -177,6 +187,119 @@ impl Progress for Tracker {
         drop(sections);
         self.changed.notify_one();
     }
+}
+
+/// Saves the replies of one job's sections in `job_saved_replies`.
+struct SavedReplies {
+    db: SqlitePool,
+    job_id: String,
+}
+
+impl ReplyLog for SavedReplies {
+    fn save<'a>(&'a self, section: &'a str, seq: u32, reply: &'a SavedReply) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Err(err) = save_reply(&self.db, &self.job_id, section, seq, reply).await {
+                // The section goes on; a restart would only pay for this reply again.
+                tracing::warn!(job = %self.job_id, %err, "could not save a model reply");
+            }
+        })
+    }
+}
+
+async fn save_reply(
+    db: &SqlitePool,
+    job_id: &str,
+    section: &str,
+    seq: u32,
+    reply: &SavedReply,
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM job_saved_replies WHERE job_id = ? AND section_key = ? AND seq >= ?")
+        .bind(job_id)
+        .bind(section)
+        .bind(i64::from(seq))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO job_saved_replies (job_id, section_key, seq, stage, round, prompt_version,
+             model, content, input_tokens, output_tokens, cost_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(job_id)
+    .bind(section)
+    .bind(i64::from(seq))
+    .bind(reply.stage.as_str())
+    .bind(i64::from(reply.round))
+    .bind(&reply.prompt_version)
+    .bind(&reply.model)
+    .bind(&reply.content)
+    .bind(i64::from(reply.usage.input_tokens))
+    .bind(i64::from(reply.usage.output_tokens))
+    .bind(reply.usage.cost_usd)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+type SavedReplyRow = (
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    Option<f64>,
+);
+
+/// The saved replies of a job, per section, in the order they came back.
+async fn saved_replies(db: &SqlitePool, job_id: &str) -> Result<HashMap<String, Vec<SavedReply>>> {
+    let rows: Vec<SavedReplyRow> = sqlx::query_as(
+        "SELECT section_key, stage, round, prompt_version, model, content, input_tokens,
+             output_tokens, cost_usd
+         FROM job_saved_replies WHERE job_id = ? ORDER BY section_key, seq",
+    )
+    .bind(job_id)
+    .fetch_all(db)
+    .await?;
+    let mut by_section: HashMap<String, Vec<SavedReply>> = HashMap::new();
+    for (key, stage, round, prompt_version, model, content, input, output, cost) in rows {
+        let Some(stage) = CallStage::parse(&stage) else {
+            continue;
+        };
+        by_section.entry(key).or_default().push(SavedReply {
+            stage,
+            round: u32::try_from(round).unwrap_or(0),
+            prompt_version,
+            model,
+            content,
+            usage: dc_ai::Usage {
+                input_tokens: u32::try_from(input).unwrap_or(0),
+                output_tokens: u32::try_from(output).unwrap_or(0),
+                cost_usd: cost,
+            },
+        });
+    }
+    Ok(by_section)
+}
+
+/// How many jobs are ahead of a queued job: those running and those queued
+/// before it. `None` when the job is not waiting. Slots go out in queue
+/// order, so the number only goes down (DECISIONS E25).
+pub async fn queue_ahead(db: &SqlitePool, job_id: &str) -> Result<Option<u32>> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM jobs o
+                 WHERE o.state = 'running'
+                    OR (o.state = 'queued' AND (o.created_at < j.created_at
+                        OR (o.created_at = j.created_at AND o.rowid < j.rowid))))
+         FROM jobs j WHERE j.id = ? AND j.state = 'queued'",
+    )
+    .bind(job_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(n,)| u32::try_from(n).unwrap_or(0)))
 }
 
 /// Starts a job in the background. It waits for a free slot first.
@@ -246,16 +369,23 @@ async fn fail(db: &SqlitePool, job_id: &str, message: &str) -> Result<()> {
         .bind(job_id)
         .execute(db)
         .await?;
+    sqlx::query("DELETE FROM job_saved_replies WHERE job_id = ?")
+        .bind(job_id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
-/// Saves one finished section of a job, so a restart does not write it again.
+/// Saves one finished section of a job, so a restart does not write it
+/// again, and drops the replies saved on the way, which it no longer needs.
 async fn save_result(
     db: &SqlitePool,
     job_id: &str,
     position: usize,
+    provider: &str,
     s: &SectionResult,
 ) -> Result<()> {
+    let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT OR REPLACE INTO job_section_results (job_id, key, position, state, output_json,
              reasons_json, needs_note_confirmation, writer_model, prompt_version, attempts,
@@ -275,10 +405,20 @@ async fn save_result(
     .bind(serde_json::to_string(&s.attempt_log)?)
     .bind(i64::from(s.usage.input_tokens))
     .bind(i64::from(s.usage.output_tokens))
-    .bind(crate::generation::usage_cost(&s.usage))
+    .bind(crate::generation::usage_cost(
+        &s.usage,
+        provider,
+        &s.writer_model,
+    ))
     .bind(s.elapsed_ms as i64)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query("DELETE FROM job_saved_replies WHERE job_id = ? AND section_key = ?")
+        .bind(job_id)
+        .bind(&s.key)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -353,19 +493,31 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
         .into_iter()
         .filter(|(_, kind)| !finished.iter().any(|(key, _)| *key == kind.key()))
         .collect();
-    if !finished.is_empty() {
+    let mut replies = saved_replies(&state.db, job_id).await?;
+    if !finished.is_empty() || !replies.is_empty() {
         tracing::info!(
             job = %job_id,
             skipped = finished.len(),
             remaining = remaining.len(),
+            replayed = replies.values().map(Vec::len).sum::<usize>(),
             "resuming generation job"
         );
     }
+    let reply_log = SavedReplies {
+        db: state.db.clone(),
+        job_id: job_id.to_owned(),
+    };
+    let context = crate::ai_calls::JobContext {
+        presentation_id: presentation_id.clone(),
+        job_id: job_id.to_owned(),
+    };
+    let provider = generation.models.writer.provider();
 
     let tracker = Arc::new(Tracker {
         sections: Mutex::new(sections),
         changed: Notify::new(),
         done: AtomicBool::new(false),
+        finished: Notify::new(),
     });
     let writer = {
         let tracker = tracker.clone();
@@ -385,28 +537,43 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
                 {
                     tracing::warn!(job = %job_id, %err, "could not save job progress");
                 }
-                tokio::time::sleep(PROGRESS_WRITE_INTERVAL).await;
+                let _ = tokio::time::timeout(PROGRESS_WRITE_INTERVAL, tracker.finished.notified())
+                    .await;
             }
         })
     };
 
-    // Sections run in parallel, as in `dc_generation::generate`, and each is
-    // saved the moment it finishes.
+    // Sections run in parallel, as in `dc_generation::generate`. Each saves
+    // its replies as they arrive and its result the moment it finishes.
     let saved: Vec<Result<()>> = futures::stream::iter(remaining)
         .map(|(position, kind)| {
             let sheet = &sheet;
             let models = &generation.models;
             let progress: &dyn Progress = tracker.as_ref();
-            async move {
-                let result = section(&kind, sheet, &state.kb, models, level, progress).await;
-                save_result(&state.db, job_id, position, &result).await
-            }
+            let resume = Resume {
+                saved: replies.remove(&kind.key()).unwrap_or_default(),
+                log: &reply_log,
+            };
+            crate::ai_calls::in_job(context.clone(), async move {
+                let result = section_resumable(
+                    &kind,
+                    sheet,
+                    &state.kb,
+                    models,
+                    level,
+                    progress,
+                    Some(resume),
+                )
+                .await;
+                save_result(&state.db, job_id, position, provider, &result).await
+            })
         })
         .buffer_unordered(PARALLEL_SECTIONS)
         .collect()
         .await;
 
     tracker.done.store(true, Ordering::Release);
+    tracker.finished.notify_one();
     tracker.changed.notify_one();
     let _ = writer.await;
     for result in saved {
@@ -460,6 +627,10 @@ async fn run(state: &AppState, job_id: &str) -> Result<()> {
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM job_section_results WHERE job_id = ?")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM job_saved_replies WHERE job_id = ?")
         .bind(job_id)
         .execute(&mut *tx)
         .await?;
@@ -571,6 +742,9 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
         "DELETE FROM job_section_results WHERE job_id IN
              (SELECT j.id FROM jobs j JOIN presentations p ON p.id = j.presentation_id
               WHERE p.owner_scope <> 'staff' AND p.created_at <= ?)",
+        "DELETE FROM job_saved_replies WHERE job_id IN
+             (SELECT j.id FROM jobs j JOIN presentations p ON p.id = j.presentation_id
+              WHERE p.owner_scope <> 'staff' AND p.created_at <= ?)",
     ] {
         sqlx::query(statement)
             .bind(cutoff)
@@ -601,6 +775,12 @@ pub async fn purge_demo_data(db: &SqlitePool) -> Result<u64> {
     // the presentation, so the demo limits keep counting them for a full day.
     sqlx::query("DELETE FROM regeneration_events WHERE created_at <= ?")
         .bind(cutoff * 1000)
+        .execute(&mut *tx)
+        .await?;
+    // Call rows are spend records and hold no patient data, so they are kept
+    // longer than the presentations they describe (DECISIONS E23).
+    sqlx::query("DELETE FROM ai_calls WHERE created_at <= ?")
+        .bind(now_ms() - crate::ai_calls::DEMO_RETENTION_MS)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
