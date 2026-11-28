@@ -1,0 +1,33 @@
+# Dated model prices (docs/DECISIONS.md E36), compiled into the server.
+#
+# A call uses the newest entry for its provider and model whose `effective`
+# date is on or before the call's UTC date. To change a price, add a new
+# entry with the date it starts to apply and leave the old one in place, so
+# older `ai_calls` rows can still be explained. Then rebuild the server.
+#
+# Text prices are US dollars per million tokens:
+#   input_usd_per_mtok, output_usd_per_mtok  list price on the preferred route.
+#     Used for a finished call whose reply reported no cost.
+#   max_input_usd_per_mtok, max_output_usd_per_mtok  highest price among the
+#     routes the request may fall back to. Used for the budget reservation and
+#     for a call that timed out or came back unusable (D12).
+# Speech prices are US dollars per million input characters (`usd_per_mchar`).
+#
+# Models with no entry use the placeholder rates in `pricing.rs`.
+
+[[text]]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash-1017"
+effective = "2026-11-28"
+input_usd_per_mtok = 0.194
+output_usd_per_mtok = 0.70
+max_input_usd_per_mtok = 1.50
+max_output_usd_per_mtok = 6.00
+source = "OpenRouter endpoint listing, read 2026-11-28: PrimeIntellect preferred (D11); Venice ultrafast is the most expensive 8-bit or better route"
+
+[[speech]]
+provider = "openrouter"
+model = "heygen/heygen-voice-1-turbo"
+effective = "2026-11-26"
+usd_per_mchar = 4.0
+source = "OpenRouter endpoint listing, read 2026-11-26 and again 2026-11-28"

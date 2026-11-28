@@ -4,6 +4,11 @@
 //! model call, and repair at most twice. Sections run in parallel. Nothing
 //! here touches the database; the caller persists results and reports
 //! progress through [`Progress`]. Runs on the Tokio runtime.
+//!
+//! A caller that wants a stopped section to resume passes a [`Resume`]: every
+//! reply the section receives is handed to its [`ReplyLog`] before the
+//! section moves on, and a later run replays the saved replies instead of
+//! calling the model again (docs/DECISIONS.md E5).
 
 use crate::facts::FactSheet;
 use crate::prompt::{self, SectionKind, SectionPrompt};
@@ -17,8 +22,10 @@ use dc_core::content::ReadingLevel;
 use dc_core::procedure::ProcedureCategory;
 use dc_knowledge::KnowledgeBase;
 use futures::StreamExt;
-use serde::Serialize;
+use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -99,6 +106,175 @@ impl<F: Fn(Event) + Send + Sync> Progress for F {
     }
 }
 
+/// The kind of model call inside a section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallStage {
+    /// The first draft (S4).
+    Write,
+    /// A draft written again after failed checks or reviewer findings (S7).
+    Repair,
+    /// The reviewer pass (S6).
+    Review,
+}
+
+impl CallStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallStage::Write => "write",
+            CallStage::Repair => "repair",
+            CallStage::Review => "review",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "write" => Some(CallStage::Write),
+            "repair" => Some(CallStage::Repair),
+            "review" => Some(CallStage::Review),
+            _ => None,
+        }
+    }
+
+    /// The prompt version a call at this stage is built from.
+    pub fn prompt_version(self) -> String {
+        match self {
+            CallStage::Write | CallStage::Repair => prompt::writer_version(),
+            CallStage::Review => prompt::reviewer_version(),
+        }
+    }
+}
+
+/// Where a model call comes from. It is set as a task-local value around
+/// every attempt, so a model wrapper can log the call without the request
+/// carrying it ([`current_call_site`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSite {
+    /// Section key, e.g. `procedure:p3`.
+    pub section: String,
+    pub stage: CallStage,
+    /// The section's attempt, from 1 to `MAX_REPAIRS + 1`.
+    pub round: u32,
+    /// Transport attempt within the call, from 1.
+    pub attempt: u32,
+    pub prompt_version: String,
+}
+
+tokio::task_local! {
+    static CALL_SITE: CallSite;
+}
+
+/// The call site of the model call being made, when this pipeline makes it.
+pub fn current_call_site() -> Option<CallSite> {
+    CALL_SITE.try_with(Clone::clone).ok()
+}
+
+/// A model reply saved so a stopped section can continue without paying
+/// for it again. It holds model output only, never the prompt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedReply {
+    pub stage: CallStage,
+    pub round: u32,
+    /// Prompt version the request was built from. A reply saved under
+    /// another prompt version is not replayed.
+    pub prompt_version: String,
+    /// Model id the provider returned.
+    pub model: String,
+    pub content: String,
+    pub usage: Usage,
+}
+
+/// Durable storage for the replies of one job's sections.
+pub trait ReplyLog: Send + Sync {
+    /// Saves `reply` as reply number `seq` (from 0) of `section` and drops any
+    /// reply saved after it. The section waits for this before it goes on.
+    fn save<'a>(&'a self, section: &'a str, seq: u32, reply: &'a SavedReply) -> BoxFuture<'a, ()>;
+}
+
+/// The replies a section received before a stop, in order, and where to
+/// save new ones.
+pub struct Resume<'a> {
+    pub saved: Vec<SavedReply>,
+    pub log: &'a dyn ReplyLog,
+}
+
+/// Hands out saved replies while they match the calls the section makes,
+/// then calls the model and saves each new reply.
+struct Replies<'a> {
+    key: String,
+    saved: VecDeque<SavedReply>,
+    log: Option<&'a dyn ReplyLog>,
+    next_seq: u32,
+}
+
+/// What one model call needs besides the messages.
+struct CallSpec<'a> {
+    model: &'a Arc<dyn TextModel>,
+    model_id: &'a str,
+    schema: Value,
+    reasoning: Option<ReasoningEffort>,
+    stage: CallStage,
+    round: u32,
+}
+
+impl Replies<'_> {
+    async fn get(
+        &mut self,
+        spec: CallSpec<'_>,
+        messages: Vec<Message>,
+    ) -> Result<dc_ai::TextResponse, AiError> {
+        let prompt_version = spec.stage.prompt_version();
+        if let Some(front) = self.saved.pop_front() {
+            if front.stage == spec.stage
+                && front.round == spec.round
+                && front.prompt_version == prompt_version
+            {
+                self.next_seq += 1;
+                return Ok(dc_ai::TextResponse {
+                    model: front.model,
+                    route: None,
+                    content: front.content,
+                    usage: front.usage,
+                    latency_ms: 0,
+                });
+            }
+            // The checks are deterministic, so this happens only when the
+            // prompts or the knowledge base changed between the two runs.
+            tracing::warn!(section = %self.key, "saved replies do not match; calling the model");
+            self.saved.clear();
+        }
+        let site = CallSite {
+            section: self.key.clone(),
+            stage: spec.stage,
+            round: spec.round,
+            attempt: 1,
+            prompt_version: prompt_version.clone(),
+        };
+        let reply = call(
+            spec.model,
+            spec.model_id,
+            messages,
+            spec.schema,
+            spec.reasoning,
+            site,
+        )
+        .await?;
+        if let Some(log) = self.log {
+            let saved = SavedReply {
+                stage: spec.stage,
+                round: spec.round,
+                prompt_version,
+                model: reply.model.clone(),
+                content: reply.content.clone(),
+                usage: reply.usage.clone(),
+            };
+            log.save(&self.key, self.next_seq, &saved).await;
+        }
+        self.next_seq += 1;
+        Ok(reply)
+    }
+}
+
 pub struct Generated {
     pub sheet: FactSheet,
     pub sections: Vec<SectionResult>,
@@ -166,8 +342,34 @@ pub async fn section(
     level: ReadingLevel,
     progress: &dyn Progress,
 ) -> SectionResult {
+    section_resumable(kind, sheet, kb, models, level, progress, None).await
+}
+
+/// [`section`] that saves every reply through `resume.log` and first replays
+/// `resume.saved`, the replies a stopped run of this section received. The
+/// checks between calls are deterministic, so the replayed run reaches the
+/// same point, and the model is called only from there on.
+pub async fn section_resumable(
+    kind: &SectionKind,
+    sheet: &FactSheet,
+    kb: &KnowledgeBase,
+    models: &Models,
+    level: ReadingLevel,
+    progress: &dyn Progress,
+    resume: Option<Resume<'_>>,
+) -> SectionResult {
     let started = Instant::now();
     let key = kind.key();
+    let (saved, log) = match resume {
+        Some(resume) => (resume.saved.into(), Some(resume.log)),
+        None => (VecDeque::new(), None),
+    };
+    let mut replies = Replies {
+        key: key.clone(),
+        saved,
+        log,
+        next_seq: 0,
+    };
     let mut result = SectionResult {
         key: key.clone(),
         state: SectionState::Failed,
@@ -226,15 +428,19 @@ pub async fn section(
             attempt: result.attempts,
         });
 
-        let reply = match call(
-            &models.writer,
-            &models.writer_model,
-            messages.clone(),
-            kind.schema(),
-            models.reasoning,
-        )
-        .await
-        {
+        let spec = CallSpec {
+            model: &models.writer,
+            model_id: &models.writer_model,
+            schema: kind.schema(),
+            reasoning: models.reasoning,
+            stage: if attempt == 0 {
+                CallStage::Write
+            } else {
+                CallStage::Repair
+            },
+            round: result.attempts,
+        };
+        let reply = match replies.get(spec, messages.clone()).await {
             Ok(reply) => reply,
             Err(err) => {
                 let reason = format!("The writing model could not be reached ({err}).");
@@ -301,7 +507,15 @@ pub async fn section(
             stage: "reviewing",
             attempt: result.attempts,
         });
-        let verdict = review(models, &section_prompt, raw, &mut result.usage).await;
+        let verdict = review(
+            models,
+            &mut replies,
+            result.attempts,
+            &section_prompt,
+            raw,
+            &mut result.usage,
+        )
+        .await;
         let warnings: Vec<&Issue> = issues
             .iter()
             .filter(|i| i.severity == IssueSeverity::Warn)
@@ -499,6 +713,8 @@ fn validate_value(
 
 async fn review(
     models: &Models,
+    replies: &mut Replies<'_>,
+    round: u32,
     section: &SectionPrompt,
     draft: &str,
     usage: &mut Usage,
@@ -513,15 +729,18 @@ async fn review(
             content: prompt::review_user(section, draft),
         },
     ];
-    let reply = call(
-        &models.reviewer,
-        &models.reviewer_model,
-        messages,
-        crate::schema::review_schema(),
-        models.reasoning,
-    )
-    .await
-    .map_err(|e| format!("The review model could not be reached ({e})."))?;
+    let spec = CallSpec {
+        model: &models.reviewer,
+        model_id: &models.reviewer_model,
+        schema: crate::schema::review_schema(),
+        reasoning: models.reasoning,
+        stage: CallStage::Review,
+        round,
+    };
+    let reply = replies
+        .get(spec, messages)
+        .await
+        .map_err(|e| format!("The review model could not be reached ({e})."))?;
     add_usage(usage, &reply.usage);
     let verdict: ReviewVerdict = serde_json::from_str(strip_fences(&reply.content))
         .map_err(|_| "The review model returned an unreadable verdict.".to_owned())?;
@@ -537,13 +756,15 @@ async fn review(
 
 /// One model call with jittered backoff: up to three attempts for transport
 /// errors, but only two when the provider timed out or replied with something
-/// unusable, because those calls may be billed.
+/// unusable, because those calls may be billed. Each attempt runs with `site`
+/// as the task-local [`current_call_site`].
 pub(crate) async fn call(
     model: &Arc<dyn TextModel>,
     model_id: &str,
     messages: Vec<Message>,
     schema: Value,
     reasoning: Option<ReasoningEffort>,
+    site: CallSite,
 ) -> Result<dc_ai::TextResponse, AiError> {
     let request = TextRequest {
         model: model_id.to_owned(),
@@ -556,7 +777,11 @@ pub(crate) async fn call(
     let mut last = None;
     let mut billed_failures = 0;
     for attempt in 0..3u32 {
-        match model.generate(request.clone()).await {
+        let site = CallSite {
+            attempt: attempt + 1,
+            ..site.clone()
+        };
+        match CALL_SITE.scope(site, model.generate(request.clone())).await {
             Ok(reply) => return Ok(reply),
             Err(err @ AiError::NotAllowed { .. }) => return Err(err),
             Err(err @ AiError::BadResponse(_)) if billed_failures >= 1 => return Err(err),
@@ -820,6 +1045,223 @@ mod tests {
         assert!(result.reasons.is_empty());
     }
 
+    /// Keeps saved replies in memory, as the server keeps them in SQLite.
+    #[derive(Default)]
+    struct MemoryLog(Mutex<Vec<(String, u32, SavedReply)>>);
+
+    impl ReplyLog for MemoryLog {
+        fn save<'a>(
+            &'a self,
+            section: &'a str,
+            seq: u32,
+            reply: &'a SavedReply,
+        ) -> BoxFuture<'a, ()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((section.to_owned(), seq, reply.clone()));
+            Box::pin(async {})
+        }
+    }
+
+    async fn run_resumable(
+        writer: Arc<FakeTextModel>,
+        reviewer: Arc<FakeTextModel>,
+        saved: Vec<SavedReply>,
+        log: &MemoryLog,
+    ) -> SectionResult {
+        let kb = kb_with_entry();
+        let sheet = FactSheet::build(&daniel(), &kb);
+        let m = Models {
+            writer,
+            writer_model: "writer".into(),
+            reviewer,
+            reviewer_model: "reviewer".into(),
+            reasoning: None,
+        };
+        section_resumable(
+            &SectionKind::Procedure("p1".into()),
+            &sheet,
+            &kb,
+            &m,
+            ReadingLevel::Standard,
+            &|_: Event| {},
+            Some(Resume { saved, log }),
+        )
+        .await
+    }
+
+    fn costs_money() -> String {
+        good_procedure().replace(
+            "Many people feel tender for a short while.",
+            "Recovery takes two days and costs $40.",
+        )
+    }
+
+    #[tokio::test]
+    async fn a_resumed_section_replays_its_saved_replies_and_continues() {
+        // A draft that fails the checks, its repair, then the review.
+        let log = MemoryLog::default();
+        let first = run_resumable(
+            Arc::new(FakeTextModel::with_responses([
+                costs_money(),
+                good_procedure(),
+            ])),
+            Arc::new(FakeTextModel::with_responses([pass()])),
+            Vec::new(),
+            &log,
+        )
+        .await;
+        assert_eq!(first.state, SectionState::Passed);
+        assert_eq!(first.attempts, 2);
+        let saved = log.0.lock().unwrap().clone();
+        let order: Vec<(u32, CallStage, u32)> = saved
+            .iter()
+            .map(|(key, seq, r)| {
+                assert_eq!(key, "procedure:p1");
+                (*seq, r.stage, r.round)
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (0, CallStage::Write, 1),
+                (1, CallStage::Repair, 2),
+                (2, CallStage::Review, 2)
+            ]
+        );
+
+        // Stopped after the repair came back: the draft and the repair are
+        // replayed and only the review is asked again.
+        let writer = Arc::new(FakeTextModel::default());
+        let reviewer = Arc::new(FakeTextModel::with_responses([pass()]));
+        let again = MemoryLog::default();
+        let resumed = run_resumable(
+            writer.clone(),
+            reviewer.clone(),
+            saved[..2].iter().map(|(_, _, r)| r.clone()).collect(),
+            &again,
+        )
+        .await;
+        assert_eq!(resumed.state, first.state);
+        assert_eq!(resumed.output, first.output);
+        assert_eq!(resumed.attempts, 2);
+        assert_eq!(resumed.attempt_log, first.attempt_log);
+        assert!(writer.requests().is_empty());
+        assert_eq!(reviewer.requests().len(), 1);
+        let saved_again: Vec<(u32, CallStage)> = again
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, seq, r)| (*seq, r.stage))
+            .collect();
+        assert_eq!(saved_again, [(2, CallStage::Review)]);
+    }
+
+    #[tokio::test]
+    async fn replies_saved_under_another_prompt_are_not_replayed() {
+        let stale = SavedReply {
+            stage: CallStage::Write,
+            round: 1,
+            prompt_version: "writer.section@v1+000000000000".into(),
+            model: "writer".into(),
+            content: costs_money(),
+            usage: Usage::default(),
+        };
+        let writer = Arc::new(FakeTextModel::with_responses([good_procedure()]));
+        let log = MemoryLog::default();
+        let result = run_resumable(
+            writer.clone(),
+            Arc::new(FakeTextModel::with_responses([pass()])),
+            vec![stale],
+            &log,
+        )
+        .await;
+        assert_eq!(result.state, SectionState::Passed);
+        assert_eq!(result.attempts, 1);
+        assert_eq!(writer.requests().len(), 1);
+        assert_eq!(log.0.lock().unwrap()[0].1, 0);
+    }
+
+    /// Records the call site each request is made from.
+    struct SiteRecorder(Mutex<Vec<CallSite>>, FakeTextModel);
+
+    impl TextModel for SiteRecorder {
+        fn provider(&self) -> &'static str {
+            "recorder"
+        }
+        fn generate<'life0, 'async_trait>(&'life0 self, request: TextRequest) -> Reply<'async_trait>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            // The site is set while the call's future is polled, as it is
+            // inside an `async_trait` body.
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(current_call_site().expect("set by the pipeline"));
+                self.1.generate(request).await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn every_call_carries_its_call_site() {
+        let kb = kb_with_entry();
+        let sheet = FactSheet::build(&daniel(), &kb);
+        let writer = Arc::new(SiteRecorder(
+            Mutex::default(),
+            FakeTextModel::with_responses([costs_money(), good_procedure()]),
+        ));
+        let reviewer = Arc::new(SiteRecorder(
+            Mutex::default(),
+            FakeTextModel::with_responses([pass()]),
+        ));
+        let m = Models {
+            writer: writer.clone(),
+            writer_model: "writer".into(),
+            reviewer: reviewer.clone(),
+            reviewer_model: "reviewer".into(),
+            reasoning: None,
+        };
+        section(
+            &SectionKind::Procedure("p1".into()),
+            &sheet,
+            &kb,
+            &m,
+            ReadingLevel::Standard,
+            &|_: Event| {},
+        )
+        .await;
+        let sites: Vec<(CallStage, u32, u32)> = writer
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .chain(reviewer.0.lock().unwrap().iter())
+            .map(|s| {
+                assert_eq!(s.section, "procedure:p1");
+                (s.stage, s.round, s.attempt)
+            })
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                (CallStage::Write, 1, 1),
+                (CallStage::Repair, 2, 1),
+                (CallStage::Review, 2, 1)
+            ]
+        );
+        assert_eq!(
+            reviewer.0.lock().unwrap()[0].prompt_version,
+            prompt::reviewer_version()
+        );
+        assert!(current_call_site().is_none());
+    }
+
     /// Fails with a billed error every time and counts the calls.
     struct TimingOut(std::sync::atomic::AtomicU32);
 
@@ -841,7 +1283,14 @@ mod tests {
     async fn a_timeout_is_retried_once() {
         let counter = Arc::new(TimingOut(Default::default()));
         let model: Arc<dyn TextModel> = counter.clone();
-        let result = call(&model, "m", vec![], json!({}), None).await;
+        let site = CallSite {
+            section: "journey".into(),
+            stage: CallStage::Write,
+            round: 1,
+            attempt: 1,
+            prompt_version: "v".into(),
+        };
+        let result = call(&model, "m", vec![], json!({}), None, site).await;
         assert!(matches!(result, Err(AiError::BadResponse(_))));
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }

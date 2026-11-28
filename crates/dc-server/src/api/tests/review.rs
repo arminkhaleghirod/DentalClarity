@@ -549,6 +549,174 @@ async fn regeneration_respects_the_demo_gates() {
 // Resume -----------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_section_stopped_between_stages_continues_without_paying_again() {
+    let (app, db, state) = app_with(Mode::Demo, scripted(2, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(calls(&db).await, 18);
+    let (written_before,): (String,) =
+        sqlx::query_as("SELECT output_json FROM presentation_sections WHERE key = 'next_steps'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    // Simulate a stop after eight sections were saved and next_steps had its
+    // draft back but not yet its review.
+    sqlx::query(
+        "INSERT INTO job_section_results (job_id, key, position, state, output_json,
+             reasons_json, needs_note_confirmation, writer_model, prompt_version)
+         SELECT ?, key, position, state, output_json, reasons_json, needs_note_confirmation,
+             writer_model, prompt_version
+         FROM presentation_sections WHERE key <> 'next_steps'",
+    )
+    .bind(&created.job_id)
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO job_saved_replies (job_id, section_key, seq, stage, round, prompt_version,
+             model, content, input_tokens, output_tokens, cost_usd)
+         VALUES (?, 'next_steps', 0, 'write', 1, ?, 'fake-writer', ?, 120, 80, 0.002)",
+    )
+    .bind(&created.job_id)
+    .bind(dc_generation::prompt::writer_version())
+    .bind(good_reply("next_steps"))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM presentation_sections")
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE jobs SET state = 'running'")
+        .execute(&db)
+        .await
+        .unwrap();
+    let (logged_before,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ai_calls")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(crate::jobs::resume_pending(&state).await.unwrap(), 1);
+    let status = wait_for_job(&mut client, &created.job_id).await;
+    assert_eq!(status.state, JobState::Succeeded);
+    // Only next_steps' review was sent: the saved draft was replayed.
+    assert_eq!(calls(&db).await, 19);
+    let new_calls: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT section_key, stage, round FROM ai_calls ORDER BY id LIMIT -1 OFFSET ?",
+    )
+    .bind(logged_before)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        new_calls,
+        [("next_steps".to_owned(), "review".to_owned(), 1)]
+    );
+
+    // The section matches what an uninterrupted run wrote, and its recorded
+    // usage includes the replayed draft.
+    let (output, input_tokens, cost): (String, i64, f64) = sqlx::query_as(
+        "SELECT output_json, input_tokens, cost_usd FROM presentation_sections
+         WHERE key = 'next_steps'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(output, written_before);
+    assert_eq!(input_tokens, 120);
+    assert!((cost - 0.002).abs() < 1e-12, "{cost}");
+    let (left,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM job_saved_replies")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// A reviewer whose calls wait for a permit.
+struct GatedReviewer(Arc<tokio::sync::Semaphore>, FakeTextModel);
+
+#[async_trait::async_trait]
+impl TextModel for GatedReviewer {
+    fn provider(&self) -> &'static str {
+        "fake"
+    }
+
+    async fn generate(&self, request: TextRequest) -> dc_ai::Result<TextResponse> {
+        self.0.acquire().await.unwrap().forget();
+        self.1.generate(request).await
+    }
+}
+
+#[tokio::test]
+async fn replies_are_saved_while_a_section_runs() {
+    let writers = Arc::new(tokio::sync::Semaphore::new(0));
+    let reviews = Arc::new(tokio::sync::Semaphore::new(0));
+    let generation = {
+        let (writers, reviews) = (writers.clone(), reviews.clone());
+        move |db: &SqlitePool| {
+            let by_section = DANIEL_SECTIONS
+                .iter()
+                .map(|key| {
+                    let reply = good_reply(key);
+                    (key.to_string(), FakeTextModel::with_responses([reply]))
+                })
+                .collect();
+            let pass = json!({ "verdict": "pass", "issues": [] }).to_string();
+            Some(Generation::new(
+                db.clone(),
+                Some(25.0),
+                Arc::new(SectionRouter {
+                    by_section,
+                    gate: Some(writers),
+                }),
+                "fake-writer".into(),
+                Arc::new(GatedReviewer(
+                    reviews,
+                    FakeTextModel::with_responses(vec![pass; 9]),
+                )),
+                "fake-reviewer".into(),
+                None,
+            ))
+        }
+    };
+    let (app, db, _) = app_with(Mode::Demo, generation).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    // Let exactly one draft through and no review. The draft is saved
+    // before the section asks for its review.
+    writers.add_permits(1);
+    let mut saved = Vec::new();
+    for _ in 0..300 {
+        saved = sqlx::query_as::<_, (String, i64, String, i64)>(
+            "SELECT stage, round, prompt_version, seq FROM job_saved_replies WHERE job_id = ?",
+        )
+        .bind(&created.job_id)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        if !saved.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    let (stage, round, version, seq) = &saved[0];
+    assert_eq!((stage.as_str(), *round, *seq), ("write", 1, 0));
+    assert_eq!(version, &dc_generation::prompt::writer_version());
+
+    writers.add_permits(10_000);
+    reviews.add_permits(10_000);
+    wait_for_job(&mut client, &created.job_id).await;
+    let (left,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM job_saved_replies")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
 async fn a_resumed_job_skips_the_sections_it_already_finished() {
     let (app, db, state) = app_with(Mode::Demo, scripted(2, &[], None)).await;
     let mut client = visitor_of(&app).await;

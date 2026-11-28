@@ -70,6 +70,14 @@ fn percent(status: &JobStatus) -> u32 {
     (units * 100 / (total * 2)) as u32
 }
 
+/// The line shown while a job waits for a slot (DECISIONS E37).
+fn queue_note(ahead: Option<u32>) -> String {
+    match ahead {
+        None | Some(0) => "Queued. Writing starts in a moment.".into(),
+        Some(n) => format!("Queued, {n} ahead. Writing starts when the server is free."),
+    }
+}
+
 fn held_count(status: &JobStatus) -> usize {
     status
         .sections
@@ -217,7 +225,9 @@ pub fn GenerationProgress(
             {move || match state() {
                 None => Some(view! { <p class="progress-note">"Starting…"</p> }.into_any()),
                 Some(JobState::Queued) => Some(view! {
-                    <p class="progress-note">"Queued. Writing starts when the server is free."</p>
+                    <p class="progress-note">
+                        {move || queue_note(status.with(|s| s.as_ref().and_then(|s| s.queue_ahead)))}
+                    </p>
                 }.into_any()),
                 _ => None,
             }}

@@ -494,12 +494,19 @@ async fn store(
     .bind(state_text)
     .bind(output)
     .bind(serde_json::to_string(&notes)?)
-    .bind(model)
+    .bind(&model)
     .bind(variant::translator_version())
     .bind(i64::from(derived.attempts))
     .bind(i64::from(derived.usage.input_tokens))
     .bind(i64::from(derived.usage.output_tokens))
-    .bind(crate::generation::usage_cost(&derived.usage))
+    .bind(crate::generation::usage_cost(
+        &derived.usage,
+        state
+            .generation
+            .as_ref()
+            .map_or("none", |g| g.models.writer.provider()),
+        &model,
+    ))
     .bind(jobs::now_ms())
     .bind(id)
     .bind(version)

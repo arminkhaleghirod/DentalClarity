@@ -38,7 +38,7 @@ S0 snapshot -> S1 KB resolve -> S2 locked facts -> S3 prompt build
                          S8 assemble version -> S9 variants and narration
 ```
 
-The job state machine and restart recovery are in ARCHITECTURE section 5. The design is that each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P] Implemented as a simplification at section level: each section result is saved to `job_section_results` the moment it finishes, and a job left `queued` or `running` at startup runs again, skipping the sections it already saved, so their model calls are not paid twice. A section that was in flight starts over. When every section is done, the results replace the presentation's sections in one transaction (DECISIONS E5). Live progress (`jobs.progress_json`) is written at most every 250 ms while the job runs. At most 2 jobs run at once across the server; later jobs wait as `queued`.
+The job state machine and restart recovery are in ARCHITECTURE section 5. The design is that each stage persists its outputs to SQLite before the job advances, so a restarted job resumes each section from its last completed stage. [P] Implemented in two layers (DECISIONS E5). Each model reply a section receives (a draft, a repair or a review verdict) is saved to `job_saved_replies` before the section moves on, and each section result is saved to `job_section_results` the moment it finishes, which drops that section's saved replies. A job left `queued` or `running` at startup runs again: it skips the sections it already saved, and a section that was in flight replays its saved replies through the same deterministic checks, so it reaches the stage where it stopped and calls the model only from there. Replayed replies are not sent again, not charged to the budget and write no `ai_calls` row; their tokens and cost still count in the section's totals. A reply saved under another prompt version is not replayed. A call that was waiting for its reply at the stop is sent again. When every section is done, the results replace the presentation's sections in one transaction. Live progress (`jobs.progress_json`) is written at most every 250 ms while the job runs. At most 2 jobs run at once across the server; later jobs wait as `queued`, and `GET /api/staff/jobs/{id}` reports `queue_ahead`, the number of jobs running or queued before it, which the progress card shows as "Queued, N ahead" (DECISIONS E37).
 
 ### Stage table
 
@@ -385,7 +385,7 @@ As built in M7 (DECISIONS E32, which replaces the earlier plan of running S3 to 
 - Endpoint (verified 2026-11-26): `POST https://openrouter.ai/api/v1/audio/speech` with JSON `{model, input, voice, response_format, provider}`. We send only the model, the sentence text, the voice, `response_format: "pcm"` and `provider.data_collection: "deny"`. The language is not a parameter; the model reads it from the text. The answer is raw audio bytes; errors are JSON with the usual status codes (402 credits, 429 rate limit, 502 upstream).
 - Format: `heygen/heygen-voice-1-turbo` offers only `pcm`, returned as `Content-Type: audio/pcm;rate=44100;channels=1` (16-bit little-endian). The adapter adds a WAV header, so clips are served as `audio/wav`, about 88 KB per second of speech. A 55-character test sentence took 1.3 s and gave 4.1 s of audio (361 KB).
 - Voice: the model has ten preset voices (`nadine`, `tabitha`, `bram`, `gareth`, `noelle`, `meredith`, `sabrina`, `lucian`, `weston`, `vincent`), listed at `GET /api/v1/audio/speech/models/heygen/heygen-voice-1-turbo`. The default is `meredith`, provisional until a listening test. `DC_SPEECH_VOICE` and `DC_SPEECH_MODEL` override the voice and model.
-- Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at that price in the same monthly `ai_usage` budget as text calls. Narration may spend at most 20% of the cap (`ai_usage.speech_cost_usd`); past it a clip is refused with `503 budget_reached` while generation keeps working. A call that times out (after 30 s) or returns an unusable reply is charged at its full price, because the provider may have billed it (E19). Cached clips keep playing.
+- Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at the price in the [price table](#price-table), with an `ai_calls` row per attempt, in the same monthly `ai_usage` budget as text calls. Narration may spend at most 20% of the cap (`ai_usage.speech_cost_usd`); past it a clip is refused with `503 budget_reached` while generation keeps working. A call that times out (after 30 s) or returns an unusable reply is charged at its full price, because the provider may have billed it (E19). Cached clips keep playing.
 - `AudioClip` key: `dc_core::present::audio_key(model#voice, lang, sentence_text)`, a SHA-256 over the three parts. Files live at `<data_dir>/artifacts/audio/<key>.wav`, with a row in `audio_clips` (key, language, model, bytes, mime, created_at, last_used_at).
 - Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and a timeout or unusable reply is retried once. Upstream calls are capped at 120 a minute for the server, of which one client address may use 30 (`429 narration_busy`). In demo mode each synthesized sentence is charged at least 50 characters against the visitor and network quotas (see [SECURITY.md](SECURITY.md)). Clinical mode uses Polly when it is configured (DECISIONS D16, D17) and otherwise answers 503 `narration_unavailable`.
 - Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references. A maintenance task every 10 minutes deletes clips not played within the retention period (24 h in demo mode, 30 days in clinical mode), then the least recently played clips while the cache is over 2 GB, then files with no row.
@@ -454,17 +454,29 @@ Implemented per section (DECISIONS E12):
 
 ## Cost and latency accounting
 
-Every model call writes one `ai_calls` row [C, ARCH 6]:
+Every model call that reaches a provider writes one `ai_calls` row (migration 0014, DECISIONS E35):
 
 ```
-id, job_id?, present_session_id?, stage, slot, provider, model_id, prompt_version,
-input_tokens, output_tokens, audio_chars?, latency_ms, attempt, outcome,
-est_cost_micro_usd, reported_cost_micro_usd?
+id, created_at, presentation_id?, job_id?, section_key?, stage, round, attempt,
+provider, model_requested, model_returned?, provider_route?, prompt_version?,
+input_tokens, output_tokens, audio_chars?, latency_ms, outcome,
+cost_usd, cost_source, reported_cost_usd?, est_cost_usd?
 ```
 
-- `est_cost` comes from a dated price table in config (`[pricing.<provider>.<model_id>]`, per token and per character). Prices are TBD (verify in M4).
-- `reported_cost` is filled in when the provider reports cost or usage in its response. Whether OpenRouter returns per-request cost is TBD (verify in M4).
-- `ai_calls` stores no prompt or response text.
+- `stage` is `write`, `repair`, `review` or `speech`; `round` is the section's attempt and `attempt` the transport attempt inside one call, so retries show as separate rows. `outcome` is `ok`, `unusable` (a timeout or unreadable reply, which may be billed) or `failed`.
+- `cost_usd` is what the budget was charged. `cost_source` says where it came from: `reported` (OpenRouter returns the cost of each text call when the request asks for usage), `price_table`, `fallback_rate` (a model the table does not list) or `reservation` (an `unusable` call, charged at its worst case under D12). `est_cost_usd` is the table estimate kept next to a reported cost for comparison.
+- The job runner sets the presentation and job around each section, and the pipeline sets the section, stage, round and prompt version around each attempt (task-local values), so requests carry no logging fields.
+- Costs are US dollars as REAL, like `ai_usage`. A call the budget refused was never sent and writes no row.
+- `ai_calls` stores no prompt or response text. The demo purge deletes rows older than 90 days.
+
+### Price table
+
+Prices live in `crates/dc-server/prices.toml`, compiled into the server (DECISIONS E36). Each entry has a provider, a model, an `effective` date, the list price on the preferred route, the highest price among the routes the request may fall back to, and its source. A call uses the newest entry dated on or before its UTC date. The preferred-route price costs a finished call that reported no cost; the highest price sizes the reservation and the charge for an `unusable` call. To change a price, add an entry with the date it starts to apply, leave the old entry in place, and rebuild. Prices as of 2026-11-28:
+
+| Provider and model | Effective | Price | Highest fallback |
+|---|---|---|---|
+| openrouter `deepseek/deepseek-v4.1-flash-1017` | 2026-11-28 | $0.194 / $0.70 per million input / output tokens (PrimeIntellect) | $1.50 / $6.00 (Venice ultrafast) |
+| openrouter `heygen/heygen-voice-1-turbo` | 2026-11-26 | $4 per million characters | none |
 
 ### Demo budget guard
 
@@ -481,14 +493,14 @@ Implemented in M4:
 
 - The cap is `DC_DEMO_MONTHLY_BUDGET_USD` (default 25). Spend per UTC month is in the `ai_usage` table (`month`, `cost_usd`, `calls`), which survives restarts and is never purged with visitor data.
 - Every model call goes through a wrapper that reserves `price(input characters / 4 + max_output_tokens)` before the call and refuses it when spend plus reservations would pass the cap. Reservations are held in memory, so a restart releases them.
-- After a call, the recorded cost is the provider-reported cost when present, otherwise the token estimate. Until the dated price table exists, the estimate uses placeholder rates of $1 per million input tokens and $4 per million output tokens, chosen to err high.
+- The reservation uses the highest fallback price from the price table, so it covers any route the call may take. After a call, the recorded cost is the provider-reported cost when present, otherwise the table price. A model the table does not list uses placeholder rates of $1 per million input tokens and $4 per million output tokens.
 - At 80% of the cap, `POST /api/staff/presentations` answers `503` with code `budget_reached`. 503 was chosen over 402 because the refusal is about server capacity, not about anything the visitor can pay for. Each section row also stores its own tokens and cost.
 
 ## Measuring the 90 second target
 
 | Item | Definition [P] |
 |---|---|
-| Workload | ClarityEval fixture set `perf/typical`: 5 synthetic plans, each with 4 to 6 procedures, 2 phases, 1 or 2 linked notes and at least one tooth with two procedures; English, `standard` |
+| Workload | fixture set `perf/typical` (`fixtures/perf/typical.toml`): 5 synthetic plans, each with 4 to 6 procedures, 2 phases, 1 or 2 linked notes and at least one tooth with two procedures; English, `standard` |
 | Configuration | demo mode, OpenRouter, the demo default models (D4, or the ClarityEval replacement), run from a host comparable to the demo deployment |
 | Start | the job row enters `running` |
 | Stop | S8 finishes: the English variant is assembled and every section is in a final state |
@@ -496,8 +508,23 @@ Implemented in M4:
 | Excluded | other languages, narration, PDF export, queue wait before `running` |
 | Runs | each plan 4 times (20 runs) over at least 2 days |
 | Target | p50 under 90 s; p90 reported next to it (goal under 120 s) |
-| Reported | p50, p90, max, per-stage times from `job_events`, repair rate, cost per run |
+| Reported | p50, p90, max, per-stage call counts and latencies from `ai_calls`, repair rate, cost per run |
 | Claim rule | the README, video and paper do not claim the target until it is measured this way. Time to first playable narration clip is reported separately |
+
+### Running the benchmark
+
+`cargo run -p dc-server --bin dc-bench -- --runs 4` runs every plan in `fixtures/perf/typical.toml` through the server's job runner on an in-memory database, one job at a time, and prints the figures above as Markdown (`--json <file>` also writes them as JSON). Without `--live` a scripted model answers every call with a reply that passes the checks; `--latency-ms 4000-15000` gives each call a latency drawn evenly from that range. `--live` calls OpenRouter with the demo defaults and `OPENROUTER_API_KEY`, and `--max-usd` (default 2) caps the run's spend (DECISIONS E38).
+
+### Results
+
+Scripted runs on 2026-11-28, on the development machine (Windows 11), 20 runs each. They measure the server, not the model, so they do not count toward the target or the claim rule.
+
+| Model latency per call | p50 | p90 | Max | Calls per run | Repair rate |
+|---|---|---|---|---|---|
+| none | 0.017 s | 0.032 s | 0.033 s | 15.6 | 0% |
+| 4 to 15 s, uniform | 25.8 s | 28.7 s | 29.6 s | 15.6 | 0% |
+
+With no model latency, a job of 7 to 9 sections costs the server under 35 ms. With simulated latency, sections run in parallel and each makes a draft and a review in sequence, so a job takes about as long as its slowest section's two calls (mean call 9.1 s). A repair round adds one draft and one review to the sections that need it, and live latency differs from this model, so the live runs remain open. The first run found that every job waited out the progress writer's 250 ms pause after its last section; the writer now wakes when the job is done.
 
 ## Open questions for the owner
 

@@ -1141,6 +1141,127 @@ async fn new_generations_stop_at_80_percent_of_the_budget() {
 }
 
 #[tokio::test]
+async fn every_model_call_writes_one_ai_calls_row() {
+    let (app, db, _) = app_with(Mode::Demo, scripted(1, &[], None)).await;
+    let mut client = visitor_of(&app).await;
+    let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+    wait_for_job(&mut client, &created.job_id).await;
+
+    /// presentation, job, section, stage, model, prompt version, round, attempt, outcome.
+    type CallRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+    );
+    let rows: Vec<CallRow> = sqlx::query_as(
+        "SELECT presentation_id, job_id, section_key, stage, model_requested,
+                 prompt_version, round, attempt, outcome
+             FROM ai_calls ORDER BY section_key, stage",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    // 9 sections, each one draft and one review.
+    assert_eq!(rows.len(), 18);
+    for (presentation, job, _, stage, model, version, round, attempt, outcome) in &rows {
+        assert_eq!(presentation, &created.presentation_id);
+        assert_eq!(job, &created.job_id);
+        assert_eq!((*round, *attempt, outcome.as_str()), (1, 1, "ok"));
+        match stage.as_str() {
+            "write" => {
+                assert_eq!(model, "fake-writer");
+                assert_eq!(version, &dc_generation::prompt::writer_version());
+            }
+            "review" => {
+                assert_eq!(model, "fake-reviewer");
+                assert_eq!(version, &dc_generation::prompt::reviewer_version());
+            }
+            other => panic!("unexpected stage {other}"),
+        }
+    }
+    let keys: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+    assert_eq!(keys.len(), 9);
+
+    // The fake provider is not in the price table, so the placeholder rates
+    // apply, and the rows add up to the month's spend.
+    let (sources, logged): (String, f64) =
+        sqlx::query_as("SELECT GROUP_CONCAT(DISTINCT cost_source), SUM(cost_usd) FROM ai_calls")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(sources, "fallback_rate");
+    let (spent, calls): (f64, i64) = sqlx::query_as("SELECT cost_usd, calls FROM ai_usage")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(calls, 18);
+    assert!((spent - logged).abs() < 1e-12, "{spent} {logged}");
+
+    // No column holds text from the prompt or the reply.
+    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('ai_calls')")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    for (name,) in columns {
+        assert!(
+            !["content", "prompt", "reply", "text", "messages"].contains(&name.as_str()),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_waiting_job_reports_how_many_are_ahead() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (app, _, _) = app_with(Mode::Demo, scripted(3, &[], Some(gate.clone()))).await;
+    let mut visitors = Vec::new();
+    let mut jobs = Vec::new();
+    for _ in 0..3 {
+        let mut client = visitor_of(&app).await;
+        let created: CreatePresentationResponse = json_body(create(&mut client).await).await;
+        jobs.push(created.job_id);
+        visitors.push(client);
+    }
+
+    let mut seen = None;
+    for _ in 0..300 {
+        let mut states = Vec::new();
+        for (client, job) in visitors.iter_mut().zip(&jobs) {
+            let status: JobStatus = json_body(
+                client
+                    .send(Method::GET, &format!("/api/staff/jobs/{job}"), None)
+                    .await,
+            )
+            .await;
+            states.push((status.state, status.queue_ahead));
+        }
+        if states[..2].iter().all(|(s, _)| *s == JobState::Running) {
+            seen = Some(states);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let states = seen.expect("the first two jobs start");
+    // Two jobs hold the two slots; the third waits behind both.
+    assert_eq!(states[0].1, None);
+    assert_eq!(states[1].1, None);
+    assert_eq!(states[2], (JobState::Queued, Some(2)));
+
+    gate.add_permits(10_000);
+    for (client, job) in visitors.iter_mut().zip(&jobs) {
+        let status = wait_for_job(client, job).await;
+        assert_eq!(status.state, JobState::Succeeded);
+        assert_eq!(status.queue_ahead, None);
+    }
+}
+
+#[tokio::test]
 async fn interrupted_jobs_run_again_from_the_start() {
     let (app, db, state) = app_with(Mode::Demo, scripted(2, &[], None)).await;
     let mut client = visitor_of(&app).await;

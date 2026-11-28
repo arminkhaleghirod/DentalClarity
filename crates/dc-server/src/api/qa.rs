@@ -376,11 +376,18 @@ async fn store(
     .bind(urgent)
     .bind(outcome)
     .bind(prompt_version)
-    .bind(model_id)
+    .bind(&model_id)
     .bind(i64::from(usage.input_tokens))
     .bind(i64::from(usage.output_tokens))
     .bind(if response.is_some() {
-        usage_cost(&usage)
+        usage_cost(
+            &usage,
+            state
+                .generation
+                .as_ref()
+                .map_or("none", |g| g.models.writer.provider()),
+            &model_id,
+        )
     } else {
         0.0
     })

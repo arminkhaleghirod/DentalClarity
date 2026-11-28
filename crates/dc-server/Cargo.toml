@@ -18,6 +18,10 @@ opendental = ["dc-pms/opendental"]
 # Bedrock and Polly for clinical mode (docs/DECISIONS.md D15, D16).
 aws = ["dc-ai/aws"]
 
+[[bin]]
+name = "dc-bench"
+path = "src/bin/dc-bench.rs"
+
 [dependencies]
 anyhow.workspace = true
 axum-server = { version = "0.9", features = ["tls-rustls"] }
@@ -45,6 +49,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 subtle = "2"
 time = "0.3"
 tokio.workspace = true
+toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

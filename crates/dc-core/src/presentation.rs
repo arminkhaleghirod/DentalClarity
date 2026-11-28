@@ -78,6 +78,10 @@ pub struct JobStatus {
     /// with the stages of the sections this job does not touch as they are.
     #[serde(default)]
     pub section_key: Option<String>,
+    /// While the job is queued: how many jobs on the server are running or
+    /// were queued before it. `None` once it runs.
+    #[serde(default)]
+    pub queue_ahead: Option<u32>,
 }
 
 /// `POST /api/staff/presentations/:id/sections/:section_key/regenerate`.

@@ -8,7 +8,7 @@
 //! falls back to the approved English with a "not available" label.
 
 use crate::facts::FactSheet;
-use crate::pipeline::{add_usage, call, is_safety_finding, strip_fences};
+use crate::pipeline::{CallSite, CallStage, add_usage, call, is_safety_finding, strip_fences};
 use crate::prompt;
 use crate::schema::{NextStepsOut, ReviewIssue, ReviewVerdict, Sentence, Severity, Verdict};
 use crate::validate::{self, Context, Issue, IssueSeverity};
@@ -211,12 +211,24 @@ pub async fn derive(
                 content: translator_user(source, target, &problems),
             },
         ];
+        let site = CallSite {
+            section: format!("variant:{}", target.language),
+            stage: if round == 0 {
+                CallStage::Write
+            } else {
+                CallStage::Repair
+            },
+            round: attempts,
+            attempt: 1,
+            prompt_version: translator_version(),
+        };
         let reply = match call(
             &models.translator,
             &models.translator_model,
             messages,
             schema(),
             models.reasoning,
+            site,
         )
         .await
         {
@@ -272,12 +284,20 @@ pub async fn derive(
             content: reviewer_user(source, &text, target),
         },
     ];
+    let site = CallSite {
+        section: format!("variant:{}", target.language),
+        stage: CallStage::Review,
+        round: 1,
+        attempt: 1,
+        prompt_version: translation_reviewer_version(),
+    };
     let reply = match call(
         &models.reviewer,
         &models.reviewer_model,
         messages,
         crate::schema::review_schema(),
         models.reasoning,
+        site,
     )
     .await
     {

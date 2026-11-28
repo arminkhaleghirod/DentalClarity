@@ -18,4 +18,7 @@ pub mod variant;
 #[cfg(test)]
 mod test_support;
 
-pub use pipeline::{Event, Generated, Models, Progress, SectionResult, SectionState, generate};
+pub use pipeline::{
+    CallSite, CallStage, Event, Generated, Models, Progress, ReplyLog, Resume, SavedReply,
+    SectionResult, SectionState, current_call_site, generate,
+};

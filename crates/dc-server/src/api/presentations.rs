@@ -381,6 +381,7 @@ fn job_status(row: JobRow) -> JobStatus {
         elapsed_ms: u64::try_from(elapsed_ms).unwrap_or(0),
         error,
         section_key,
+        queue_ahead: None,
     }
 }
 
@@ -397,7 +398,11 @@ pub async fn job(
     let row = job_row(&state, &owner, &id)
         .await?
         .ok_or_else(|| not_found("job"))?;
-    Ok(Json(job_status(row)))
+    let mut status = job_status(row);
+    if status.state == JobState::Queued {
+        status.queue_ahead = jobs::queue_ahead(&state.db, &id).await?;
+    }
+    Ok(Json(status))
 }
 
 /// id, patient key, display name, snapshot, version, created_at, job state, progress.
