@@ -53,7 +53,7 @@ DentalClarity/
 ├─ eval/                      (planned) ClarityEval dataset (dev split; the held-out split stays out of git until final runs)
 ├─ assets/                    (planned) fonts, original SVG illustrations, booklet templates
 ├─ docs/                      planning docs
-└─ deploy/                    (planned) container, Windows installer, service scripts
+└─ deploy/                    demo container; windows/ has the Inno Setup installer
 ```
 
 Dependency direction: `dc-core` ← everything. `dc-generation` depends on `dc-ai`, `dc-knowledge` and `dc-core`. `dc-server` depends on all of the backend crates. `dc-web` depends only on `dc-core`.
@@ -96,7 +96,7 @@ pub trait PmsConnector: Send + Sync {
   2. The browser navigates to `/present`. Every staff endpoint now returns `423 Locked` for that staff session, so back navigation and direct API calls expose nothing.
   3. Exit: in clinical mode `POST /api/present/exit` with the PIN (rate-limited, Argon2-hashed) unlocks the staff session and ends the present session. Demo mode needs no PIN.
 - **Storage**: SQLite with WAL, migrations in `crates/dc-server/migrations`. Tables (initial): `settings`, `secrets`, `staff_account`, `sessions`, `present_sessions`, `snapshots`, `presentations`, `versions`, `sections`, `blocks`, `variants`, `audio_clips`, `jobs`, `job_events`, `qa_conversations`, `analytics_events`, `audit_events`, `sync_state`.
-- **Secrets** (AWS credentials, PMS password, OpenRouter key): encrypted at rest. On Windows the data key is protected with DPAPI (machine scope). In the demo container, secrets come from environment variables only.
+- **Secrets** (AWS credentials, PMS password, local CA key): one file per secret under `data/secrets`, each protected with DPAPI in machine scope on Windows (DECISIONS E25). In the demo container, secrets come from environment variables only.
 - **Jobs**: a `jobs` row records the state (`queued → running(stage) → succeeded | needs_review | failed`) plus a progress event log. A Tokio worker pool claims jobs; on startup `queued` and `running` jobs run again, skipping the sections they already saved to `job_section_results` (per-section resume, DECISIONS E5; per-stage resume is not built). The browser polls `GET /api/staff/jobs/:id` (SSE can come later).
 - **Sync**: every 5 minutes (configurable) a poller takes snapshots of the plans behind active presentations and compares fingerprints. A change creates a new version through the diff rules in [AI_PIPELINE.md](AI_PIPELINE.md#sync). Cost-only diffs regenerate nothing. Clinical diffs mark the affected sections `NeedsReview`.
 - **Data dir**: `%ProgramData%\DentalClarity` on Windows and `/data` in the container. It holds `dentalclarity.db`, `artifacts/` (content-addressed `sha256.ext`) and `logs/`.
@@ -137,4 +137,4 @@ Typst is compiled in-process from a template in `assets/booklet/`, fed with a JS
 ## 10. Deployment
 
 - **Demo**: a multi-stage Dockerfile (build Trunk bundle → build server → distroless runtime). Host chosen later (DECISIONS D6).
-- **Clinical (Windows)**: `dentalclarity.exe service install|uninstall|run`, a firewall rule for the LAN port, data in ProgramData, and the installer chosen in M9. It is installed on the OD server by default; a separate host is documented as the safer alternative.
+- **Clinical (Windows)**: `dentalclarity.exe service install|uninstall|run` (DECISIONS E23), HTTPS with rustls (E24), a firewall rule for the LAN port, data in ProgramData, and an Inno Setup installer (E26, [deploy/windows/README.md](../deploy/windows/README.md)). It is installed on the OD server by default; a separate host is documented as the safer alternative.

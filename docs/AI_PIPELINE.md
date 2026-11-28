@@ -11,17 +11,17 @@ Tags: [C] is confirmed by the owner (DECISIONS id given). [P] is proposed by eng
 3. The pipeline fails closed. [C, brainstorm 7] If a section fails validation, review or repair, the patient never sees its text. The section becomes `NeedsReview` or `Failed`, and Present shows a neutral placeholder ("Your dental team will go over this part with you") beside the locked facts.
 4. Prompts are minimized. [C, D10] They are built from an allowlist of typed fields (see [Prompt field allowlist](#prompt-field-allowlist)). Masking is not de-identification.
 5. Mode picks the provider. [C, D1, D2] Demo mode uses OpenRouter for every AI call, TTS included. Clinical mode uses Bedrock for text and Polly for TTS, and `ProviderPolicy` cannot construct an OpenRouter adapter.
-6. Demo models are owner-confirmed defaults that ClarityEval checks. [C, D4] ClarityEval verifies them and may replace them. Clinical (Bedrock) models are chosen in M9.
+6. Demo models are owner-confirmed defaults that ClarityEval checks. [C, D4] ClarityEval verifies them and may replace them. Clinical defaults are DECISIONS D13 and D14.
 
 ### Model slots
 
 | Slot | Used by | Demo provider | Clinical provider | Demo model | Clinical model |
 |---|---|---|---|---|---|
-| `writer` | section writer, repair | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | TBD, chosen in M9 |
-| `reviewer` | AI review pass | OpenRouter | Bedrock | TBD, selected via ClarityEval. [P] Prefer a different model family from `writer` | TBD, chosen in M9. [P] Prefer a different model family from `writer` |
-| `translator` | language variants | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | TBD, chosen in M9 |
-| `qa` | "Ask a question" in the UI (the role id stays `qa`) | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | TBD, chosen in M9 |
-| `tts` | narration | OpenRouter | Polly | `heygen/heygen-voice-1-turbo` [C, D4] | TBD, chosen in M9 with a listening test |
+| `writer` | section writer, repair | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | `anthropic.claude-haiku-5-5` [P, D13] |
+| `reviewer` | AI review pass | OpenRouter | Bedrock | TBD, selected via ClarityEval. [P] Prefer a different model family from `writer` | `anthropic.claude-haiku-5-5`, the writer's model, until a second family is measured on Bedrock [P, D13] |
+| `translator` | language variants | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | the writer's model [P, D13] |
+| `qa` | "Ask a question" in the UI (the role id stays `qa`) | OpenRouter | Bedrock | `deepseek/deepseek-v4.1-flash-1017`, high reasoning effort [C, D4] | the writer's model [P, D13] |
+| `tts` | narration | OpenRouter | Polly | `heygen/heygen-voice-1-turbo` [C, D4] | `neural` engine, voice Joanna for English, provisional until a listening test [P, D14] |
 
 Both demo defaults are listed on OpenRouter (checked 2026-11-25). The text model supports `structured_outputs`, `response_format`, `reasoning` and `reasoning_effort`, and `heygen/heygen-voice-1-turbo` is a speech model. ClarityEval verifies these defaults and may replace them. The speech endpoint and audio format were verified in M5 (see Narration).
 
@@ -119,7 +119,7 @@ Only `{{practice_name}}` and `{{provider_display_name}}`. [P] The patient's firs
 
 ## Output schemas
 
-JSON-schema-constrained output is listed as supported for the demo text model (`structured_outputs` and `response_format`, checked on OpenRouter 2026-11-25) and is exercised in M4. For Bedrock models it is checked in M9. The `serde` fallback stays: the schema goes in the prompt, the reply is parsed with strict `serde`, and a failed parse counts as a repair round. Either way parsing uses `serde(deny_unknown_fields)`.
+JSON-schema-constrained output is listed as supported for the demo text model (`structured_outputs` and `response_format`, checked on OpenRouter 2026-11-25) and is exercised in M4. For Bedrock, the adapter passes the schema as the input schema of one tool and returns the tool call's input (DECISIONS D13); the live check waits on the M9 smoke test. The `serde` fallback stays: the schema goes in the prompt, the reply is parsed with strict `serde`, and a failed parse counts as a repair round. Either way parsing uses `serde(deny_unknown_fields)`.
 
 ### Shared types
 
@@ -381,7 +381,7 @@ Deterministic handling around Q&A [P]:
 - Voice: the model has ten preset voices (`nadine`, `tabitha`, `bram`, `gareth`, `noelle`, `meredith`, `sabrina`, `lucian`, `weston`, `vincent`), listed at `GET /api/v1/audio/speech/models/heygen/heygen-voice-1-turbo`. The default is `meredith`, provisional until a listening test. `DC_SPEECH_VOICE` and `DC_SPEECH_MODEL` override the voice and model.
 - Price: $4 per million input characters (OpenRouter listing, checked 2026-11-26). The response reports no cost, so each clip is recorded at that price in the same monthly `ai_usage` budget as text calls. Narration may spend at most 20% of the cap (`ai_usage.speech_cost_usd`); past it a clip is refused with `503 budget_reached` while generation keeps working. A call that times out (after 30 s) or returns an unusable reply is charged at its full price, because the provider may have billed it (E19). Cached clips keep playing.
 - `AudioClip` key: `dc_core::present::audio_key(model#voice, lang, sentence_text)`, a SHA-256 over the three parts. Files live at `<data_dir>/artifacts/audio/<key>.wav`, with a row in `audio_clips` (key, language, model, bytes, mime, created_at, last_used_at).
-- Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and a timeout or unusable reply is retried once. Upstream calls are capped at 120 a minute for the server, of which one client address may use 30 (`429 narration_busy`). In demo mode each synthesized sentence is charged at least 50 characters against the visitor and network quotas (see [SECURITY.md](SECURITY.md)). Clinical mode has no speech provider until M9 and answers 503 `narration_unavailable`.
+- Cache misses: sentences over 400 characters are refused, concurrent requests for one key make a single upstream call, transport and 5xx failures are retried twice, and a timeout or unusable reply is retried once. Upstream calls are capped at 120 a minute for the server, of which one client address may use 30 (`429 narration_busy`). In demo mode each synthesized sentence is charged at least 50 characters against the visitor and network quotas (see [SECURITY.md](SECURITY.md)). Clinical mode uses Polly when it is configured (DECISIONS D14, D15) and otherwise answers 503 `narration_unavailable`.
 - Invalidation needs no bookkeeping: an edit, a regeneration, a placeholder value change (such as the practice name) or a voice change produces a new key. Old clips lose their references. A maintenance task every 10 minutes deletes clips not played within the retention period (24 h in demo mode, 30 days in clinical mode), then the least recently played clips while the cache is over 2 GB, then files with no row.
 - Timing [P]: after S8, a low-priority `narrate` stage synthesizes the default variant, at-a-glance first. Other variants are synthesized on the first play of a section, and the play button shows progress. Narration is outside the 90 s target. The `narrate` stage is not built; the pre-warm below fills the cache instead.
 - Pre-warm (built in M5): entering Present mode fills the cache block by block in screen order, two upstream calls at a time, generated blocks only, and builds each block's merged clip, so the first play is usually instant. A cold block shows "Preparing audio" until the merged clip arrives.

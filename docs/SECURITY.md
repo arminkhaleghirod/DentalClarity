@@ -14,8 +14,8 @@ DentalClarity is a prototype. It must not be used with real patient data until e
 |---|---|---|
 | PHI: snapshots, generated text, linked notes, Q&A, audio, PDFs | SQLite, `artifacts/`, backups | confidentiality |
 | Educational content integrity | versions, blocks, KB | wrong or pressuring content can harm a patient's decision |
-| Open Dental read credentials | `secrets` table | read access to the whole practice database |
-| AWS credentials (clinical) | `secrets` table | Bedrock/Polly spend; access to whatever the IAM policy allows |
+| Open Dental read credentials | secret store, `data/secrets` (E25) | read access to the whole practice database |
+| AWS credentials (clinical) | secret store, `data/secrets` (E25) | Bedrock/Polly spend; access to whatever the IAM policy allows |
 | OpenRouter key (demo) | container env var | spend, abuse under the project's name |
 | Staff password, staff PIN | Argon2id hashes in `staff_account` | access to every patient in the directory |
 | Session tokens | cookies, hashed in `sessions` | session hijack |
@@ -47,8 +47,8 @@ Mode is fixed at startup and cannot change at runtime [C, ARCH 1].
 | AI providers | OpenRouter for all [C, D1] | Bedrock and Polly; OpenRouter adapter cannot be constructed [C, D2] |
 | Staff auth | visitor session created by `POST /api/visit`, no password | shared staff account with password |
 | Leave Present | no PIN [C, P8] | staff PIN [C, P8] |
-| TLS | terminated by the hosting platform | rustls in-process (M9); until then a TLS proxy in front, see the startup check |
-| Secrets | env vars only | encrypted `secrets` table, DPAPI-wrapped key |
+| TLS | terminated by the hosting platform | rustls in-process (`DC_TLS=local-ca` or `DC_TLS_CERT`/`DC_TLS_KEY`, E24), or a TLS proxy in front; see the startup check |
+| Secrets | env vars only | one DPAPI-protected file per secret in the data directory (E25) |
 | Limits | per-visitor rate limits, $25/month cap [C, D5] | practice-configured, login and PIN limits always on |
 | Setup wizard | disabled; config from env | first launch only, with the one-time setup code printed to the server console |
 | Startup check | none | refuses to start unless `DC_PUBLIC_ORIGIN` is `https://` or the bind address is loopback |
@@ -161,7 +161,7 @@ Rows are endpoint groups. A means allowed; dash means rejected with the code sho
 | `/api/staff/qa` (read conversations, planned for M7) | 401 | A | 423 | 401 | own scope |
 | `/api/staff/analytics` (planned for M8) | 401 | A | 423 | 401 | aggregate only |
 | `/api/staff/settings` (branding, sync) | 401 | A | 423 | 401 | 403 `demo_read_only` |
-| `/api/staff/secrets` (write-only, planned for M9) | 401 | A, write only, never returns values | 423 | 401 | 403 |
+| `/api/staff/secrets` (write-only, planned; until then secrets are set on the server with `dentalclarity secret set`) | 401 | A, write only, never returns values | 423 | 401 | 403 |
 | `/api/present/content`, `audio/:key`, `narration?keys=`, `variant` (planned for M7) | 401 | 401 | 401 | A, bound version only | A, bound version only |
 | `/api/present/qa` (planned for M7) | 401 | 401 | 401 | A, caps apply | A, caps and budget apply |
 | `/api/present/analytics` (engagement events, planned for M8) | 401 | 401 | 401 | A, write only | A, write only |
@@ -173,8 +173,8 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 
 ## Transport
 
-- Clinical mode serves HTTPS only, with rustls (TLS 1.2 and 1.3). Port 80, if enabled, only redirects. [P]
-- The service binds to a configured LAN interface address. The installer's firewall rule allows the LAN subnet only (M9).
+- Clinical mode on the network serves HTTPS only, with rustls (TLS 1.2 and 1.3) in the server process (E24) or a TLS proxy in front. There is no port 80 listener, so there is no plain-HTTP redirect either; clients must use the `https://` address.
+- The service binds to `DC_BIND`. The installer's firewall rule allows the HTTPS port from the local subnet only (E26).
 - Clinical mode refuses to start unless `DC_PUBLIC_ORIGIN` is `https://` or the bind address is loopback.
 - HSTS is sent only when `DC_HSTS` is enabled and the origin is `https://`. Enable it only with a certificate that all clients trust (option 1 or 2 below), so a self-signed setup does not lock clients out.
 
@@ -183,10 +183,11 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 | Option | Setup | Trade-off |
 |---|---|---|
 | 1. Practice internal CA or IT-provided cert | import PEM in Settings | preferred; needs IT support |
-| 2. App-generated local CA plus server cert (`rcgen`) | installer creates a CA, exports its cert, staff install it on each workstation and tablet | works offline; each device needs a one-time trust step; the CA private key must be protected like a secret |
+| 2. App-generated local CA plus server cert (`rcgen`, `DC_TLS=local-ca`) | the server creates a CA on first start and exports its cert to `data/tls/dentalclarity-ca.crt`; staff install it on each workstation and tablet | works offline; each device needs a one-time trust step; the CA private key is kept in the secret store |
 | 3. Self-signed with a browser warning | none | discouraged; trains staff to click through warnings. Allowed only for evaluation |
 
-- The certificate needs a SAN for the stable hostname or IP the tablets use. Renewal reminder 30 days before expiry. [P]
+- The certificate needs a SAN for the stable hostname or IP the tablets use. With option 2 the server certificate covers `localhost`, the loopback addresses, the bind address, the host of `DC_PUBLIC_ORIGIN` and `DC_TLS_HOSTNAMES`, and it is reissued from the local CA on every start, so it does not expire while the service runs. The CA is valid for ten years. For option 1 certificates there is no expiry reminder yet (open).
+- How each kind of device trusts the local CA is in [deploy/windows/README.md](../deploy/windows/README.md#trust-the-certificate-on-every-device). Windows tools that use Schannel (for example `curl.exe`) reject the local CA with `CERT_TRUST_REVOCATION_STATUS_UNKNOWN`, because it publishes no revocation list; browsers accept it. Publishing a CRL is not planned for the prototype.
 - The Open Dental MySQL connection is local when DentalClarity runs on the OD server. If it runs on a separate host, MySQL TLS is required; whether the target OD MySQL/MariaDB setup supports it is TBD (verify in M2).
 - Demo mode: TLS terminates at the hosting platform (D6 is still open).
 
@@ -194,15 +195,16 @@ Secrets are write-only through the API. The settings page shows "set" and the ti
 
 | Secret | Clinical (Windows) | Demo (container) |
 |---|---|---|
-| PMS DB password | `secrets` row, AES-256-GCM with a data key | not used |
-| AWS credentials | same | not used |
+| PMS DB password | secret store file, DPAPI machine scope (with the Open Dental connector, M2) | not used |
+| AWS access key | secret store files `aws-access-key-id`, `aws-secret-access-key`, DPAPI machine scope; set with `dentalclarity secret set` | not used |
 | OpenRouter key | refused in clinical mode | env var `OPENROUTER_API_KEY` |
-| Data key | wrapped with DPAPI, machine scope [ARCH 5] | not used |
-| TLS private key, local CA key | file in data dir, ACL restricted | platform-managed |
+| Local CA key | secret store file `tls-ca-key`, DPAPI machine scope | not used |
+| Server TLS key | option 1: PEM file named by `DC_TLS_KEY`, ACL restricted; option 2: generated at each start, kept in memory only | platform-managed |
 
-- DPAPI machine scope lets any process on the machine unwrap the key. The data directory ACL is therefore limited to the service account and Administrators, set by the installer (M9). A dedicated service account with user-scope DPAPI is the stronger alternative and is TBD (verify in M9).
+- Each secret is protected with DPAPI directly, with an app-specific entropy value; the planned AES-GCM data key was dropped because it added nothing on top of DPAPI (E25). Machine scope lets any process on the machine unwrap the files. The installer therefore limits `%ProgramData%\DentalClarity` to SYSTEM, Administrators and the service's virtual account `NT SERVICE\DentalClarity` (E23, E26). User-scope DPAPI under the service account would keep other local processes out, but then an administrator could not store a secret for the service from a console; it stays an open alternative.
+- On systems other than Windows the store has no DPAPI. Values are written as is to files with mode 0600, for development only, and the server logs a warning when clinical mode reads an AWS key stored that way.
 - The SQLite database itself is not encrypted by the app. Practices are expected to run BitLocker or equivalent full-disk encryption. Encrypting the database (for example SQLCipher) is a listed gap.
-- AWS credentials: an IAM principal limited to `bedrock:InvokeModel` (and the streaming variant if used) on the selected model ARNs, plus `polly:SynthesizeSpeech`, in the practice's chosen region. Long-lived access keys are the simple path and need rotation. Short-lived alternatives such as IAM Roles Anywhere are TBD (verify in M9).
+- AWS credentials: an IAM principal limited to `bedrock:InvokeModel` on the selected model and inference profile ARNs (Converse is authorized by it; streaming is not used), plus `polly:SynthesizeSpeech`, in the practice's chosen region. An example policy is in [deploy/windows/README.md](../deploy/windows/README.md#aws-permissions). Without a stored key the AWS SDK default chain is used, which covers environment variables, IAM Identity Center profiles (`DC_AWS_PROFILE`) and instance roles (D15). Long-lived access keys are the simple path and need rotation. Short-lived alternatives such as IAM Roles Anywhere are still open.
 - Secrets are never logged, never returned by the API, never in fixtures, and never in source control. CI runs a secret scanner (gitleaks, [P]).
 
 ## Open Dental least-privilege user
@@ -246,7 +248,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 
 - SQLite runs with `PRAGMA secure_delete = ON`, and a weekly `VACUUM` reclaims freed pages.
 - Deleting a presentation removes all versions, variants, Q&A, analytics links and artifacts not referenced elsewhere, and writes an audit event without patient details.
-- Provider-side retention: Bedrock, Polly and OpenRouter data handling must be checked against each provider's current terms. TBD (OpenRouter verified in M5; Bedrock and Polly verified in M9). Provider zero-retention settings are not a substitute for a BAA or de-identification.
+- Provider-side retention: Bedrock, Polly and OpenRouter data handling must be checked against each provider's current terms. TBD (OpenRouter verified in M5; Bedrock and Polly not yet verified, open after M9). Provider zero-retention settings are not a substitute for a BAA or de-identification.
 - No patient names or PMS ids in URLs. Routes use DentalClarity's own random ids. Page titles in the Present view show the practice name only.
 
 ## Logging redaction
@@ -300,13 +302,13 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 - Dependabot or Renovate for crates and GitHub Actions. Actions pinned by commit SHA, with `permissions: read-all` by default.
 - New dependencies are reviewed for maintenance status and need a reason in the PR.
 - Demo container: distroless runtime image pinned by digest, non-root user, read-only root filesystem with a writable `/data`.
-- SBOM per release (`cargo-cyclonedx`). Windows code signing is TBD (M9).
+- SBOM per release (`cargo-cyclonedx`). The Windows installer and binary are not code-signed yet (E26).
 
 ## HIPAA posture
 
 - DentalClarity is open-source software. Being open source or self-hosted does not make it, or any deployment of it, HIPAA compliant, and the project maintainers are not a business associate of any practice that installs it.
 - A practice using real PHI is responsible for its own risk analysis, policies, access controls, BAAs and configuration.
-- A BAA with AWS and the use of HIPAA-eligible services are necessary for the clinical provider path, but they do not make a deployment compliant end to end. Current eligibility of Bedrock and Polly, region and data handling must be confirmed by the practice (TBD, verify in M9).
+- A BAA with AWS and the use of HIPAA-eligible services are necessary for the clinical provider path, but they do not make a deployment compliant end to end. Current eligibility of Bedrock and Polly, region and data handling must be confirmed by the practice; the project has not verified them.
 - OpenRouter is for synthetic data only. Clinical mode refuses it in code [C, D2].
 - The shared staff account [C, P7] conflicts with the HIPAA Security Rule's unique user identification requirement and prevents per-person audit attribution.
 - Placeholder masking and note stripping are minimization, not de-identification [C, D10].
@@ -330,7 +332,7 @@ All defaults are [P] and need owner confirmation. Clinical values apply per prac
 | G12 | Retention | practice-approved retention values configured |
 | G13 | Incident response | documented contact, breach-assessment procedure, log access |
 | G14 | Independent review | external security review or penetration test of the clinical build |
-| G15 | Windows hardening | service account, data-dir ACLs, firewall rule verified (M9) |
+| G15 | Windows hardening | the installer sets the virtual service account, data-dir ACLs and a local-subnet firewall rule (E26); these must be verified on the practice's server, and the installer and binary code-signed |
 
 ## Reporting a vulnerability
 
